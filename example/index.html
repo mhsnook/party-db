@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>party-db demo</title>
+    <style>
+      body { font: 16px system-ui; max-width: 32rem; margin: 3rem auto; }
+      li { display: flex; align-items: center; gap: 0.5rem; }
+      button { border: 0; background: none; cursor: pointer; color: #999; }
+    </style>
+  </head>
+  <body>
+    <h1>party-db</h1>
+    <p>Open this page in two tabs and watch them sync.</p>
+    <form id="form">
+      <input id="text" placeholder="new todo" autocomplete="off" />
+      <button type="submit">add</button>
+    </form>
+    <ul id="list"></ul>
+    <script type="module" src="/src/client.ts"></script>
+  </body>
+</html>

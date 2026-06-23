@@ -13,7 +13,7 @@
 //     collections = [{ name: 'todos', key: 'id' }, { name: 'lists', key: 'id' }]
 //   }
 
-import { Server, type Connection } from 'partyserver'
+import { Server, type Connection, type ConnectionContext } from 'partyserver'
 import type { SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
 
 export type TableDef = { name: string; key: string }
@@ -39,8 +39,32 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
     }
   }
 
-  // replay current state to a freshly connected (or woken) client, then ready.
-  onConnect(conn: Connection) {
+  // a reconnecting client passes ?since=<lastSeq> and gets only what it missed;
+  // a fresh client gets a full snapshot. Both arrive as ordinary batches.
+  onConnect(conn: Connection, ctx: ConnectionContext) {
+    const since = new URL(ctx.request.url).searchParams.get('since')
+    if (since !== null) this.replaySince(conn, Number(since))
+    else this.snapshot(conn)
+  }
+
+  // delta reconnect: just the oplog entries after `since`, in order.
+  private replaySince(conn: Connection, since: number) {
+    const rows = this.sql
+      .exec(`SELECT seq, channel, ops FROM _oplog WHERE seq > ? ORDER BY seq`, since)
+      .toArray()
+    for (const r of rows) {
+      conn.send(
+        JSON.stringify({
+          channel: r.channel as string,
+          seq: Number(r.seq),
+          ops: JSON.parse(r.ops as string),
+        } satisfies SequencedBatch),
+      )
+    }
+  }
+
+  // fresh connect: current state per collection, then ready.
+  private snapshot(conn: Connection) {
     const seq = Number(this.sql.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
     for (const c of this.collections) {
       const rows = this.sql.exec(`SELECT data FROM "${c.name}"`).toArray()

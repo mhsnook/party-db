@@ -10,12 +10,23 @@ import type { SequencedBatch } from '../protocol.ts'
 // server), up = POST to the same room (so the socket can hibernate).
 export function partyTransport(opts: { host: string; room: string; party?: string }): Transport {
   const party = opts.party ?? 'main'
-  const socket = new PartySocket({ host: opts.host, room: opts.room, party })
+  let lastSeq: number | undefined // highest seq applied; drives delta reconnect
+  const socket = new PartySocket({
+    host: opts.host,
+    room: opts.room,
+    party,
+    // re-evaluated on every (re)connect: ask only for what we missed.
+    query: () => (lastSeq === undefined ? {} : { since: String(lastSeq) }),
+  })
   const local = /^(localhost|127\.|\[?::1)/.test(opts.host)
   const writeUrl = `${local ? 'http' : 'https'}://${opts.host}/parties/${party}/${opts.room}`
   return {
     subscribe(onBatch) {
-      const handler = (e: MessageEvent) => onBatch(JSON.parse(e.data) as SequencedBatch)
+      const handler = (e: MessageEvent) => {
+        const batch = JSON.parse(e.data) as SequencedBatch
+        if (typeof batch.seq === 'number') lastSeq = Math.max(lastSeq ?? 0, batch.seq)
+        onBatch(batch)
+      }
       socket.addEventListener('message', handler)
       return () => socket.removeEventListener('message', handler)
     },

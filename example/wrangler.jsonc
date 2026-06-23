@@ -1,0 +1,10 @@
+{
+  // the room DO serves both the WebSocket and POST /write, on :8787
+  "name": "party-db-example",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-01-01",
+  "durable_objects": {
+    "bindings": [{ "name": "Main", "class_name": "Main" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Main"] }]
+}
