@@ -8,50 +8,51 @@
 //   down  = hibernatable WebSockets (ctx.acceptWebSocket); cheap to hold open.
 //   up    = POST /write; wakes the DO, runs accept-and-ack, broadcasts, replies.
 //
-// Wiring to a concrete server (partyserver `Server`) is left out; this captures
-// the accept loop. Open questions live in unspecified.md.
+// The seq is NOT free: we mint it, but the DO makes it cheap. Keep an append-only
+//   _oplog(seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, op JSON)
+// and, in ONE SQLite transaction per batch:
+//   1. apply each op to the real table with RETURNING * -> the *resolved* row
+//      (db defaults, generated columns, server ids)
+//   2. insert the resolved op into _oplog -> AUTOINCREMENT assigns seq
+//   3. COMMIT. a throw (constraint) fails the POST; nothing is broadcast.
+// Because a DO is single-threaded + transactional, the _oplog rowid IS a total
+// commit order. The resolved+sequenced batch is then broadcast AND acked.
+//
+// Wiring to a concrete server (partyserver `Server`) is left out. Open questions
+// live in unspecified.md.
 
-import { applyBatch, type ChannelSink } from '../interpreter.ts'
 import type { SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
 
 export type ServerCollection = {
-  // the server-side sink — same four methods clients expose, but backed by
-  // SQLite. A failing commit (constraint, schema) is how the server rejects.
-  sink: ChannelSink
-  // pull rows the commit resolved differently than submitted (db defaults,
-  // server-assigned ids). Empty when client-minted UUIDs are authoritative.
-  resolved?: (batch: SequencedBatch) => WriteBatch | undefined
+  // Apply a batch inside one storage transaction and return the resolved,
+  // sequenced batch (ops carry post-commit values; seq from the _oplog rowid).
+  // Throws on a failed commit — that rejection is how the server says "no".
+  apply: (batch: WriteBatch) => SequencedBatch
 }
 
 export class ControlledCore {
-  private seqByChannel = new Map<string, number>()
-
   constructor(
     private collections: Map<string, ServerCollection>,
-    private broadcast: (batch: SequencedBatch) => void, // → all hibernating sockets
+    private broadcast: (batch: SequencedBatch) => void, // -> all hibernating sockets
   ) {}
 
-  // POST /write handler body. Accept-and-ack: apply to our own collection first.
-  async write(body: WriteBatch[]): Promise<WriteAck> {
-    const ack: WriteAck = { accepted: [], changed: [] }
+  // POST /write handler body. Accept-and-ack via our own storage-backed sink.
+  // The stream carries the resolved rows; the ack just hands back the match
+  // tokens (seq) so the caller can await settlement. `changed` is optional and
+  // only filled for callers that want resolved rows without the stream.
+  async write(body: WriteBatch[], opts?: { includeChanged?: boolean }): Promise<WriteAck> {
+    const ack: WriteAck = { accepted: [] }
     for (const incoming of body) {
       const target = this.collections.get(incoming.channel)
       if (!target) throw new Error(`unknown channel: ${incoming.channel}`)
 
-      const seq = (this.seqByChannel.get(incoming.channel) ?? 0) + 1
-      const batch: SequencedBatch = { channel: incoming.channel, ops: incoming.ops, seq }
+      // applies + sequences in one transaction; throws -> POST fails, client
+      // rolls back its optimistic overlay, nothing broadcast.
+      const resolved = target.apply(incoming)
 
-      // apply to our SQLite-backed collection. If commit throws, the whole
-      // POST fails and nothing is broadcast — the client's optimistic state
-      // rolls back. (Whether a SQLite constraint the Zod schema missed actually
-      // throws here is an open question — see unspecified.md.)
-      applyBatch(target.sink, batch)
-
-      this.seqByChannel.set(incoming.channel, seq)
-      this.broadcast(batch) // fan out to every hibernating WS in the room
-      ack.accepted.push({ channel: incoming.channel, seq })
-      const changed = target.resolved?.(batch)
-      if (changed) ack.changed!.push(changed)
+      this.broadcast(resolved) // fan out the resolved row to the room
+      ack.accepted.push({ channel: resolved.channel, seq: resolved.seq })
+      if (opts?.includeChanged) (ack.changed ??= []).push(resolved)
     }
     return ack
   }

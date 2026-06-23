@@ -16,19 +16,32 @@ export type WriteBatch<T = unknown> = {
   ops: WriteEvent<T>[]
 }
 
-// What a batch becomes once the authority has accepted + ordered it.
-// `seq` is per-channel (see unspecified.md → "Ordering").
+// The ordering token = the authority's OWN commit-log position. Opaque, but
+// monotonically comparable within a channel.
+//   - Durable Object: an integer (the _oplog AUTOINCREMENT rowid)
+//   - Postgres: a WAL LSN (string)
+// Hence not just `number`. See unspecified.md → "seq is a commit-log cursor".
+export type Cursor = number | string
+
+// What a batch becomes once the authority has accepted + ordered it. The ops
+// here are the *resolved* rows (post-commit: db defaults, generated columns),
+// which is what every consumer applies.
 export type SequencedBatch<T = unknown> = WriteBatch<T> & {
-  seq: number
+  seq: Cursor
   // sentinel: this channel's backlog has been fully replayed to you.
   ready?: boolean
 }
 
 // Reply to POST /write in controlled mode (the accept-and-ack).
+// The ack's job is to hand back the match token so the caller's handler can
+// await seq appearing on the down-stream (awaitTxId-style) and then resolve.
+// The resolved data itself arrives via the stream like everyone else's, so
+// `changed` is an OPTIONAL latency optimization (e.g. for a caller that holds
+// no stream subscription).
 export type WriteAck = {
   // the seq assigned to each accepted batch, in submit order
-  accepted: { channel: string; seq: number }[]
-  // server-resolved values when they differ from what the client sent
-  // (db defaults, server-assigned ids...). Empty when client-minted ids win.
-  changed?: WriteBatch[]
+  accepted: { channel: string; seq: Cursor }[]
+  // optional: resolved rows, when the caller wants them without waiting for the
+  // stream. Empty when client-minted ids win and there are no generated cols.
+  changed?: SequencedBatch[]
 }
