@@ -27,20 +27,15 @@ function handlersFor<T extends object>(client: SyncClient, channel: string) {
     const ack = await client.send(channel, ops)
     await Promise.all(ack.accepted.map((a) => client.waitForSeq(a.channel, a.seq)))
   }
-  return {
-    onInsert: ({ transaction }: any) =>
-      persist(transaction.mutations.map((m: any) => ({ type: 'insert', value: m.modified }))),
-    onUpdate: ({ transaction }: any) =>
-      persist(
-        transaction.mutations.map((m: any) => ({
-          type: 'update',
-          value: m.modified,
-          previousValue: m.original,
-        })),
-      ),
-    onDelete: ({ transaction }: any) =>
-      persist(transaction.mutations.map((m: any) => ({ type: 'delete', value: m.original }))),
-  }
+  const toEvent = (type: WriteEvent<T>['type'], m: any): WriteEvent<T> =>
+    type === 'delete'
+      ? { type, value: m.original }
+      : type === 'update'
+        ? { type, value: m.modified, previousValue: m.original }
+        : { type, value: m.modified }
+  const handler = (type: WriteEvent<T>['type']) => ({ transaction }: any) =>
+    persist(transaction.mutations.map((m: any) => toEvent(type, m)))
+  return { onInsert: handler('insert'), onUpdate: handler('update'), onDelete: handler('delete') }
 }
 
 // internal: wire N collection configs onto one SyncClient.

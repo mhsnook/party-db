@@ -18,8 +18,9 @@ export function partyTransport(opts: { host: string; room: string; party?: strin
     // re-evaluated on every (re)connect: ask only for what we missed.
     query: () => (lastSeq === undefined ? {} : { since: String(lastSeq) }),
   })
-  const local = /^(localhost|127\.|\[?::1)/.test(opts.host)
-  const writeUrl = `${local ? 'http' : 'https'}://${opts.host}/parties/${party}/${opts.room}`
+  // match the page's scheme (https page -> https write URL); default to https off-browser.
+  const scheme = typeof location !== 'undefined' && location.protocol === 'http:' ? 'http' : 'https'
+  const writeUrl = `${scheme}://${opts.host}/parties/${party}/${opts.room}`
   return {
     subscribe(onBatch) {
       const handler = (e: MessageEvent) => {
@@ -53,7 +54,7 @@ export function createPartyDb<C extends PartyCollectionConfig<any>[]>(
     db,
     client,
     get isConnecting() {
-      return client.isConnecting()
+      return transport.isConnecting?.() ?? false
     },
   }
 }
