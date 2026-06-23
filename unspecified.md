@@ -20,6 +20,10 @@ items into **Decided** when they settle. This is the decision record for
 - **There is always an ack — it's the write's HTTP response.** DO-controlled:
   the `POST /write` reply (carries `seq`). (Supabase ride-along, if ever built:
   the `insert().select()` reply.) "Settlement" is the later arrival on the stream.
+- **Reconnect is a delta, not a re-snapshot.** The client tracks its highest
+  applied `seq` and sends `?since=<seq>` on every (re)connect (partysocket
+  `query` fn, re-evaluated per connect); the server replays `_oplog WHERE seq >
+  since`. A fresh client (no `since`) gets a full snapshot + `ready`.
 - **Wire format = TanStack DB's `write()` arg.** `WriteEvent = Omit<ChangeMessage, 'key'>`.
   Key is derived from `value` via getKey, never sent.
 - **Multiplex by `channel`** (= table name). One transport, N collections. The
