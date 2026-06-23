@@ -1,0 +1,26 @@
+{
+  "name": "party-db",
+  "version": "0.0.0",
+  "private": true,
+  "description": "MOCK / PROPOSAL — multiplexed TanStack DB collection sync over a single transport (Durable Object WS, or PostgREST SSE). Not wired into scenetest-cloud; lives here for problem-space context, destined for its own monorepo.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client/index.ts",
+    "./server": "./src/server/index.ts",
+    "./protocol": "./src/protocol.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@tanstack/db": "*",
+    "@standard-schema/spec": "*",
+    "partysocket": "*",
+    "partyserver": "*"
+  },
+  "peerDependenciesMeta": {
+    "partysocket": { "optional": true },
+    "partyserver": { "optional": true }
+  }
+}
