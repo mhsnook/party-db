@@ -180,6 +180,16 @@ items into **Decided** when they settle. This is the decision record for
   `subscribe(channels[])` control message so the server sends only relevant
   batches + backlog. Matters as channel count grows.
 
+### Cross-channel atomic writes (wire-ready, not exposed)
+- The wire + server already accept `WriteBatch[]` (multiple channels in one POST),
+  but the client API never sends more than one batch — each collection handler
+  calls `send` independently. So a "add post AND tag it" write spanning `posts` +
+  `post_tags` is NOT atomic today, despite the protocol supporting it.
+- **TODO:** to realize it, let the collection factory submit several channels in
+  one POST (a TanStack DB multi-collection transaction → one `WriteBatch[]`), and
+  define partial-failure semantics for a multi-element body (all-or-nothing).
+  Single-channel multi-op batches ARE atomic already (one `transactionSync`).
+
 ### Ordering scope
 - Per-channel seq chosen. **TODO:** revisit if collections need cross-collection
   atomicity / total order (would push toward a global seq and couple channels).

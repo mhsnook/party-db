@@ -21,9 +21,14 @@ export type TableDef = { name: string; key: string }
 export class PartyDbServer<Env = unknown> extends Server<Env> {
   static options = { hibernate: true }
   collections: TableDef[] = []
+  private tables = new Map<string, TableDef>()
 
   private get sql() {
     return this.ctx.storage.sql
+  }
+
+  private send(conn: Connection, batch: SequencedBatch) {
+    conn.send(JSON.stringify(batch))
   }
 
   onStart() {
@@ -35,6 +40,7 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
        )`,
     )
     for (const c of this.collections) {
+      this.tables.set(c.name, c)
       this.sql.exec(`CREATE TABLE IF NOT EXISTS "${c.name}" (k TEXT PRIMARY KEY, data TEXT NOT NULL)`)
     }
   }
@@ -53,13 +59,11 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
       .exec(`SELECT seq, channel, ops FROM _oplog WHERE seq > ? ORDER BY seq`, since)
       .toArray()
     for (const r of rows) {
-      conn.send(
-        JSON.stringify({
-          channel: r.channel as string,
-          seq: Number(r.seq),
-          ops: JSON.parse(r.ops as string),
-        } satisfies SequencedBatch),
-      )
+      this.send(conn, {
+        channel: r.channel as string,
+        seq: Number(r.seq),
+        ops: JSON.parse(r.ops as string),
+      })
     }
   }
 
@@ -69,7 +73,7 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
     for (const c of this.collections) {
       const rows = this.sql.exec(`SELECT data FROM "${c.name}"`).toArray()
       const ops = rows.map((r) => ({ type: 'insert' as const, value: JSON.parse(r.data as string) }))
-      conn.send(JSON.stringify({ channel: c.name, seq, ops, ready: true } satisfies SequencedBatch))
+      this.send(conn, { channel: c.name, seq, ops, ready: true })
     }
   }
 
@@ -79,10 +83,9 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
     const body = (await req.json()) as WriteBatch[]
     const ack: WriteAck = { accepted: [] }
     for (const batch of body) {
-      if (!this.collections.some((c) => c.name === batch.channel)) {
-        return new Response(`unknown channel: ${batch.channel}`, { status: 400 })
-      }
-      const seq = this.accept(batch)
+      const def = this.tables.get(batch.channel)
+      if (!def) return new Response(`unknown channel: ${batch.channel}`, { status: 400 })
+      const seq = this.accept(def, batch)
       // inline broadcast before responding: keeps broadcast order == seq order.
       this.broadcast(JSON.stringify({ ...batch, seq } satisfies SequencedBatch))
       ack.accepted.push({ channel: batch.channel, seq })
@@ -91,8 +94,7 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
   }
 
   // apply one batch atomically and return its assigned seq.
-  private accept(batch: WriteBatch): number {
-    const def = this.collections.find((c) => c.name === batch.channel)!
+  private accept(def: TableDef, batch: WriteBatch): number {
     let seq = 0
     this.ctx.storage.transactionSync(() => {
       for (const op of batch.ops) {
@@ -108,8 +110,16 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
           )
         }
       }
-      this.sql.exec(`INSERT INTO _oplog (channel, ops) VALUES (?, ?)`, batch.channel, JSON.stringify(batch.ops))
-      seq = Number(this.sql.exec(`SELECT last_insert_rowid() AS id`).one().id)
+      // RETURNING gives us the assigned seq without a second round-trip.
+      seq = Number(
+        this.sql
+          .exec(
+            `INSERT INTO _oplog (channel, ops) VALUES (?, ?) RETURNING seq`,
+            batch.channel,
+            JSON.stringify(batch.ops),
+          )
+          .one().seq,
+      )
     })
     return seq
   }
