@@ -1,64 +1,95 @@
 # party-db (MOCK / PROPOSAL)
 
-> Status: **mock package, not wired into scenetest-cloud.** It lives in this repo
-> only because this is where the problem-space context is. The intent is to lift
-> it into its own monorepo later (a server-side partyserver wrapper + this
-> client). Name is a placeholder.
+> Status: **mock package, not wired into scenetest-cloud.** It lives here for the
+> problem-space context; destined for its own monorepo later. Name is a placeholder.
 
-Ship TanStack DB change directives over a single transport and have every
-consumer apply them to their own TanStack DB collections. One socket, **many
-collections multiplexed** by a `channel` (= table name).
+Live TanStack DB collections over a single PartyKit/Durable Object room. You
+`insert()` on the client, it POSTs to the room's `/write`, the DO records it in
+its own SQLite and party-fans-it-out over a hibernatable WebSocket, and every
+listening client applies it to the same collection.
 
-The wire payload is, deliberately, *exactly* what TanStack DB's sync `write()`
-accepts — `Omit<ChangeMessage, 'key'>`. So there's almost no translation on
-either end, and **client and server run the same interpreter** over the same
-bytes. If it applies in one place it applies everywhere.
+Scope is deliberately **one mode**: **DO-controlled**. The DO is the authority
+(its SQLite is the persistence layer) and an otherwise-transparent partyserver.
+Other modes (trusting relay, PostgREST/SSE, Supabase Realtime ride-along) are
+*documented but not built* — see [`unspecified.md`](./unspecified.md).
 
-## The primitives (stable; change sparingly)
+## The deal
+
+- **Wire format = TanStack DB's `write()` arg** (`{ type, value }`), multiplexed
+  by `channel` (= table name), so one socket carries every collection.
+- **Client mints UUIDs.** Rows are stored server-side as JSON blobs keyed by PK,
+  so the resolved row always equals the sent row — no DDL, no `RETURNING`, no
+  reconciliation.
+- **`seq`** comes from the DO's `_oplog` AUTOINCREMENT (a clean total order,
+  because a DO is single-threaded). The write's HTTP response is the **ack**
+  (carries `seq`); the same batch arriving on the socket is **settlement**.
+- **Optimistic, flicker-free.** `insert()` applies optimistically; the handler
+  awaits its `seq` on the stream before resolving, so the overlay drops straight
+  onto the synced row.
+
+## Client
+
+```ts
+import { createPartyDb, partyTransport, definePartyCollection } from 'party-db/client'
+import { z } from 'zod'
+
+const todoSchema = z.object({ id: z.string(), text: z.string(), done: z.boolean() })
+
+const transport = partyTransport({ host: 'my-app.partykit.dev', room: 'team-42' })
+const { db, isConnecting } = createPartyDb(transport, [
+  definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema }),
+  definePartyCollection({ name: 'lists', key: 'id' }),
+])
+
+// db.todos is a normal TanStack DB collection.
+db.todos.insert({ id: crypto.randomUUID(), text: 'ship it', done: false })
+// -> optimistic locally -> POST /write -> ack(seq) -> arrives on socket -> settled.
+// every other client in 'team-42' sees it land too.
+```
+
+That's the surface: a transport + some collection configs.
+
+## Server (Cloudflare Worker)
+
+```ts
+import { PartyDbServer } from 'party-db/server'
+import { routePartykitRequest } from 'partyserver'
+
+// one room class serves BOTH the WebSocket and POST /write.
+export class Main extends PartyDbServer {
+  collections = [
+    { name: 'todos', key: 'id' },
+    { name: 'lists', key: 'id' },
+  ]
+}
+
+export default {
+  fetch(req: Request, env: Env) {
+    return routePartykitRequest(req, env) ?? new Response('not found', { status: 404 })
+  },
+}
+```
+
+```jsonc
+// wrangler.jsonc — the DO + SQLite binding
+{
+  "durable_objects": { "bindings": [{ "name": "Main", "class_name": "Main" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Main"] }],
+}
+```
+
+Host it, point clients at `host`/`room`, and the DOs spin up on demand — each one
+serving its room's socket and `/write`, persisting to its own SQLite.
+
+## Files
 
 | File | Role |
 | --- | --- |
-| `src/protocol.ts` | the wire contract: `WriteEvent`, `WriteBatch`, `SequencedBatch`, `WriteAck` |
-| `src/interpreter.ts` | `applyBatch(sink, batch)` — the shared multiplexing apply |
-| `src/client/sync-client.ts` | one down-stream + a registry routing batches per channel |
-| `src/client/collection.ts` | `createPartyDb` / `definePartyCollection` — the DX |
-| `src/client/transports.ts` | adapters: DO/WS, PostgREST/SSE, trusting WS-only |
-| `src/server/relay.ts` | trusting-mode dumb relay |
-| `src/server/controlled.ts` | controlled-mode accept-and-ack via a server-side collection |
+| `src/protocol.ts` | wire contract: `WriteEvent` / `WriteBatch` / `SequencedBatch` / `WriteAck` |
+| `src/interpreter.ts` | `applyBatch(sink, batch)` — shared apply (client + server) |
+| `src/client/sync-client.ts` | one stream + channel registry + `waitForSeq` settlement |
+| `src/client/collection.ts` | `definePartyCollection` + collection wiring |
+| `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
+| `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + DO SQLite |
 
-## Modes
-
-- **Trusting** — permissive pass-through. Server (or no server) just orders and
-  fans out; clients trust each other's logic and versions. WS-only, no ack,
-  clients mint UUIDs before sending.
-- **Controlled** — the server is the authority. It runs the same interpreter
-  against its **own** TanStack DB collection backed by real storage; a
-  successful commit *is* the accept-and-ack. Clients POST up, stream down.
-
-These are the same primitives with different glue.
-
-## Deploy targets
-
-1. **Durable Object** — down = hibernatable WebSocket (partyserver/partysocket),
-   up = `POST /write` to the same room, persistence = DO SQLite.
-2. **PostgREST / Supabase Edge** — down = SSE, up = `POST /write` (turns
-   `WriteEvent`s into PostgREST POST/PATCH/DELETE, or runs them straight against
-   Postgres — which makes Postgres the persistence layer as a side effect).
-
-## Intended DX
-
-```ts
-const users = definePartyCollection({ name: 'users', schema: usersSchema, key: 'id' })
-const posts = definePartyCollection({ name: 'posts', schema: postsSchema, key: 'id' })
-
-const client = new SyncClient(durableObjectTransport({ socket, writeUrl }))
-const { db } = createPartyDb(client, [users, posts])
-
-// db.users / db.posts are normal TanStack DB collections.
-// onInsert/onUpdate/onDelete are derived: they emit WriteEvents up the wire.
-```
-
-## Open questions
-
-Tracked in [`unspecified.md`](./unspecified.md) — a running design log. Read it
-before changing the protocol or the modes.
+Open questions live in [`unspecified.md`](./unspecified.md).

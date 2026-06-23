@@ -8,6 +8,18 @@ items into **Decided** when they settle. This is the decision record for
 
 ## Decided (for now)
 
+- **SCOPE: build only DO-controlled.** Other modes (trusting relay, PostgREST/SSE,
+  Supabase ride-along) are kept in this log as designs but are NOT built; their
+  code was removed to keep the surface focused. The DO is the authority and its
+  SQLite is the persistence layer behind an otherwise-transparent partyserver.
+- **Slim DO persistence = JSON blob per row + an `_oplog`.** Client mints UUIDs;
+  the server stores `(k TEXT PRIMARY KEY, data TEXT)` per collection — no per-table
+  DDL, no `RETURNING`, no column constraints. Resolved row == sent row, always.
+  Validation (if any) rides on the shared schema. The `_oplog` AUTOINCREMENT is
+  the seq + the replay source.
+- **There is always an ack — it's the write's HTTP response.** DO-controlled:
+  the `POST /write` reply (carries `seq`). (Supabase ride-along, if ever built:
+  the `insert().select()` reply.) "Settlement" is the later arrival on the stream.
 - **Wire format = TanStack DB's `write()` arg.** `WriteEvent = Omit<ChangeMessage, 'key'>`.
   Key is derived from `value` via getKey, never sent.
 - **Multiplex by `channel`** (= table name). One transport, N collections. The
@@ -83,10 +95,11 @@ items into **Decided** when they settle. This is the decision record for
   resolved batch to `ctx.getWebSockets()`; ack `{ seq }`.
 - `_oplog` stores **resolved** ops so backlog replay reproduces authoritative
   state. It is also the per-channel ordering.
-- **TODO (the strictness probe, was "non-central"):** does a SQLite constraint
-  the Zod schema missed actually throw at `commit()` and abort the POST, or does
-  TanStack DB swallow it? Decides whether SQLite is a real second validation
-  line or just persistence.
+- **Strictness probe — now mostly MOOT in the blob model.** We store JSON blobs
+  with upsert-by-PK, so there are no column constraints to violate; SQLite is
+  persistence, not a second validation line. If we later want server-side
+  validation, run the shared Zod schema in `accept()` before the write and 4xx on
+  failure. (Revisit only if we move to real typed columns + RETURNING.)
 - **TODO:** broadcast-before-ack vs after — either is fine (client matches by
   seq), confirm no ordering surprise for the posting client (it gets its own
   write on the stream too).
@@ -114,8 +127,9 @@ items into **Decided** when they settle. This is the decision record for
 - Sketched as `supabaseRealtimeTransport`. down = Supabase Realtime (managed
   logical-replication streaming); up = supabase-js / PostgREST writes. `createPartyDb`
   wires it like any other transport — only the Transport changes.
-- **No custom server, no custom ack, RLS = real auth/validation.** This is the
-  "skip a lot and ride on Supabase" path.
+- **No custom server, RLS = real auth/validation.** This is the "skip a lot and
+  ride on Supabase" path. The ack is NOT skipped — it's the `insert().select()`
+  HTTP response; what's skipped is *building* an ack server.
 - **Confirmed constraints (checked the payload + docs):**
   - Realtime payload = `{ schema, table, commit_timestamp, eventType, new, old,
     errors }`. **No lsn/txid.** So settlement matches on **primary key** (the
