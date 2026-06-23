@@ -3,5 +3,6 @@ export { createPartyDb, definePartyCollection, type PartyCollectionConfig } from
 export {
   durableObjectTransport,
   postgrestTransport,
+  supabaseRealtimeTransport,
   trustingSocketTransport,
 } from './transports.ts'

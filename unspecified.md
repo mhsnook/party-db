@@ -21,16 +21,44 @@ items into **Decided** when they settle. This is the decision record for
 - **`seq` = the authority's own commit-log position** (NOT a free-standing
   counter we invent). DO → `_oplog` AUTOINCREMENT rowid; Postgres → WAL LSN.
   Therefore `seq` is an opaque, monotonically-comparable **cursor** (`number |
-  string`), per channel. Backlog replayed on connect, terminated by a `ready`
-  sentinel per channel.
+  string`), per channel. Properties we actually rely on:
+  - **equality** — "have I seen seq N yet?" (this is all settlement/awaitTxId
+    needs; works for any opaque token, incl. a Supabase commit_timestamp).
+  - **order** — only for backlog/gap logic, and only via a *transport-specific
+    comparator*. Do NOT treat seq as a JS number: a PG LSN is 64-bit (> 2^53,
+    loses precision) and non-contiguous, so "gap = N+1 missing" is a DO-only
+    trick. On PG you trust the replication stream's own continuity instead.
 - **Schemas are shared by import. No `/schemas` API.** Define the Zod/Standard
-  Schema once, import on client and server. No version-hash handshake, no
-  untyped/dynamic mode. (Withholding schemas to save bytes while shipping a
-  100kb+ TanStack DB client is not worth it.)
-- **The stream carries resolved rows; the ack carries the match token.** The
-  authority resolves a write once (at commit, via `RETURNING`); that resolved op
-  flows to the oplog, the stream, and optionally the ack. The ack's required job
-  is to return `seq` so the caller's handler can await settlement.
+  Schema once, import on client and server. No untyped/dynamic mode, and (per
+  the latest call) **no reason left to build the schemas API at all** right now.
+  A **schema version-hash handshake** is worth adding *later* for drift
+  detection, but not needed yet. (Withholding schemas to save bytes while
+  shipping a 100kb+ TanStack DB client is not worth it.)
+- **The stream always carries `WriteEvent`s** (`{ type, value }`) with `seq`
+  attached — we are NOT inventing a format, we lean on the protocol throughout.
+  "Resolved" is *only* about the contents of `value`: post-commit it includes
+  DB-generated columns (defaults, `created_at`, serial ids). When the row is
+  fully client-authoritative (UUID PK, no generated cols) the resolved value ==
+  the sent value, i.e. literally "the same write with a seq." So "resolved row
+  vs write message" is a false dichotomy — same shape, the only variable is
+  whether `value` carries DB-generated fields.
+- **The ack carries the match token (`seq`).** The resolved data arrives via the
+  stream like everyone else's; `changed` in the ack is an optional latency
+  optimization (e.g. a caller with no stream sub, or to catch a Zod-vs-DB shape
+  mismatch early).
+- **Server authority = raw SQLite, not TanStack DB.** On the DO the sink is
+  `ctx.storage.sql` driven by a small generic `WriteEvent`→SQL adapter (the same
+  `{table, key, type, value}` mapping as the PostgREST transport, different
+  driver). TanStack DB — including its 0.6 **DO SQLite persistence adapter** — is
+  a client-side *cache*, not a constraint/RETURNING authority. The "same
+  interpreter both sides" holds at the *protocol* level (both speak WriteEvents);
+  the client's sink is a TanStack DB collection, the server's sink is SQL.
+- **DO broadcast is synchronous-ish and done inline.** `ws.send()` enqueues to
+  the outbound buffer without awaiting client receipt; broadcasting is a sync
+  loop over `ctx.getWebSockets()`, cost O(connections in room). Do it **inline
+  right after commit, before responding** — that keeps broadcast order == seq
+  order trivially (deferring via waitUntil/microtask risks a concurrent /write
+  broadcasting a later seq first). It does not wait on the network.
 
 ## Open
 
@@ -78,11 +106,27 @@ items into **Decided** when they settle. This is the decision record for
     `Prefer: return=representation` (insert→POST, update→PATCH `?{key}=eq.{id}`,
     delete→DELETE `?{key}=eq.{id}`). PostgREST gives RLS/auth for free. (Could
     also write directly to PG; doesn't affect the stream.)
-- **TODO (Supabase):** Supabase Realtime IS logical-replication row streaming —
-  probably use it as the down-transport instead of running our own slot.
 - **TODO (Supabase Edge longevity):** Edge Functions are request-scoped; bad host
   for a long-lived replication slot or long SSE. `/write` on Edge is fine; the
   stream wants Supabase Realtime or a separate long-running consumer. Unresolved.
+
+### Supabase ride-along mode (minimal, very attractive)
+- Sketched as `supabaseRealtimeTransport`. down = Supabase Realtime (managed
+  logical-replication streaming); up = supabase-js / PostgREST writes. `createPartyDb`
+  wires it like any other transport — only the Transport changes.
+- **No custom server, no custom ack, RLS = real auth/validation.** This is the
+  "skip a lot and ride on Supabase" path.
+- **Confirmed constraints (checked the payload + docs):**
+  - Realtime payload = `{ schema, table, commit_timestamp, eventType, new, old,
+    errors }`. **No lsn/txid.** So settlement matches on **primary key** (the
+    client-minted UUID), not seq. We use `commit_timestamp` as the opaque cursor.
+  - Realtime **does not replay missed events**. On reconnect: re-snapshot via a
+    normal query, then resume the live stream. We trade away durable
+    replay-from-cursor (acceptable under "clever non-promises").
+- **TODO:** an op that doesn't change a row (no-op update) emits no Realtime
+  event → settlement-by-PK could hang. Need a timeout / fallback refetch.
+- **TODO:** insert returns the resolved row via `.select()` — feed it back as the
+  optional `changed` if a caller wants it without waiting for Realtime.
 - **TODO:** generated/serial PKs on PG need the resolved row to swap the
   optimistic id without a flicker — prefer client UUIDs to sidestep (see IDs).
 
