@@ -1,8 +1,11 @@
 // CONTROLLED MODE server, Durable Object flavor. SKETCH.
 //
 // The big idea: the server runs the SAME interpreter as clients, but its sink is
-// a real TanStack DB collection backed by DO SQLite. "Apply the batch to my own
-// collection; if the commit works, it's accepted" — that IS the accept-and-ack.
+// the DO's own SQLite (ctx.storage.sql) via a small generic WriteEvent->SQL
+// adapter — NOT a TanStack DB collection. TanStack DB (even its 0.6 DO SQLite
+// persistence adapter) is a client-side *cache*; the SQL guarantees we lean on
+// (constraints, RETURNING, AUTOINCREMENT seq) come from SQLite itself.
+// "Apply the batch; if the commit works, it's accepted" — that IS the ack.
 //
 // Topology (optimised for DO + hibernation):
 //   down  = hibernatable WebSockets (ctx.acceptWebSocket); cheap to hold open.
