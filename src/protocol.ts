@@ -20,7 +20,7 @@ export type WriteBatch<T = unknown> = {
 // monotonically comparable within a channel.
 //   - Durable Object: an integer (the _oplog AUTOINCREMENT rowid)
 //   - Postgres: a WAL LSN (string)
-// Hence not just `number`. See unspecified.md → "seq is a commit-log cursor".
+// Hence not just `number`. See docs/unspecified.md → "seq is a commit-log cursor".
 export type Cursor = number | string
 
 // What a batch becomes once the authority has accepted + ordered it. The ops
