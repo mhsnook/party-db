@@ -11,6 +11,28 @@ Append, don't prune; promote an item to `architecture.md` once it's decided.
 - **Subscription / filtering.** Today the server broadcasts every channel and the
   client ignores unknowns. A `subscribe(channels[])` control message would let the
   server send only relevant batches + backlog. Matters as channel count grows.
+  - **Read-level slicing (Electric-style shapes, the tractable subset).** TanStack
+    DB's `where` clauses compile to a **plain-data, serializable AST** — `Func {
+    name, args }`, `PropRef { path }`, `Value { value }`, *no closures* (verified in
+    `@tanstack/db` `query/ir.ts`) — and the lib ships `parseWhereExpression(expr,
+    handlers)` to walk it with per-operator handlers. So a client can ship its slice
+    predicate up (in the `subscribe` / reconnect query), and the server turns the
+    same AST into **(a)** a SQL `WHERE` for the snapshot + `?since` backlog and
+    **(b)** an in-memory predicate for per-socket fan-out. Changing a slice = a new
+    `since` + `where` → a fresh delta. Gets us Electric-style read slicing without
+    much new machinery — *for the row-local subset*. Boundaries:
+    - **Allow-list the sliceable columns/operators.** A client-supplied `WHERE` run
+      raw is an injection / over-exposure vector; restrict to declared columns and
+      parameterize the `Value`s. Only `eq/gt/gte/lt/in/and/or`-shaped predicates over
+      columns + literals serialize; arbitrary JS predicates don't (they aren't in the
+      IR).
+    - **Immutable slice column = easy; mutable = the shape-membership problem.** If a
+      row can change *out of* a socket's slice (its `lang` is edited), that socket
+      needs a synthetic "leave"/delete it would otherwise never see — the classic
+      Electric move-in/move-out. Trivial for immutable slice keys (a post's language,
+      a created-at date); real work otherwise. Start with immutable-keyed slices.
+    - **No joins / aggregates.** Cross-collection or rollup slices stay in the
+      "abandon realtime → `queryCollection`" bucket (see `collection-types.md`).
 - **Auth.** Bearer/session on both the stream open and the POST. scenetest-cloud's
   model already gives each room a bearer; mirror that.
 - **Ordering scope.** `seq` is global per room (one `_oplog`). Fine today. Revisit
@@ -49,3 +71,29 @@ Kept as designs so the protocol stays honest about where it could go.
     client UUID); and it does not replay missed events, so reconnect = re-snapshot.
   - **Supabase Edge** is request-scoped — fine for `/write`, a poor host for a
     long-lived replication slot or SSE. Stream wants Realtime or a separate consumer.
+  - **Preview ↔ echo correlation without touching user tables.** When the echo is the
+    WAL, the `/write` ack is only an *optimistic preview* (best-effort yielded rows);
+    the WAL is the authoritative, complete echo (it carries trigger/cascade/default
+    rows the write never named). Correlate the two with
+    `pg_logical_emit_message(true, 'wid', <writeId>)` *inside* the `/write`
+    transaction — it rides in-band in that transaction's WAL block (PG14+ `pgoutput`
+    streams logical messages), so no `wid` column on user tables. On echo the client
+    swaps its overlay for the canonical rows and **drops any optimistic row the WAL
+    didn't confirm** (self-heals an over-yield, which is always an app bug). So
+    "yield your changed rows" is a UI-latency optimization, not a correctness
+    requirement.
+  - **FK-ordering guarantee.** Referential validity in Postgres ⇒ causally-safe apply
+    order in the WAL: a child can't appear before its parent (Postgres wouldn't have
+    let it commit). Apply each WAL transaction atomically so live-query joins never
+    see a partial state. This makes the WAL path *more* safely-ordered than the raw
+    write-payload, not less.
+  - **What keeps this a dumb adapter, not a CDC engine.** The cost driver is
+    cross-room *read*-sharing, not the database choice: within-room write+read (even
+    on Postgres) is trivial (write synchronously, ack, echo from own log); a table
+    *read by many rooms* is what pulls in a central WAL-consumer/demux service (slot
+    management — a lagging slot pins WAL and fills disk — + LSN↔`wid` correlation +
+    consistent snapshot↔LSN handoff). Two constraints keep even that tractable:
+    (a) partition tables so exactly one DO writes each partition (the writer stays the
+    serialization authority — no multi-writer conflict reconciliation); (b) prefer
+    append-only record tables. A single transaction spanning collections on
+    *different* persistence targets can't be atomic → reject/warn.
