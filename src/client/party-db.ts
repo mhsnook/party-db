@@ -18,9 +18,6 @@ export function partyTransport(opts: { host: string; room: string; party?: strin
     // re-evaluated on every (re)connect: ask only for what we missed.
     query: () => (lastSeq === undefined ? {} : { since: String(lastSeq) }),
   })
-  // match the page's scheme (https page -> https write URL); default to https off-browser.
-  const scheme = typeof location !== 'undefined' && location.protocol === 'http:' ? 'http' : 'https'
-  const writeUrl = `${scheme}://${opts.host}/parties/${party}/${opts.room}`
   return {
     subscribe(onBatch) {
       const handler = (e: MessageEvent) => {
@@ -32,11 +29,16 @@ export function partyTransport(opts: { host: string; room: string; party?: strin
       return () => socket.removeEventListener('message', handler)
     },
     async send(batches) {
-      const res = await fetch(writeUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(batches),
-      })
+      // PartySocket.fetch builds the party URL for us (host/scheme/route) — the
+      // same room the socket is connected to.
+      const res = await PartySocket.fetch(
+        { host: opts.host, room: opts.room, party },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(batches),
+        },
+      )
       if (!res.ok) throw new Error(`write failed: ${res.status} ${await res.text()}`)
       return res.json()
     },
