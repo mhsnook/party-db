@@ -1,13 +1,42 @@
 # party-db
 
-> Status: **incubating package, not wired into scenetest-cloud.** It lives here for
-> the problem-space context; destined for its own monorepo later. Name is a placeholder.
-> The design is settled — see [`architecture.md`](./architecture.md).
+> Status: This is a version 0.0.0, just kind of incubating the idea.
+> The design is not really settled — see [`architecture.md`](./architecture.md)
+> and [`unspecified.md`](./unspecified.md).
 
-Live TanStack DB collections over a single PartyKit/Durable Object room. You
-`insert()` on the client, it POSTs to the room's `/write`, the DO records it in
-its own SQLite and party-fans-it-out over a hibernatable WebSocket, and every
-listening client applies it to the same collection.
+Live, persisted TanStack DB collections synced over a Durable Object, powered
+by PartyKit wherever possible, landing in Tanstack-native DB Collections, and
+with an extremely simple DX, and even a few capability enhancements for batches
+/transactions whose grouping and acknowledgement survive the trip to the server
+and back, and the fan-out to the websocket's subscribers.
+
+The example app in `/example` shows how much of this is just a thing wrapping
+the excellent work of PartyKit and Tanstack DB.
+
+The transport is handled mostly by PartyKit's _PartyServer_ (server) and
+_PartySocket_ (client), with a bit of extra logic on the server to ensure
+ordering, backfill, and acknowledged writes, and on the client to make the DX
+buttery smooth: just pass it your PartySocket connection and the schemas/tables
+you want to pull off the wire, and it returns a map of all your Tanstack
+Collections, pre-wired for onInsert/onUpdate/onDelete, optimistic and confirmed
+writes, and a utility function to give you cross-collection transactions whose
+bundling survives the entire trip to the server and out to all connected clients
+(not possible without our batch/unroll logic).
+
+Clients create their collections all at once using `createPartyDb()`, passing in
+the Zod schemas for their collections and the connection info for the PartyServer
+that's serving them.
+
+When the server makes edits, it fans them out to clients running PartySocket in
+the exact format of Tanstack DB's `write()` interface (the final step in making
+any change inside a collection). That lets us keep a simple SQLite interpreter of
+the write format on the server and apply the very same payload on every client.
+
+So the whole loop is: you `insert()` on the client, it POSTs to the room's
+`/write` channel using the same data format as Tanstack DB's `write()` function;
+the DO records it with its own persistence layer (SQLite by default), then
+party-fans-it-out over a hibernatable WebSocket; and every listening client
+applies that same exact `write` to its own copy of the collection.
 
 Scope is deliberately **one mode**: **DO-controlled**. The DO is the authority
 (its SQLite is the persistence layer) and an otherwise-transparent partyserver.
@@ -50,27 +79,6 @@ db.todos.insert({ id: crypto.randomUUID(), text: 'ship it', done: false })
 
 That's the surface: a transport + some collection configs.
 
-### Cross-collection atomic writes
-
-`db.todos` are first-class TanStack DB collections, so cross-collection atomic
-writes use TanStack's own `createTransaction` — we add no vocabulary. The only
-thing that's ours is `persist` (the mutationFn that speaks our `/write` + seq
-settlement); a single `collection.insert()` routes through the exact same
-function.
-
-```ts
-import { createTransaction } from '@tanstack/db'
-
-const { db, persist } = createPartyDb(transport, [posts, postTags])
-
-const tx = createTransaction({ mutationFn: persist })
-tx.mutate(() => {
-  db.posts.insert({ id: pid, title: 'hi' })
-  db.post_tags.insert({ id: crypto.randomUUID(), postId: pid, tag: 'intro' })
-})
-await tx.isPersisted.promise // both land in one POST, or neither does
-```
-
 ## Server (Cloudflare Worker)
 
 ```ts
@@ -102,6 +110,29 @@ export default {
 
 Host it, point clients at `host`/`room`, and the DOs spin up on demand — each one
 serving its room's socket and `/write`, persisting to its own SQLite.
+
+## Cross-collection atomic writes
+
+`db.todos` are first-class TanStack DB collections, so cross-collection atomic
+writes use TanStack's own `createTransaction`. But if you want to do multi-table
+transactions whose Transaction Envelope survives the entire round trip to the
+server and out to subscribers, you can use this `persist` function as your
+mutationFn. It sends your array of writes through the same steps: `/write` + seq
++ acknowledge + settle, the same as with any `collection.update`, allowing the
+transaction envelope to keep its shape from client -> server -> subscribers.
+
+```ts
+import { createTransaction } from '@tanstack/db'
+
+const { db, persist } = createPartyDb(transport, [posts, postTags])
+
+const tx = createTransaction({ mutationFn: persist })
+tx.mutate(() => {
+  db.posts.insert({ id: pid, title: 'hi' })
+  db.post_tags.insert({ id: crypto.randomUUID(), postId: pid, tag: 'intro' })
+})
+await tx.isPersisted.promise // both land in one POST, or neither does
+```
 
 ## Files
 
