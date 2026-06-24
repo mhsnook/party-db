@@ -180,15 +180,22 @@ items into **Decided** when they settle. This is the decision record for
   `subscribe(channels[])` control message so the server sends only relevant
   batches + backlog. Matters as channel count grows.
 
-### Cross-channel atomic writes (wire-ready, not exposed)
-- The wire + server already accept `WriteBatch[]` (multiple channels in one POST),
-  but the client API never sends more than one batch — each collection handler
-  calls `send` independently. So a "add post AND tag it" write spanning `posts` +
-  `post_tags` is NOT atomic today, despite the protocol supporting it.
-- **TODO:** to realize it, let the collection factory submit several channels in
-  one POST (a TanStack DB multi-collection transaction → one `WriteBatch[]`), and
-  define partial-failure semantics for a multi-element body (all-or-nothing).
-  Single-channel multi-op batches ARE atomic already (one `transactionSync`).
+### Cross-channel atomic writes — DONE (via their primitive + our `persist`)
+- The capability is TanStack's (`createTransaction` + `tx.mutate` across
+  collections); the only thing we add is `persist`, the mutationFn that groups
+  `transaction.mutations` by channel → `WriteBatch[]` → POST → await every seq.
+- `persist` is the SAME function used for the per-collection handlers
+  (onInsert/onUpdate/onDelete), since a single insert is a one-mutation
+  transaction. No `write()` sugar, no shadow vocabulary.
+- Server commits the WHOLE POST body in one `transactionSync` → cross-channel
+  all-or-nothing, broadcast only after commit.
+- **PROBE before relying on it:** confirm an explicit `createTransaction` with a
+  `mutationFn` BYPASSES the collections' own onInsert/onUpdate/onDelete handlers
+  (otherwise a cross-collection write double-POSTs: once per handler + once via
+  the mutationFn). Strongly expected, but unverified here.
+- **Deferred:** "write to a channel with no local collection loaded" — the only
+  thing `write()` would have added that this path can't. Separable niche helper
+  if ever wanted; not bundled into the core API.
 
 ### Ordering scope
 - Per-channel seq chosen. **TODO:** revisit if collections need cross-collection

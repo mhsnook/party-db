@@ -1,12 +1,19 @@
-// Turn a (name, schema, key) into a fully-wired TanStack DB collection: getKey,
-// the sync() that registers on the shared SyncClient, and the
-// onInsert/onUpdate/onDelete handlers — which are just thin wrappers that emit
-// WriteEvents up the wire and then await settlement.
+// Turn a (name, schema, key) into a fully-wired TanStack DB collection, and
+// expose the ONE thing that is genuinely ours: `persist` — a mutationFn that
+// turns a TanStack transaction's mutations into our /write batches and awaits
+// seq settlement.
+//
+// `persist` has the same `({ transaction })` shape TanStack hands to both
+// collection handlers and explicit-transaction mutationFns, so it serves both:
+//   - per-collection sugar:  collection.insert()  -> onInsert: persist
+//   - cross-collection atomic: createTransaction({ mutationFn: persist })
+// A single insert is just a one-mutation transaction; many collections become
+// many channel-groups in one POST. No new vocabulary — `persist` is the seam.
 
 import { createCollection, type Collection } from '@tanstack/db'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { SyncClient } from './sync-client.ts'
-import type { WriteEvent } from '../protocol.ts'
+import type { WriteBatch, WriteEvent } from '../protocol.ts'
 
 export type PartyCollectionConfig<T extends object> = {
   name: string // channel === table name
@@ -18,36 +25,48 @@ export function definePartyCollection<T extends object>(cfg: PartyCollectionConf
   return cfg
 }
 
-// onInsert/onUpdate/onDelete → WriteEvents → POST → await the assigned seq on the
-// stream before resolving. Resolving on settlement (not on the bare ack) keeps
-// the optimistic overlay through the "acked-but-not-streamed" window, so it drops
-// straight onto the synced row with no flicker.
-function handlersFor<T extends object>(client: SyncClient, channel: string) {
-  const persist = async (ops: WriteEvent<T>[]) => {
-    const ack = await client.send(channel, ops)
-    await Promise.all(ack.accepted.map((a) => client.waitForSeq(a.channel, a.seq)))
-  }
-  const toEvent = (type: WriteEvent<T>['type'], m: any): WriteEvent<T> =>
-    type === 'delete'
-      ? { type, value: m.original }
-      : type === 'update'
-        ? { type, value: m.modified, previousValue: m.original }
-        : { type, value: m.modified }
-  const handler = (type: WriteEvent<T>['type']) => ({ transaction }: any) =>
-    persist(transaction.mutations.map((m: any) => toEvent(type, m)))
-  return { onInsert: handler('insert'), onUpdate: handler('update'), onDelete: handler('delete') }
+function toEvent(m: any): WriteEvent {
+  if (m.type === 'delete') return { type: 'delete', value: m.original }
+  if (m.type === 'update') return { type: 'update', value: m.modified, previousValue: m.original }
+  return { type: 'insert', value: m.modified }
 }
 
-// internal: wire N collection configs onto one SyncClient.
+// the irreducible binding: mutations -> grouped-by-channel WriteBatch[] -> POST
+// -> await every assigned seq on the down-stream (flicker-free settlement).
+function makePersist(client: SyncClient, channelOf: Map<Collection<any>, string>) {
+  return async ({ transaction }: any) => {
+    const byChannel = new Map<string, WriteEvent[]>()
+    for (const m of transaction.mutations) {
+      const channel = channelOf.get(m.collection)
+      if (!channel) continue // a mutation on a collection we don't manage
+      const ops = byChannel.get(channel) ?? []
+      ops.push(toEvent(m))
+      byChannel.set(channel, ops)
+    }
+    const batches: WriteBatch[] = [...byChannel].map(([channel, ops]) => ({ channel, ops }))
+    if (!batches.length) return
+    const ack = await client.send(batches)
+    await Promise.all(ack.accepted.map((a) => client.waitForSeq(a.channel, a.seq)))
+  }
+}
+
+// internal: wire N collection configs onto one SyncClient. Returns the
+// collections plus the shared `persist` mutationFn.
 export function wireCollections(client: SyncClient, configs: PartyCollectionConfig<any>[]) {
+  const channelOf = new Map<Collection<any>, string>()
+  const persist = makePersist(client, channelOf)
   const db: Record<string, Collection<any>> = {}
   for (const cfg of configs) {
-    db[cfg.name] = createCollection({
+    const collection = createCollection({
       schema: cfg.schema as any,
       getKey: (item: any) => item[cfg.key],
       sync: { sync: (sink) => client.register(cfg.name, sink) },
-      ...handlersFor(client, cfg.name),
+      onInsert: persist,
+      onUpdate: persist,
+      onDelete: persist,
     })
+    channelOf.set(collection, cfg.name)
+    db[cfg.name] = collection
   }
-  return db
+  return { db, persist }
 }
