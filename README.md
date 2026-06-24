@@ -1,8 +1,8 @@
 # party-db
 
 > Status: This is a version 0.0.0, just kind of incubating the idea.
-> The design is not really settled — see [`architecture.md`](./architecture.md)
-> and [`unspecified.md`](./unspecified.md).
+> The design is not really settled — see [`architecture.md`](./docs/architecture.md)
+> and [`unspecified.md`](./docs/unspecified.md).
 
 Live, persisted TanStack DB collections synced over a Durable Object, powered
 by PartyKit wherever possible, landing in Tanstack-native DB Collections, and
@@ -41,7 +41,7 @@ applies that same exact `write` to its own copy of the collection.
 Scope is deliberately **one mode**: **DO-controlled**. The DO is the authority
 (its SQLite is the persistence layer) and an otherwise-transparent partyserver.
 Other modes (trusting relay, PostgREST/SSE, Supabase Realtime ride-along) are
-*documented but not built* — see [`unspecified.md`](./unspecified.md).
+*documented but not built* — see [`unspecified.md`](./docs/unspecified.md).
 
 ## The deal
 
@@ -145,5 +145,5 @@ await tx.isPersisted.promise // both land in one POST, or neither does
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + DO SQLite |
 
-Settled decisions and their rationale live in [`architecture.md`](./architecture.md);
-open questions and not-yet-built modes in [`unspecified.md`](./unspecified.md).
+Settled decisions and their rationale live in [`architecture.md`](./docs/architecture.md);
+open questions and not-yet-built modes in [`unspecified.md`](./docs/unspecified.md).

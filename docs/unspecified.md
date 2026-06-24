@@ -33,6 +33,14 @@ Append, don't prune; promote an item to `architecture.md` once it's decided.
       a created-at date); real work otherwise. Start with immutable-keyed slices.
     - **No joins / aggregates.** Cross-collection or rollup slices stay in the
       "abandon realtime → `queryCollection`" bucket (see `collection-types.md`).
+    - **The client owns its per-slice `since`.** A slice's cursor belongs to the
+      *client*, not the room: when you stop watching a slice you remember the `seq`
+      at which you dropped it, so re-subscribing is `?since=<that seq>` + the slice
+      `where` — a delta, never a re-snapshot. This is also what makes the mutable
+      move-out tractable from the client's side: it knows exactly the window it
+      missed and asks only for that. (Server still has to be able to *answer* "what
+      changed in this slice since N", which is the move-in/move-out work above; the
+      client side of it is just bookkeeping.)
 - **Auth.** Bearer/session on both the stream open and the POST. scenetest-cloud's
   model already gives each room a bearer; mirror that.
 - **Ordering scope.** `seq` is global per room (one `_oplog`). Fine today. Revisit
