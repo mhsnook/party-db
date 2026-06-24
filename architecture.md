@@ -1,7 +1,9 @@
 # party-db architecture
 
 The decision record. Each section is one settled decision and why. Open
-questions and not-yet-built modes live in [`unspecified.md`](./unspecified.md).
+questions and not-yet-built modes live in [`unspecified.md`](./unspecified.md); a
+survey of TanStack DB's other collection types and party-db's read-side
+capabilities lives in [`collection-types.md`](./collection-types.md).
 
 ## 0. Goal: Tanstack Collections sync via PartyServer
 
@@ -93,6 +95,18 @@ Why: with client-minted UUID keys the resolved row equals the sent row, so
 persistence is a blob upsert and the "resolved vs sent" distinction disappears.
 SQLite here is persistence, not a second validation layer.
 
+Note (controlled-mode evolution): the blob upsert is the *minimal* form of the
+commit — true while keys are client-minted UUIDs and the server runs no
+constraints. It stays exactly true for **trusting mode**, where the server only
+orders + applies and "if it applies on one DB client it applies on all of them."
+But the controlled-mode principle is not "store a blob"; it is **complete the
+commit and return the ack the way a web application does**. So when a collection
+opts into real validation / referential integrity, the server performs a genuine
+transactional commit — and the commit's *success* is the acceptance — instead of
+an unconditional upsert. That is a property of the commit-and-ack semantics, not
+of SQLite-vs-Postgres. See [`collection-types.md`](./collection-types.md) and the
+Postgres notes in [`unspecified.md`](./unspecified.md).
+
 ## 6. `seq` is the authority's commit-log position
 
 `seq` comes from the `_oplog` AUTOINCREMENT. Because the DO is single-threaded
@@ -163,8 +177,12 @@ so there is no double-write.
 
 On the server the sink is `ctx.storage.sql` driven by a small generic
 `WriteEvent`→SQL adapter. TanStack DB — including its 0.6 DO SQLite persistence
-adapter — is a client-side *cache*, not a constraint/RETURNING authority. "Same
-interpreter both sides" holds at the protocol level; the sinks differ.
+adapter — is a **client cache**: even when it runs *on the server*, it is a client
+*of* some upstream authority, not the authority itself. That is precisely why it
+cannot be the constraint/`RETURNING` authority or the persistence layer — and so
+why we skip trying to use it as the server sink, reaching for `ctx.storage.sql`
+(or a real database) directly. "Same interpreter both sides" holds at the protocol
+level; the sinks differ.
 
 ## Layering
 
