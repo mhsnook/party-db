@@ -77,50 +77,62 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
     }
   }
 
-  // controlled mode writes come over HTTP, not the (hibernating) socket.
+  // controlled mode writes come over HTTP, not the (hibernating) socket. The
+  // WHOLE body commits in one transaction, so a cross-collection write (e.g. a
+  // post + its tags) is all-or-nothing — matching the client's atomic intent.
   async onRequest(req: Request): Promise<Response> {
     if (req.method !== 'POST') return new Response('not found', { status: 404 })
     const body = (await req.json()) as WriteBatch[]
-    const ack: WriteAck = { accepted: [] }
+
+    const defs: TableDef[] = []
     for (const batch of body) {
       const def = this.tables.get(batch.channel)
       if (!def) return new Response(`unknown channel: ${batch.channel}`, { status: 400 })
-      const seq = this.accept(def, batch)
-      // inline broadcast before responding: keeps broadcast order == seq order.
-      this.broadcast(JSON.stringify({ ...batch, seq } satisfies SequencedBatch))
-      ack.accepted.push({ channel: batch.channel, seq })
+      defs.push(def)
+    }
+
+    const sequenced: SequencedBatch[] = []
+    this.ctx.storage.transactionSync(() => {
+      for (let i = 0; i < body.length; i++) {
+        sequenced.push({ ...body[i], seq: this.applyOne(defs[i], body[i]) })
+      }
+    })
+
+    // broadcast only after the commit succeeds; inline before responding keeps
+    // broadcast order == seq order.
+    const ack: WriteAck = { accepted: [] }
+    for (const batch of sequenced) {
+      this.broadcast(JSON.stringify(batch))
+      ack.accepted.push({ channel: batch.channel, seq: batch.seq })
     }
     return Response.json(ack)
   }
 
-  // apply one batch atomically and return its assigned seq.
-  private accept(def: TableDef, batch: WriteBatch): number {
-    let seq = 0
-    this.ctx.storage.transactionSync(() => {
-      for (const op of batch.ops) {
-        const key = String((op.value as any)[def.key])
-        if (op.type === 'delete') {
-          this.sql.exec(`DELETE FROM "${def.name}" WHERE k = ?`, key)
-        } else {
-          this.sql.exec(
-            `INSERT INTO "${def.name}" (k, data) VALUES (?, ?)
-             ON CONFLICT(k) DO UPDATE SET data = excluded.data`,
-            key,
-            JSON.stringify(op.value),
-          )
-        }
+  // apply one batch's rows + its oplog entry; return the assigned seq. Caller
+  // owns the surrounding transaction.
+  private applyOne(def: TableDef, batch: WriteBatch): number {
+    for (const op of batch.ops) {
+      const key = String((op.value as any)[def.key])
+      if (op.type === 'delete') {
+        this.sql.exec(`DELETE FROM "${def.name}" WHERE k = ?`, key)
+      } else {
+        this.sql.exec(
+          `INSERT INTO "${def.name}" (k, data) VALUES (?, ?)
+           ON CONFLICT(k) DO UPDATE SET data = excluded.data`,
+          key,
+          JSON.stringify(op.value),
+        )
       }
-      // RETURNING gives us the assigned seq without a second round-trip.
-      seq = Number(
-        this.sql
-          .exec(
-            `INSERT INTO _oplog (channel, ops) VALUES (?, ?) RETURNING seq`,
-            batch.channel,
-            JSON.stringify(batch.ops),
-          )
-          .one().seq,
-      )
-    })
-    return seq
+    }
+    // RETURNING gives us the assigned seq without a second round-trip.
+    return Number(
+      this.sql
+        .exec(
+          `INSERT INTO _oplog (channel, ops) VALUES (?, ?) RETURNING seq`,
+          batch.channel,
+          JSON.stringify(batch.ops),
+        )
+        .one().seq,
+    )
   }
 }

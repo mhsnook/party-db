@@ -10,7 +10,7 @@ import type { Cursor, SequencedBatch, WriteAck, WriteBatch } from '../protocol.t
 // SyncClient never knows which target it's talking to.
 export type Transport = {
   subscribe: (onBatch: (batch: SequencedBatch) => void) => () => void
-  send: (batch: WriteBatch) => Promise<WriteAck>
+  send: (batches: WriteBatch[]) => Promise<WriteAck>
   isConnecting?: () => boolean
 }
 
@@ -63,9 +63,11 @@ export class SyncClient {
     return () => this.sinks.delete(channel)
   }
 
-  // push directives up; resolves with the ack (carries the assigned seq).
-  send(channel: string, ops: WriteBatch['ops']) {
-    return this.transport.send({ channel, ops })
+  // push a set of channel batches up in one shot; resolves with the ack
+  // (carries each assigned seq). One batch for a single-collection write, many
+  // for a cross-collection atomic transaction.
+  send(batches: WriteBatch[]) {
+    return this.transport.send(batches)
   }
 
   // resolve once `seq` has been applied on the down-stream. This is the

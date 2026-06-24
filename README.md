@@ -49,6 +49,27 @@ db.todos.insert({ id: crypto.randomUUID(), text: 'ship it', done: false })
 
 That's the surface: a transport + some collection configs.
 
+### Cross-collection atomic writes
+
+`db.todos` are first-class TanStack DB collections, so cross-collection atomic
+writes use TanStack's own `createTransaction` — we add no vocabulary. The only
+thing that's ours is `persist` (the mutationFn that speaks our `/write` + seq
+settlement); a single `collection.insert()` routes through the exact same
+function.
+
+```ts
+import { createTransaction } from '@tanstack/db'
+
+const { db, persist } = createPartyDb(transport, [posts, postTags])
+
+const tx = createTransaction({ mutationFn: persist })
+tx.mutate(() => {
+  db.posts.insert({ id: pid, title: 'hi' })
+  db.post_tags.insert({ id: crypto.randomUUID(), postId: pid, tag: 'intro' })
+})
+await tx.isPersisted.promise // both land in one POST, or neither does
+```
+
 ## Server (Cloudflare Worker)
 
 ```ts

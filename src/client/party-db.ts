@@ -31,11 +31,11 @@ export function partyTransport(opts: { host: string; room: string; party?: strin
       socket.addEventListener('message', handler)
       return () => socket.removeEventListener('message', handler)
     },
-    async send(batch) {
+    async send(batches) {
       const res = await fetch(writeUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify([batch]),
+        body: JSON.stringify(batches),
       })
       if (!res.ok) throw new Error(`write failed: ${res.status} ${await res.text()}`)
       return res.json()
@@ -49,9 +49,12 @@ export function createPartyDb<C extends PartyCollectionConfig<any>[]>(
   configs: C,
 ) {
   const client = new SyncClient(transport)
-  const db = wireCollections(client, configs)
+  const { db, persist } = wireCollections(client, configs)
   return {
     db,
+    // the mutationFn for cross-collection atomic writes via TanStack's
+    // documented createTransaction({ mutationFn: persist }).
+    persist,
     client,
     get isConnecting() {
       return transport.isConnecting?.() ?? false
