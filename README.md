@@ -1,7 +1,8 @@
-# party-db (MOCK / PROPOSAL)
+# party-db
 
-> Status: **mock package, not wired into scenetest-cloud.** It lives here for the
-> problem-space context; destined for its own monorepo later. Name is a placeholder.
+> Status: **incubating package, not wired into scenetest-cloud.** It lives here for
+> the problem-space context; destined for its own monorepo later. Name is a placeholder.
+> The design is settled — see [`architecture.md`](./architecture.md).
 
 Live TanStack DB collections over a single PartyKit/Durable Object room. You
 `insert()` on the client, it POSTs to the room's `/write`, the DO records it in
@@ -113,4 +114,5 @@ serving its room's socket and `/write`, persisting to its own SQLite.
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + DO SQLite |
 
-Open questions live in [`unspecified.md`](./unspecified.md).
+Settled decisions and their rationale live in [`architecture.md`](./architecture.md);
+open questions and not-yet-built modes in [`unspecified.md`](./unspecified.md).

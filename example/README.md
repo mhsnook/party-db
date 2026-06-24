@@ -22,7 +22,4 @@ tab receives only what it missed (`?since=<seq>` delta reconnect).
 - `vite.config.ts` — proxies `/parties/*` (HTTP + WS) to the worker so the
   browser sees a single origin (no CORS).
 
-> Note: this example is illustrative and was not executed in the authoring
-> environment. The reactive read in `render()` uses `todos.toArray` +
-> `subscribeChanges`; if your installed `@tanstack/db` version exposes a
-> different read API, adjust that one line.
+The footer links back to the package source.
