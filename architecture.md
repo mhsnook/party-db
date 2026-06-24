@@ -3,20 +3,56 @@
 The decision record. Each section is one settled decision and why. Open
 questions and not-yet-built modes live in [`unspecified.md`](./unspecified.md).
 
-party-db makes live TanStack DB collections sync over one Cloudflare Durable
-Object room: you `insert()` on the client, it POSTs to the room's `/write`, the
-DO records it in its own SQLite and fans it out over a hibernatable WebSocket,
-and every listening client applies it to the same collection.
+## 0. Goal: Tanstack Collections sync via PartyServer
 
-## 1. One mode: DO-controlled
+The starting goal for this repo is to stitch together Tanstack DB
+clients across a Cloudflare Durable Object. There are a bunch of
+different [Tanstack DB Collection types](https://github.com/TanStack/db/tree/main/packages)
+that do some version of this thing, but none seem to do realtime sync
+over a Durable Object where you can run it entirely on Cloudflare infra.
 
-We build exactly one deployment: a Durable Object that is both the authority and
-the persistence layer behind an otherwise-transparent partyserver. It owns the
-WebSocket (down) and `POST /write` (up) for its room.
+So after re-inventing a bunch of retry/replay logic, we found that
+Cloudflare has their own toolkit called [PartyKit](https://github.com/cloudflare/partykit)
+for creating DOs that act as "Rooms" that broadcast updates to authenticated subscribers.
+This is a model/shape that we believe in and are happy to invest our time in,
+so we initially set out to build a "Party Collection" that works this way.
+
+We treat PartyKit as a primary pillar of the infrastructure, and
+Tanstack DB Collections as the goal to achieve. This leaves us
+with a clear handoff point to the client (the DB `write()` did not err)
+and a transport layer that's mostly handled, leaving us to manage
+the handoff between transport-and-collection, and to focus on getting
+the developer experience buttery smooth and composable for this one
+very specific deployment target.
+
+1. Developer writes `definePartyCollection` the same way they would write any other
+`createCollection` options for Tanstack DB, except you don't have to write any of the
+`onInsert, onUpdate, onDelete` functions.
+2. Developer runs our `PartyDbServer` on a DO, which is a `PartyServer` and has the same
+config as a `PartyServer` + the collection definitions.
+3. On the client, just pass a PartySocket connection and some `schemas` to the `createPartyDb()`
+function, and voila, you can now read from live queries and write with `todos.insert()` and
+everything Just Works.
+
+So that was the initial idea. "Why can't I just write `someCol.insert()` and have it
+"just go". That's what we're trying to do here, and in order to do so we're accepting
+a handful of infrastructure and dependency choices along the way,
+
+## 1. Starting with One mode: DO-controlled
+
+Our initial deployment target is the same as PartyServer: a Durable Object that
+is both the authority and the SQLite persistence behind an otherwise-transparent
+partyserver. It owns the WebSocket (down) and `POST /write` (up) for its room.
 
 Why: a DO is single-threaded and has transactional SQLite, which hands us total
 ordering and durability for free. Other shapes (a trusting relay, PostgREST/SSE,
 Supabase Realtime) are designs only, parked in `unspecified.md`.
+
+For the moment, we are wanting to keep this library tightly focused on extending
+PartyKit, so our deployment target is their deployment target. (However, the
+structure of the thing seems to be able to travel; it could be that PartyKit
+becomes just one supported transport, and/or SQLite becomes just one supported
+persistence layer.)
 
 ## 2. The wire format is TanStack DB's `write()` argument
 
@@ -26,6 +62,10 @@ and never travels.
 
 Why: it is exactly what TanStack hands to a collection's `sync.write()`, so there
 is no translation on either end — we ship what we apply.
+
+This means that every consumer of the stream simply has to accept this `write`
+payload format, pass the same tests, produce the same results, etc. This package
+is meant to be a Tanstack DB tool.
 
 ## 3. Many collections multiplex over one connection
 
