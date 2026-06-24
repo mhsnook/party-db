@@ -189,10 +189,12 @@ items into **Decided** when they settle. This is the decision record for
   transaction. No `write()` sugar, no shadow vocabulary.
 - Server commits the WHOLE POST body in one `transactionSync` → cross-channel
   all-or-nothing, broadcast only after commit.
-- **PROBE before relying on it:** confirm an explicit `createTransaction` with a
-  `mutationFn` BYPASSES the collections' own onInsert/onUpdate/onDelete handlers
-  (otherwise a cross-collection write double-POSTs: once per handler + once via
-  the mutationFn). Strongly expected, but unverified here.
+- **PROBE — CONFIRMED (@tanstack/db 0.6.10).** Inside an explicit
+  `createTransaction`, the collection's `onInsert` fired 0 times and the
+  `mutationFn` got ONE call carrying BOTH mutations. So handlers are bypassed (no
+  double-POST) and cross-collection mutations arrive grouped — exactly what
+  `persist` assumes. Direct `collection.insert()` still fires `onInsert` (the
+  one-mutation-transaction path). Re-run if we bump the major.
 - **Deferred:** "write to a channel with no local collection loaded" — the only
   thing `write()` would have added that this path can't. Separable niche helper
   if ever wanted; not bundled into the core API.
