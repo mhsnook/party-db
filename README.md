@@ -11,7 +11,8 @@ with an extremely simple DX, and even a few capability enhancements for batches
 and back, and the fan-out to the websocket's subscribers.
 
 The example app in `/example` shows how much of this is just a thing wrapping
-the excellent work of PartyKit and Tanstack DB.
+the excellent work of PartyKit and Tanstack DB. `/example-react` is the same
+app rendered with React and TanStack DB's `useLiveQuery` hook.
 
 The transport is handled mostly by PartyKit's _PartyServer_ (server) and
 _PartySocket_ (client), with a bit of extra logic on the server to ensure
