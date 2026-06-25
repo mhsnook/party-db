@@ -1,27 +1,40 @@
 import { useState } from 'react'
+import type { Collection } from '@tanstack/db'
 import { useLiveQuery } from '@tanstack/react-db'
-import { todos } from './db.ts'
-import type { Todo } from './schema.ts'
+import { todoSchema, type Todo } from './schema.ts'
+import { createPartyDb, partyTransport, definePartyCollection } from '../../src/client/index.ts'
+
+// ✅ 1. Connect to your PartyServer w/ a thin wrapper on PartySocket
+const transport = partyTransport({ host: location.host, room: 'demo' })
+
+// ✅ 2. Pass that connection to the constructor, and you're done!
+export const { db } = createPartyDb(transport, [
+  definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema }),
+])
+
+// db.todos is a plain TanStack DB collection; the only reason we need
+// to re-assert the row type as Collection<Todo> is because of the structure
+// of _this_ repo (an example app inside the library's repo) where tanstack/db
+// gets imported twice. Types should work natively in regular usage.
+const todos = db.todos as unknown as Collection<Todo, string>
 
 export function App() {
   const [text, setText] = useState('')
 
-  // The whole point of this example: one hook, fully reactive.
-  // useLiveQuery re-renders this component whenever the `todos` collection
-  // changes — your own optimistic insert, the server's ack, or a write that
-  // arrived over the socket from another tab. No subscribeChanges, no useState
-  // mirror, no effects. Query-shape it however you like (filter/sort/join);
-  // here we just sort by text.
+  // ✅ 3. Now you can use your reactive live queries like normal!
   const { data, isLoading } = useLiveQuery((q) =>
     q.from({ todo: todos }).orderBy(({ todo }) => todo.text, 'asc'),
   )
 
   const remaining = data.filter((t) => !t.done).length
 
-  function add(e: React.FormEvent) {
+  function add(e: React.SubmitEvent) {
     e.preventDefault()
     const value = text.trim()
     if (!value) return
+
+	 // ✅ 4. Optimistic updates also work out of the box, without
+	 // having to define the collection's `onInsert` function.
     todos.insert({ id: crypto.randomUUID(), text: value, done: false })
     setText('')
   }

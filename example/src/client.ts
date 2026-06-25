@@ -1,10 +1,15 @@
 import { createPartyDb, partyTransport, definePartyCollection } from '../../src/client/index.ts'
 import { todoSchema, type Todo } from './schema.ts'
 
+// ✅ 1. Connect to your PartyServer w/ a thin wrapper on PartySocket
 const transport = partyTransport({ host: location.host, room: 'demo' })
+
+// ✅ 2. Pass that connection to the constructor, and you're done!
 const { db } = createPartyDb(transport, [
   definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema }),
 ])
+
+// ✅ 3. This `todos` is now just any old tanstack/db collection
 const todos = db.todos
 
 const form = document.getElementById('form') as HTMLFormElement
@@ -15,6 +20,9 @@ form.addEventListener('submit', (e) => {
   e.preventDefault()
   const text = input.value.trim()
   if (!text) return
+
+  // ✅ 4. Optimistic updates work out of the box, without
+  // having to define the collection's `onInsert` function.
   todos.insert({ id: crypto.randomUUID(), text, done: false })
   input.value = ''
 })
@@ -42,5 +50,4 @@ function render() {
   }
 }
 
-// re-render on every committed change (incl. the initial synced snapshot).
 todos.subscribeChanges(render, { includeInitialState: true })

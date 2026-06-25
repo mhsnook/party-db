@@ -6,74 +6,110 @@ from `@tanstack/react-db`.
 
 ## How to run this example app
 
-```bash
-# This example imports party-db straight from the repo's /src folder,
-# instead of the built npm package, so we have to install there first.
-(cd .. && pnpm install)
+From the root of this repo:
 
+```bash
+pnpm install
+cd example-react
 pnpm install
 pnpm dev        # wrangler dev (:8787) + vite (:5173), proxied to one origin
 ```
 
-Open <http://localhost:5173> in two tabs. Add/check/delete a todo in one — it
-appears in the other. Stop a tab, add items in the other, reopen: the returning
+Open <http://localhost:5173> in two tabs and watch things sync!
+Stop a tab, add items in the other, reopen: the returning
 tab receives only what it missed (`?since=<seq>` delta reconnect).
 
-## The one thing to notice: `useLiveQuery`
+## Inspect the code
+
+Have a look at `App.tsx`, and `server.ts`. If you're used to using Tanstack DB
+collections, you know you already need to set up Zod schemas, so we hid that
+away in `schema.ts`, but otherwise, you can see everything right there:
+
+```ts
+/// 📁 App.tsx
+// ✅ 1. Connect to your PartyServer w/ a thin wrapper on PartySocket
+const transport = partyTransport({ host: location.host, room: 'demo' })
+
+// ✅ 2. Pass that connection to the constructor, and you're done!
+export const { db } = createPartyDb(transport, [
+  definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema }),
+])
+```
+
+This is _the entire client configuration_. With `onInsert, onEdit, onDelete` all
+handled for you, and the `db.todos` is a Tanstack DB collection. Now the server,
+nearly identical to a PartyServer config:
+
+```ts
+/// 📁 server.ts
+export class Main extends PartyDbServer {
+  collections = [{ name: 'todos', key: 'id' }]
+}
+
+export default {
+  async fetch(req: Request, env: unknown): Promise<Response> {
+    return (
+      (await routePartykitRequest(req, env as never)) ??
+      new Response('not found', { status: 404 })
+    )
+  },
+}
+```
+
+This config will grow a little as we fold in other things like Auth and multi-
+step relays, but for the most part it is the same config as a stock PartyServer
+config; just tell it which tables to replicate, and it goes.
+
+## The pay-off for React apps: `useLiveQuery`
 
 The vanilla example wires up the list by hand with
-`todos.subscribeChanges(render)`. React doesn't need that. `db.todos` is a plain
-TanStack DB collection, so you hand it to `useLiveQuery` and the component is
-reactive — full stop:
+`todos.subscribeChanges(render)`. React doesn't need that, and `useLiveQuery`
+is the powerful hook/primitive that we all know and love to build on.
 
 ```tsx
 import { useLiveQuery } from '@tanstack/react-db'
-import { todos } from './db.ts'
+import { db } from './db.ts'
 
 const { data, isLoading } = useLiveQuery((q) =>
-  q.from({ todo: todos }).orderBy(({ todo }) => todo.text, 'asc'),
+  q.from({ todo: db.todos }).orderBy(({ todo }) => todo.text, 'asc'),
 )
 ```
 
-`data` is a live, sorted array. It re-renders on **every** committed change to
-the collection, whatever the source:
+Because the PartyDB transport client handles backlog and buffering, you can
+initialize and export/import your DB just like any other API client, and the
+collections it creates are available immediately, remaining in an `isLoading`
+state while they:
 
-- your own optimistic `todos.insert(...)`, the instant you call it,
-- the server's `seq` ack settling that optimistic row, and
-- a write that arrived over the socket from **another tab / client**.
-
-No `useState` mirror, no `useEffect`, no manual subscription teardown. You can
-also filter, sort, join, and project right in the query — `useLiveQuery` only
-re-renders when *its* result actually changes.
+- Connect to the PartyServer and start buffering the incoming logs
+- Fetch table snapshots or event backlog and apply them to your client collections
+- Run the catch-ups from the log to get back to 'present' and mark themselves ready
 
 ## Bonus: cross-framework sync
 
-This app and the [vanilla example](../example) point at the same room
-(`demo`), and both dev servers proxy `/parties/*` to a worker on `:8787`. So you
-can run them against **one** worker and watch them sync across frameworks:
+This app and the [vanilla example](../example) are both configured to point to
+the same room (`demo`), and both dev servers proxy `/parties/*` to a
+worker on `:8787`. So if you run *both* apps on the same machine, you'll get
+two separate apps that share the same realtime sync.
 
 ```bash
 pnpm dev                      # in example-react: worker (:8787) + React client (:5173)
-(cd ../example && pnpm dev:client)   # vanilla client only, proxied to the same :8787
+(cd ../example && pnpm dev)   # client on :5174, will route to the same worker on :8787
 ```
 
-Open the React tab (`:5173`) and the vanilla tab (`:5174`) and edit either — the
-two stay in sync. There's no React-vs-vanilla bridge doing this: both tabs are
-just views over the *same* synced TanStack DB collection in the *same* Durable
-Object, and the wire format is TanStack DB's own `write()` shape, so the server
-never knows (or cares) what's rendering. Same data, same room, different view
-layer.
+Open the React tab (`:5173`) and the vanilla tab (`:5174`) and edit either -- the
+two stay in sync. There's no bridge happening here, it's just that the connection
+PartyDB sets up between your Tanstack DB and your PartyServer makes this cross-
+platform sync work anywhere you can make use of a Tanstack DB collection.
+
+(Note: The second worker will run on `:8788` but it will be quietly ignored. You
+can change this behavior by un-hard-coding the port in `vite.config.ts`.)
+
 
 ## Files
 
 | File | Role |
 | --- | --- |
-| `src/db.ts` | builds the party-db client once and exports the live `todos` collection |
-| `src/App.tsx` | the UI — one `useLiveQuery` call drives the whole render |
 | `src/main.tsx` | React entry point |
+| `src/App.tsx` | Builds the PartyDB transport and DB, renders the app via useLiveQuery() |
 | `src/schema.ts` | shared zod schema (same as the vanilla example) |
 | `src/server.ts` | the `PartyDbServer` room (identical to the vanilla example) |
-
-The server is byte-for-byte the same idea as the vanilla example: party-db
-doesn't care what's rendering the collection, so the only real difference here
-is the client.
