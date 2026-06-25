@@ -36,8 +36,8 @@ The shape of it:
    (`definePartyCollection`) — minus the `onInsert/onUpdate/onDelete` plumbing,
    which is what we provide.
 2. The server runs `PartyDbServer` on a Durable Object (a `PartyServer` plus the
-   collection definitions), committing into structured tables that reflect those
-   schemas.
+   collection definitions), committing into the structured tables your app already
+   uses.
 3. The client passes a PartySocket connection and its schemas to `createPartyDb()`
    — live queries, optimistic writes, and confirmed sync all work.
 

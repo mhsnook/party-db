@@ -50,8 +50,8 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 | 7 | optimistic → ack → settlement (`waitForSeq`) | 🟡 | settlement works; **resolved-row swap not implemented** (blob makes resolved==sent) — see item 1 |
 | 8 | reconnect = delta via `?since` | ✅ | `partyTransport` query + `replaySince`/`snapshot`; see oplog-lifecycle gaps |
 | 9 | broadcast inline, after commit, before responding | ✅ | `onRequest` |
-| 10 | schemas shared by import | 🟡 | client validates + types; **server ignores schemas** (`TableDef` is `{name,key}`) — becomes load-bearing once the server builds DDL / validates |
-| 11 | `persist` binding; x-collection atomicity via TanStack | 🟡 | server commits whole POST atomically, but the envelope isn't visible to subscribers — see item 6 |
+| 10 | schemas shared by import | 🟡 | client validates + types; **server ignores schemas** (`TableDef` is `{name,key}`) — becomes load-bearing once the server reads the column set + validates rows |
+| 11 | `persist` binding; x-collection atomicity via TanStack | ✅ | server commits whole POST atomically + writer settles on all seqs; subscribers receive the writes ordered by `seq` |
 | 12 | authority is the database, not TanStack DB | ✅ | server sink is `ctx.storage.sql` (a real DB, not a TanStack cache) |
 
 ---
@@ -61,17 +61,14 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 > Practical ordering: do **item 2 (tooling)** first so you can build item 1 with
 > tests. But item 1 is the *point* — it's what "finish the SQLite story" means.
 
-### 1. Structured relational tables — **P0** (the spine; not built)
+### 1. Structured relational tables — **P0**
 
-Make the server's storage your real schema instead of an opaque blob.
-
-- [ ] **Schema → table shape.** Derive real columns/types (and a place to declare
-      constraints, FKs, indexes) from the collection's Zod schema, so the server
-      provisions DO-SQLite tables that match. `TableDef` grows past `{name, key}`.
-      (Later, the Postgres target *adapts to* tables that already exist rather than
-      provisioning them.) v1 keeps the mapping minimal — column set + `key` +
-      NOT-NULL from the schema; FK/CHECK/UNIQUE live in the DB, and full schema
-      codegen is a v3 concern (architecture → Roadmap).
+- [ ] **Use the same client DB schema on the server.** Zod schemas are already used
+      on the client to validate inserts and updated in to the Tanstack Collections.
+      On the server they are just a very quick validator. Projects come with their
+      own database and types, and Zod schemas that could power their Tanstack
+      Collections, and we're able to extrapolate the rest. `TableDef` carries
+      `{name, key, schema}`.
 - [ ] **CRUD against typed columns** in `applyOne` (insert/update/delete into real
       columns), replacing the blob upsert.
 - [ ] **The database is the authority.** A write is a genuine transactional commit
@@ -145,14 +142,14 @@ You currently cannot typecheck or test the package in isolation.
       bearer/session, reject unauthorized, pluggable so the room owner supplies the
       check. Today any client can read the whole room and write to it.
 
-### 6. Cross-collection transaction visibility — **P2** (decision needed)
+### 6. Cross-collection transaction visibility — **decided: ordered on receive**
 
-- [ ] A cross-collection atomic write commits atomically on the server but goes out
-      as **N separate `SequencedBatch`es with N seqs** — a subscriber can't tell they
-      were one envelope (only the *writer* awaits all seqs). The README claims the
-      envelope "survives… out to all connected clients." Either add a
-      transaction/group id so subscribers can apply the set atomically, **or** correct
-      the README to "ordered, not atomic, on the receiving side." Pick one.
+- [x] **Ordered, not atomic, on the receiving side — no group id, no extra fields.**
+      A cross-collection write commits atomically on the server, and the *writer*
+      settles on all its seqs; subscribers just receive the constituent writes in
+      `seq` order and apply them as they arrive (fine for a feed/chat — a reader
+      seeing the post and then its tag, in order, is fine). README overclaim
+      corrected.
 
 ### 7. DX / packaging polish — **P2**
 

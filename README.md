@@ -43,9 +43,9 @@ ordering, backfill, and acknowledged writes, and on the client to make the DX
 buttery smooth: just pass it your PartySocket connection and the schemas/tables
 you want to pull off the wire, and it returns a map of all your Tanstack
 Collections, pre-wired for onInsert/onUpdate/onDelete, optimistic and confirmed
-writes, and a utility function to give you cross-collection transactions whose
-bundling survives the entire trip to the server and out to all connected clients
-(not possible without our batch/unroll logic).
+writes, and a utility function for cross-collection transactions that commit
+all-or-nothing in one POST on the server (subscribers then receive the constituent
+writes in order).
 
 Clients create their collections all at once using `createPartyDb()`, passing in
 the Zod schemas for their collections and the connection info for the PartyServer
@@ -141,12 +141,14 @@ serving its room's socket and `/write`, persisting to its own SQLite.
 ## Cross-collection atomic writes
 
 `db.todos` are first-class TanStack DB collections, so cross-collection atomic
-writes use TanStack's own `createTransaction`. But if you want to do multi-table
-transactions whose Transaction Envelope survives the entire round trip to the
-server and out to subscribers, you can use this `persist` function as your
-mutationFn. It sends your array of writes through the same steps: `/write` + seq
-+ acknowledge + settle, the same as with any `collection.update`, allowing the
-transaction envelope to keep its shape from client -> server -> subscribers.
+writes use TanStack's own `createTransaction` with this `persist` function as the
+mutationFn. It sends your whole transaction as one `/write` POST that the server
+commits **all-or-nothing**, and `isPersisted` resolves only once every assigned
+`seq` has settled — so the *write* is atomic from client to server, and then then
+subscribers receive the constituent writes **in order** (by `seq`) and apply them
+as they arrive. (They don't get a single atomic envelope, which is fine because
+the client DB is just replicating something that has already persisted on the
+server.
 
 ```ts
 import { createTransaction } from '@tanstack/db'
