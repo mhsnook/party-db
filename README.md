@@ -23,6 +23,12 @@ schemas that already power TanStack DB now drive your production database too,
 replicating writes up and back out to every consumer. ("Near-zero config" is
 literal — you pass Zod schemas, but you already needed those for TanStack DB.)
 
+Already have a database? Generate Zod schemas straight from it with
+[`drizzle-zod`](https://orm.drizzle.team/docs/zod) and bring those — keeping your
+schemas honest to your tables is a code-time concern you already own for TanStack
+DB; party-db doesn't generate DDL or types for you (that's the far-future
+horizon, not today).
+
 The quickest way to get a sense for how to use this library is to check the
 [react example app](./example-react/README.md), and its minimal `App.tsx` and
 `server.ts`, easy setup, working `useLiveQuery`, and zero-config writes with

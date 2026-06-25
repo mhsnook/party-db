@@ -51,13 +51,23 @@ Make the server's storage your real schema instead of an opaque blob.
       constraints, FKs, indexes) from the collection's Zod schema, so the server
       provisions DO-SQLite tables that match. `TableDef` grows past `{name, key}`.
       (Later, the Postgres target *adapts to* tables that already exist rather than
-      provisioning them.)
+      provisioning them.) v1 keeps the mapping minimal — column set + `key` +
+      NOT-NULL from the schema; FK/CHECK/UNIQUE live in the DB, and full schema
+      codegen is a v3 concern (architecture → Roadmap).
 - [ ] **CRUD against typed columns** in `applyOne` (insert/update/delete into real
       columns), replacing the blob upsert.
 - [ ] **The database is the authority.** A write is a genuine transactional commit
       the DB's constraints can reject; rejection fails the POST (client optimistic
-      rollback), success *is* the acceptance. Optionally run the Zod schema as a
-      fast server-side first-line check before the DB.
+      rollback), success *is* the acceptance. The server applies the batch in the
+      order given, in one transaction — it does **not** re-derive write-ordering;
+      the DB judges. Zod may run server-side as a cheap *error-sooner* gate, never
+      as the correctness authority.
+- [ ] **Injection-safe by construction.** Bind every *value* with `?` (the current
+      code already does this for keys/data/etc.). Take every *identifier* — table
+      and column names — from the schema/config allowlist, validated against
+      `^[A-Za-z_][A-Za-z0-9_]*$`, **never** from the client payload's keys (build
+      column lists from the Zod schema, not `Object.keys(row)`). Tiny surface — a
+      handful of statements.
 - [ ] **Resolved-row reconciliation (mandatory).** The committed row can differ
       from the sent row (defaults, generated columns, serials, trigger effects).
       Return the resolved row (`WriteAck.changed` + on the stream) and have the

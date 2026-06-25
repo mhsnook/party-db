@@ -114,6 +114,17 @@ plus the resolved row on the stream): when the committed row differs from the se
 row, the resolved row is the truth, and the client swaps its optimistic overlay
 for it.
 
+**We represent the write; we don't re-derive it.** The order you write to related
+tables, the shape of a multi-table change — that logic was always yours, and it
+stays yours; you just express it in TanStack DB operations (a `createTransaction`
+for atomic grouping is an *optional* optimization) instead of in a bespoke RPC
+handler. The server doesn't recompute or pre-judge it — it applies your batch in
+order, in one transaction, and the database's constraints decide whether your
+assumptions held. So the middle layer stays thin: Zod runs server-side only as a
+cheap *error-sooner* gate (nicer messages, don't open a doomed transaction), never
+as the correctness authority. Correctness is the database's — it always was the
+real source of truth, even when something upstream pretended to be.
+
 **Status:** the shipped code is the *uncontrolled* fallback (5a), not this.
 Building the structured-table path is the active work — see
 [`sqlite-do-todo.md`](./sqlite-do-todo.md).
@@ -213,3 +224,32 @@ the apply contract (§4), not the apply code — the sinks differ.
 | Theirs (TanStack DB) | `Collection`, `createTransaction`, `mutate`, `isPersisted`, optimistic state |
 | Ours (irreducible) | the `sync` down-binding + `persist` up-binding (wire + seq settlement) |
 | Sugar | `createPartyDb` — bundles N collections + transport + `isConnecting` |
+
+## Roadmap
+
+**v1 — realtime RDBMS over a Durable Object (this repo).** The whole thing — the
+client's TanStack DB collections, the transport, and the server — is generated
+from a tiny footprint:
+
+1. the PartySocket config (host/room), and
+2. the collection configs to broadcast — each just a Zod schema, a `name`, and a
+   `key`. Notably **no** `onInsert/onUpdate/onDelete` to write.
+
+An enormous surface covered by almost nothing. The trade we ask in return: put
+your constraints in the database (they belonged there), and — in the Postgres
+story — your complex logic in DB-level RPCs / triggers / RLS. That's a good trade:
+the database is the correct final source of truth and was always the real
+security/auth boundary; anything at the app layer was provisional.
+
+**v2 — swappable persistence sinks.** DO-SQLite *and* Postgres (echo via the WAL)
+as interchangeable backends, plus the work that clusters around that. Keeping
+client and server aligned across schema versions gets a deliberately simple
+(slightly dumb, and fine) treatment here.
+
+**v3 (horizon, not planned) — generate everything.** Point at your database, mark
+tables public / per-user / per-team, and codegen a fully-typed `db` of typed
+collections with typed insert/update and typed live queries (and RPCs). Change the
+Postgres structure, re-run codegen, hover over `db`, and the new tables / columns /
+functions are just there — maybe including cross-schema-version client/server
+sync. This is the *only* place the "generate schemas/DDL" question lives; it is
+not in scope before then.
