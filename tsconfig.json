@@ -1,15 +1,7 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "strict": true,
-    "noEmit": true,
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "skipLibCheck": true,
-    "types": []
-  },
-  "include": ["src"]
+  // Solution-style root: editors route each file to the project that includes it.
+  // Client code is DOM-typed; server code is Workers-typed, so they can't share
+  // one lib/types set — `pnpm typecheck` runs each project separately.
+  "files": [],
+  "references": [{ "path": "./tsconfig.client.json" }, { "path": "./tsconfig.server.json" }]
 }
