@@ -6,12 +6,16 @@
 
 import type { ChangeMessage } from '@tanstack/db'
 
-// One directive against one row.
-export type WriteEvent<T = unknown> = Omit<ChangeMessage<T>, 'key'>
+// One directive against one row. `T` mirrors `ChangeMessage`'s own `object`
+// constraint — rows are records, never primitives.
+export type WriteEvent<T extends object = Record<string, unknown>> = Omit<
+  ChangeMessage<T>,
+  'key'
+>
 
 // One begin()/commit() window for a single collection ("channel" === table name).
 // Producers mint these; in trusting mode they are also what travels down.
-export type WriteBatch<T = unknown> = {
+export type WriteBatch<T extends object = Record<string, unknown>> = {
   channel: string
   ops: WriteEvent<T>[]
 }
@@ -26,7 +30,7 @@ export type Cursor = number | string
 // What a batch becomes once the authority has accepted + ordered it. The ops
 // here are the *resolved* rows (post-commit: db defaults, generated columns),
 // which is what every consumer applies.
-export type SequencedBatch<T = unknown> = WriteBatch<T> & {
+export type SequencedBatch<T extends object = Record<string, unknown>> = WriteBatch<T> & {
   seq: Cursor
   // sentinel: this channel's backlog has been fully replayed to you.
   ready?: boolean

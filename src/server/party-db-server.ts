@@ -18,12 +18,14 @@ import type { SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
 
 export type TableDef = { name: string; key: string }
 
-export class PartyDbServer<Env = unknown> extends Server<Env> {
+export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
   static options = { hibernate: true }
   collections: TableDef[] = []
   private tables = new Map<string, TableDef>()
 
-  private get sql() {
+  // The DO's own SQLite handle. Named `db` (not `sql`) so it doesn't shadow the
+  // base `Server.sql` tagged-template helper, which has a different signature.
+  private get db() {
     return this.ctx.storage.sql
   }
 
@@ -32,7 +34,7 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
   }
 
   onStart() {
-    this.sql.exec(
+    this.db.exec(
       `CREATE TABLE IF NOT EXISTS _oplog (
          seq INTEGER PRIMARY KEY AUTOINCREMENT,
          channel TEXT NOT NULL,
@@ -41,7 +43,7 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
     )
     for (const c of this.collections) {
       this.tables.set(c.name, c)
-      this.sql.exec(`CREATE TABLE IF NOT EXISTS "${c.name}" (k TEXT PRIMARY KEY, data TEXT NOT NULL)`)
+      this.db.exec(`CREATE TABLE IF NOT EXISTS "${c.name}" (k TEXT PRIMARY KEY, data TEXT NOT NULL)`)
     }
   }
 
@@ -55,7 +57,7 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
 
   // delta reconnect: just the oplog entries after `since`, in order.
   private replaySince(conn: Connection, since: number) {
-    const rows = this.sql
+    const rows = this.db
       .exec(`SELECT seq, channel, ops FROM _oplog WHERE seq > ? ORDER BY seq`, since)
       .toArray()
     for (const r of rows) {
@@ -69,9 +71,9 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
 
   // fresh connect: current state per collection, then ready.
   private snapshot(conn: Connection) {
-    const seq = Number(this.sql.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
+    const seq = Number(this.db.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
     for (const c of this.collections) {
-      const rows = this.sql.exec(`SELECT data FROM "${c.name}"`).toArray()
+      const rows = this.db.exec(`SELECT data FROM "${c.name}"`).toArray()
       const ops = rows.map((r) => ({ type: 'insert' as const, value: JSON.parse(r.data as string) }))
       this.send(conn, { channel: c.name, seq, ops, ready: true })
     }
@@ -114,9 +116,9 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
     for (const op of batch.ops) {
       const key = String((op.value as any)[def.key])
       if (op.type === 'delete') {
-        this.sql.exec(`DELETE FROM "${def.name}" WHERE k = ?`, key)
+        this.db.exec(`DELETE FROM "${def.name}" WHERE k = ?`, key)
       } else {
-        this.sql.exec(
+        this.db.exec(
           `INSERT INTO "${def.name}" (k, data) VALUES (?, ?)
            ON CONFLICT(k) DO UPDATE SET data = excluded.data`,
           key,
@@ -126,7 +128,7 @@ export class PartyDbServer<Env = unknown> extends Server<Env> {
     }
     // RETURNING gives us the assigned seq without a second round-trip.
     return Number(
-      this.sql
+      this.db
         .exec(
           `INSERT INTO _oplog (channel, ops) VALUES (?, ?) RETURNING seq`,
           batch.channel,

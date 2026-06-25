@@ -25,7 +25,8 @@ export function definePartyCollection<T extends object>(cfg: PartyCollectionConf
   return cfg
 }
 
-function toEvent(m: any): WriteEvent {
+// exported for unit tests: a single TanStack mutation → one wire WriteEvent.
+export function toEvent(m: any): WriteEvent {
   if (m.type === 'delete') return { type: 'delete', value: m.original }
   if (m.type === 'update') return { type: 'update', value: m.modified, previousValue: m.original }
   return { type: 'insert', value: m.modified }
@@ -33,7 +34,12 @@ function toEvent(m: any): WriteEvent {
 
 // the irreducible binding: mutations -> grouped-by-channel WriteBatch[] -> POST
 // -> await every assigned seq on the down-stream (flicker-free settlement).
-function makePersist(client: SyncClient, channelOf: Map<Collection<any>, string>) {
+// exported so the write path can be tested against a mock SyncClient — it only
+// needs `send` + `waitForSeq`, so tests don't stand up a real transport.
+export function makePersist(
+  client: Pick<SyncClient, 'send' | 'waitForSeq'>,
+  channelOf: Map<Collection<any>, string>,
+) {
   return async ({ transaction }: any) => {
     const byChannel = new Map<string, WriteEvent[]>()
     for (const m of transaction.mutations) {

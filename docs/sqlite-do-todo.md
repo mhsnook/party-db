@@ -113,25 +113,36 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 
 You currently cannot typecheck or test the package in isolation.
 
-- [ ] **Installable dev deps / workspace** so `pnpm typecheck` passes on a clean
-      checkout. Today it fails — deps unresolved at root, plus two real
-      implicit-`any`s: `collection.ts:63` (`sink`) and `party-db-server.ts:75` (`r`).
-- [ ] **Test runner** (vitest).
-- [ ] **Unit tests:** `applyBatch` (`src/client/apply.ts`); `SyncClient` routing /
+- [x] **Installable dev deps / workspace** so `pnpm typecheck` passes on a clean
+      checkout. Done: `devDependencies` (typescript, vitest, `@cloudflare/workers-types`)
+      added; client and server are split into `tsconfig.client.json` (DOM lib) and
+      `tsconfig.server.json` (Workers types) since they can't share one lib/types set,
+      and `pnpm typecheck` runs both. Fixed the real type errors along the way: the
+      `WriteEvent`/`WriteBatch`/`SequencedBatch` generics now carry `ChangeMessage`'s
+      `object` constraint, `PartyDbServer`'s `Env` is constrained to `Cloudflare.Env`,
+      and the private SQLite getter was renamed `db` so it stops shadowing the base
+      `Server.sql` tagged-template helper.
+- [x] **Test runner** (vitest). `vitest.config.ts`, `pnpm test` / `pnpm test:watch`.
+- [x] **Unit tests:** `applyBatch` (`src/client/apply.ts`); `SyncClient` routing /
       `pending` buffer / `waitForSeq` / high-water mark; `persist` grouping
       (`toEvent`, by-channel split); `partyTransport` `since`/`lastSeq` tracking.
-- [ ] *(optional enabler)* Export `makePersist(client)` from `collection.ts` and
-      pass it into `wireCollections`, so the write path tests above can run against a
-      mock `SyncClient`. It's already a closure — naming it is the whole change.
-      Speculative; do it only if it makes the `persist` tests cleaner.
+      32 tests in `test/`.
+- [x] *(optional enabler)* Export `makePersist(client)` from `collection.ts` — done;
+      its `client` param is now `Pick<SyncClient, 'send' | 'waitForSeq'>` so the write
+      path tests run against a two-method stub, no transport. `toEvent` exported too.
 - [ ] **Server tests:** structured `applyOne` (insert/update/delete + constraint
       rejection + resolved row) + oplog seq; `onRequest` multi-batch atomic commit +
       broadcast order == seq order; `snapshot` vs `replaySince`; unknown-channel → 400.
       Write these against the **structured** path as it lands — don't entrench the
-      blob placeholder.
+      blob placeholder. *(Deferred: lands with item 1's structured path.)*
 - [ ] **Integration test** (workers/miniflare pool): round-trip insert → ack →
       settle → a second client sees the resolved row; reconnect delta replays the gap.
-- [ ] **CI** running typecheck + tests on the branch.
+      *(Deferred: pairs with the structured-path server tests above.)*
+- [~] **CI** running typecheck + tests on the branch. Workflow is written and ready
+      (`pnpm install --frozen-lockfile` → `typecheck` → `test`), but the bot can't
+      push files under `.github/workflows` without the `workflow` OAuth scope, so it
+      sits at `docs/ci.yml` — `git mv docs/ci.yml .github/workflows/ci.yml` from a
+      local checkout to activate it.
 
 ### 3. Oplog lifecycle — **P1** (`_oplog` grows forever today)
 
