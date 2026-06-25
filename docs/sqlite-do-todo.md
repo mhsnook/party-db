@@ -78,9 +78,11 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 - [ ] **Pluggable async persistence sink (embedded DO-SQLite *or* D1).** Design
       `applyOne`/`onRequest` against an async sink, not `transactionSync` directly:
       embedded SQLite is sync, D1 is async (`batch()` for the atomic POST). Either
-      way the DO is the sole writer and must serialize the write → `seq` →
-      broadcast critical section (input-gating / `blockConcurrencyWhile`) so async
-      awaits can't interleave ordering. (Shared/multi-writer D1 is v2.)
+      DO serializes its write → `seq` → broadcast critical section (input-gating /
+      `blockConcurrencyWhile`) so concurrent POSTs' awaits can't interleave ordering.
+      Both targets are *self-reported* (no change feed): capturing changes party-db
+      didn't originate — other services, cronjobs, trigger side-effects on other
+      rows — is the v2 WAL story.
 - [ ] **The database is the authority.** A write is a genuine transactional commit
       the DB's constraints can reject; rejection fails the POST (client optimistic
       rollback), success *is* the acceptance. The server applies the batch in the

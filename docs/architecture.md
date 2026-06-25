@@ -41,6 +41,15 @@ The shape of it:
 3. The client passes a PartySocket connection and its schemas to `createPartyDb()`
    — live queries, optimistic writes, and confirmed sync all work.
 
+Why push everything to the edges: the middle tier — server code between the UI and
+the database — mostly does abstraction and glue, and it's worse at logic than the
+database (constraints, triggers, RPCs, RLS) and worse at experience than the client
+(live queries, optimistic transactions). party-db is glue that's *good at being
+glue*: it pushes the abstractions into the database and the client and gets out of
+the way — you write ordered optimistic ops on the client, and if they apply there
+they're POSTed and applied in one DB transaction, no ORM and no middle-tier
+round-trips.
+
 ## 1. Starting with One mode: DO-controlled SQLite for v1
 
 After the v0 proof-ofconcenpt, our first real deployment target is the same as
@@ -254,27 +263,35 @@ into request waterfalls, or into loosening referential integrity: the write
 transaction applies *inside the database*, where it always belonged, not at a
 middle layer.
 
-Two persistence targets, **one writer — the DO**. *Embedded DO-SQLite* is
-synchronous and private to the DO. *D1* is the first target your other consumers
-can actually read — which is when "your database is the global API" stops being a
-slogan — at the cost of being a farther-away box: persistence goes async, the
-atomic POST moves from `transactionSync` to D1's `batch()`, and the DO must
-explicitly serialize its write → `seq` → broadcast critical section (no free
-synchronous atomicity). The `seq`/oplog/echo model is unchanged because the DO
-stays the sole writer. (A *shared* D1 written by many DOs is the multi-writer
-problem — that's v2.)
+Two persistence targets, both **self-reported**: the fanout reflects exactly the
+changes that flow through our service and come back from the operation (the written
+rows + their resolved values). *Embedded DO-SQLite* is synchronous and private to
+the DO; *D1* is the first target your other consumers can actually read — which is
+when "your database is the global API" stops being a slogan — at the cost of being a
+farther-away box: persistence goes async, the atomic POST moves from
+`transactionSync` to D1's `batch()`, and the DO serializes its write → `seq` →
+broadcast section so concurrent POSTs don't interleave (10 people editing at once is
+fine — the DO orders them). What v1 *can't* see, on either target, is a change it
+didn't originate and return: a cronjob, another service, or a trigger's side-effects
+on other rows. So avoid side-effecting triggers in v1, or accept they won't sync
+live — until v2.
 
-**v2 — Postgres, and the multi-writer world it opens.** Postgres alongside the DO
-targets, and shared databases written by many DOs (including a shared D1). The
-bigger bite: a real CDC/echo story (Postgres WAL / logical replication; a shared D1
-has no WAL to tail), RPC support, RLS conventions, the per-user (and other
-partitioned) collection types, possibly the serializable read-slicing sketched in
+**v2 — database-captured changes (the Postgres WAL).** The real shift: instead of
+fanning out only what we wrote, we tail Postgres's logical replication and fan out
+*every* committed change, whatever its origin — another service, a cronjob, and
+crucially your own writes' **trigger/cascade side-effects**. That makes triggers
+first-class: their effects don't come back with the ACK, but you know they'll arrive
+on the stream, so you mock/pend/omit them in the UI and let them flow in —
+fire-and-forget that actually works, and many RPCs collapse to "an insert plus some
+triggers." (A shared database written by several services wants this too; a shared
+D1 has no WAL to tail, so it's a Postgres story.) The rest of the bite: RPC support,
+RLS conventions, the per-user (and other partitioned) collection types, the
+serializable read-slicing sketched in
 [`unspecified.md`](./unspecified.md) / [`collection-types.md`](./collection-types.md),
-and maybe a non-realtime `queryCollection` fallback for tables we can't tail. And
-once two or three databases coexist, a `db` may compose tables from different
-places — or just conventions for running two side by side (one realtime + global,
-one not), where each collection picks its transport and the transport knows which
-loading strategies are valid for it. Lots to design; not yet.
+a non-realtime `queryCollection` fallback for tables we can't tail, and — once two
+or three databases coexist — a `db` that composes tables from different places, or
+conventions for running two side by side (one realtime + global, one not), each
+collection picking its transport. Lots to design; not yet.
 
 **v3 (horizon, not planned) — generate everything.** Point at your database, mark
 tables public / per-user / per-team, and codegen a fully-typed `db` of typed
@@ -283,3 +300,8 @@ Postgres structure, re-run codegen, hover over `db`, and the new tables / column
 functions are just there — maybe including cross-schema-version client/server
 sync. The *only* place the "generate schemas/DDL" question lives; not in scope
 before then.
+
+**Along the way (v1.x / v2.x) — composing custom logic into these steps.** Where a
+step genuinely needs more than CRUD-plus-triggers: a tRPC or Supabase adapter,
+first-class prepared statements, server functions. Escape hatches that compose with
+the pipeline rather than reintroducing a fat middle tier.
