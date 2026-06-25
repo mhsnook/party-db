@@ -263,23 +263,25 @@ into request waterfalls, or into loosening referential integrity: the write
 transaction applies *inside the database*, where it always belonged, not at a
 middle layer.
 
-Two persistence targets, both **self-reported**: the fanout reflects exactly the
-changes that flow through our service and come back from the operation (the written
-rows + their resolved values). *Embedded DO-SQLite* is synchronous and private to
-the DO; *D1* is the first target your other consumers can actually read — which is
-when "your database is the global API" stops being a slogan — at the cost of being a
-farther-away box: persistence goes async, the atomic POST moves from
+Two persistence targets, captured the same way — via **`RETURNING`**: the fanout
+carries the database's *resolved* values (defaults, serials, same-row trigger edits)
+for the rows our operation writes. That's database truth, but **operation-scoped** —
+limited to the rows our own statements touch. *Embedded DO-SQLite* is synchronous
+and private to the DO; *D1* is the first target your other consumers can actually
+read — which is when "your database is the global API" stops being a slogan — at the
+cost of being a farther-away box: persistence goes async, the atomic POST moves from
 `transactionSync` to D1's `batch()`, and the DO serializes its write → `seq` →
 broadcast section so concurrent POSTs don't interleave (10 people editing at once is
-fine — the DO orders them). What v1 *can't* see, on either target, is a change it
-didn't originate and return: a cronjob, another service, or a trigger's side-effects
-on other rows. So avoid side-effecting triggers in v1, or accept they won't sync
-live — until v2.
+fine — the DO orders them). What v1 *can't* see, on either target, is a change
+*outside* the rows our statements return: a cronjob, another service, or a trigger's
+side-effects on other rows. So avoid side-effecting triggers in v1, or accept they
+won't sync live — until v2.
 
-**v2 — database-captured changes (the Postgres WAL).** The real shift: instead of
-fanning out only what we wrote, we tail Postgres's logical replication and fan out
-*every* committed change, whatever its origin — another service, a cronjob, and
-crucially your own writes' **trigger/cascade side-effects**. That makes triggers
+**v2 — every committed change (the Postgres WAL).** The real shift in *scope*:
+instead of capturing only the rows our statements return (via `RETURNING`), we tail Postgres's
+logical replication and fan out *every* committed change, whatever its origin —
+another service, a cronjob, and crucially your own writes' **trigger/cascade
+side-effects**. That makes triggers
 first-class: their effects don't come back with the ACK, but you know they'll arrive
 on the stream, so you mock/pend/omit them in the UI and let them flow in —
 fire-and-forget that actually works, and many RPCs collapse to "an insert plus some
