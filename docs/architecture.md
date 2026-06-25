@@ -5,40 +5,41 @@ questions and not-yet-built modes live in [`unspecified.md`](./unspecified.md); 
 survey of TanStack DB's other collection types and party-db's read-side
 capabilities lives in [`collection-types.md`](./collection-types.md).
 
-## 0. Goal: Tanstack Collections sync via PartyServer
+## 0. Goal: connect your TanStack DB collections to the database you already run
 
-The starting goal for this repo is to stitch together Tanstack DB
-clients across a Cloudflare Durable Object. There are a bunch of
-different [Tanstack DB Collection types](https://github.com/TanStack/db/tree/main/packages)
-that do some version of this thing, but none seem to do realtime sync
-over a Durable Object where you can run it entirely on Cloudflare infra.
+party-db is the connective tissue between a TanStack DB collection on the client
+and your real relational database. You write `todos.insert()` on one client; every
+other client's collection receives the row and re-renders. Everything in between —
+the `POST`, the durable commit into your tables, the acknowledgement, the
+ordering, and the fan-out — is ours, and it conforms to your database's structure,
+its types, and its auth as it goes. Those are transparent to us: as long as we can
+run CRUD (and, later, RPC) against your tables end to end, you keep TanStack DB as
+both the first mile (`insert()`) and the last mile (the synced re-render), and we
+fill in the middle.
 
-So after re-inventing a bunch of retry/replay logic, we found that
-Cloudflare has their own toolkit called [PartyKit](https://github.com/cloudflare/partykit)
-for creating DOs that act as "Rooms" that broadcast updates to authenticated subscribers.
-This is a model/shape that we believe in and are happy to invest our time in,
-so we initially set out to build a "Party Collection" that works this way.
+**TanStack DB becomes your entire API.** Instead of writing API handlers on the
+server and `onInsert/onUpdate/onDelete` on the client, you glue them together with
+this. Your database still enforces its constraints; your `todos.insert()` still
+goes to the server over a `POST` and is acknowledged before it fans out to the live
+sync. You just don't write anything in between — you make your database enforce the
+constraints you need, you make your Zod schemas match, and that is the connective
+tissue.
 
-We treat PartyKit as a primary pillar of the infrastructure, and
-Tanstack DB Collections as the goal to achieve. This leaves us
-with a clear handoff point to the client (the DB `write()` did not err)
-and a transport layer that's mostly handled, leaving us to manage
-the handoff between transport-and-collection, and to focus on getting
-the developer experience buttery smooth and composable for this one
-very specific deployment target.
+**Server setup is as easy as defining TanStack DB collections.** The same Zod
+schemas that already power TanStack DB now drive your production database too,
+replicating writes up and back out to every consumer. "Near-zero config" is
+literal: you pass Zod schemas, but you already needed those for TanStack DB.
 
-1. Developer writes `definePartyCollection` the same way they would write any other
-`createCollection` options for Tanstack DB, except you don't have to write any of the
-`onInsert, onUpdate, onDelete` functions.
-2. Developer runs our `PartyDbServer` on a DO, which is a `PartyServer` and has the same
-config as a `PartyServer` + the collection definitions.
-3. On the client, just pass a PartySocket connection and some `schemas` to the `createPartyDb()`
-function, and voila, you can now read from live queries and write with `todos.insert()` and
-everything Just Works.
+The shape of it:
 
-So that was the initial idea. "Why can't I just write `someCol.insert()` and have it
-"just go". That's what we're trying to do here, and in order to do so we're accepting
-a handful of infrastructure and dependency choices along the way,
+1. The client defines collections exactly as it would for any TanStack DB app
+   (`definePartyCollection`) — minus the `onInsert/onUpdate/onDelete` plumbing,
+   which is what we provide.
+2. The server runs `PartyDbServer` on a Durable Object (a `PartyServer` plus the
+   collection definitions), committing into structured tables that reflect those
+   schemas.
+3. The client passes a PartySocket connection and its schemas to `createPartyDb()`
+   — live queries, optimistic writes, and confirmed sync all work.
 
 ## 1. Starting with One mode: DO-controlled
 
@@ -92,27 +93,41 @@ boundary than a per-batch begin/commit. Forcing both through one function would
 fight the server's atomicity, not help it. The shared thing is the contract, not
 the loop.
 
-## 5. Client mints UUIDs; the server stores JSON blobs + an oplog
+## 5. The server persists into structured tables that reflect your schema
 
-Rows are stored server-side as `(k TEXT PRIMARY KEY, data TEXT)` per collection,
-plus one `_oplog(seq INTEGER PRIMARY KEY AUTOINCREMENT, channel, ops)`. No
-per-table DDL, no `RETURNING`, no column constraints.
+The server's storage *is* your relational schema: real tables, real columns, real
+constraints and foreign keys — the shape your app already depends on and that your
+other consumers (reports, admin, jobs, other services) already read and write. We
+conform to that shape; we never ask the data to become something else.
 
-Why: with client-minted UUID keys the resolved row equals the sent row, so
-persistence is a blob upsert and the "resolved vs sent" distinction disappears.
-SQLite here is persistence, not a second validation layer.
+Why: your database is your app's global API, with masters beyond this library. So
+the server completes a write the way a web application does — a genuine
+transactional commit the database's own constraints can accept or reject — and
+hands back the **resolved** row the database actually wrote (defaults, generated
+columns, serials, trigger effects), which is what fans out to everyone. Zod is
+your first-line validation and your types on the client; the database is the
+authority on the server. You keep the two in agreement by defining schemas that
+match your tables — that agreement is the entire contract.
 
-Note (controlled-mode evolution): the blob upsert is the *minimal* form of the
-commit — true while keys are client-minted UUIDs and the server runs no
-constraints. It stays exactly true for **trusting mode**, where the server only
-orders + applies and "if it applies on one DB client it applies on all of them."
-But the controlled-mode principle is not "store a blob"; it is **complete the
-commit and return the ack the way a web application does**. So when a collection
-opts into real validation / referential integrity, the server performs a genuine
-transactional commit — and the commit's *success* is the acceptance — instead of
-an unconditional upsert. That is a property of the commit-and-ack semantics, not
-of SQLite-vs-Postgres. See [`collection-types.md`](./collection-types.md) and the
-Postgres notes in [`unspecified.md`](./unspecified.md).
+This is what makes resolved-row reconciliation load-bearing (`WriteAck.changed`
+plus the resolved row on the stream): when the committed row differs from the sent
+row, the resolved row is the truth, and the client swaps its optimistic overlay
+for it.
+
+**Status:** the shipped code is the *uncontrolled* fallback (5a), not this.
+Building the structured-table path is the active work — see
+[`sqlite-do-todo.md`](./sqlite-do-todo.md).
+
+### 5a. Uncontrolled mode (the small fallback)
+
+A collection can opt out of all of the above: the server stores rows as opaque
+`(k TEXT PRIMARY KEY, data TEXT)` blobs keyed by PK (plus the
+`_oplog(seq INTEGER PRIMARY KEY AUTOINCREMENT, channel, ops)`) and validates
+nothing — client schemas still exist (you always need them for TanStack DB), the
+server just doesn't care what they are. With client-minted UUID keys the resolved
+row equals the sent row, so there's no reconciliation. Fine for a pure "party
+room" with no real database behind it; a deliberately tiny corner we don't intend
+to invest in for now.
 
 ## 6. `seq` is the authority's commit-log position
 

@@ -4,11 +4,24 @@
 > The design is not really settled — see [`architecture.md`](./docs/architecture.md)
 > and [`unspecified.md`](./docs/unspecified.md).
 
-Live, persisted TanStack DB collections synced over a Durable Object, powered
-by PartyKit wherever possible, landing in Tanstack-native DB Collections, and
-with an extremely simple DX, and even a few capability enhancements for batches
-/transactions whose grouping and acknowledgement survive the trip to the server
-and back, and the fan-out to the websocket's subscribers.
+**party-db connects your TanStack DB collections to the relational database you
+already run** — over PartyKit, with near-zero config. You write `todos.insert()`
+on one client; every other client's collection receives the row and re-renders.
+party-db is everything in between: the `POST`, the durable commit into your real
+tables, the acknowledgement, the ordering, and the fan-out — conforming to your
+database's structure, types, and auth as it goes.
+
+**TanStack DB becomes your entire API.** Instead of writing API handlers on the
+server and `onInsert/onUpdate/onDelete` on the client, you glue them together with
+this. Your database still enforces its constraints; your `todos.insert()` still
+POSTs to the server and is acknowledged before it fans out to the live sync. You
+just don't write anything in between: make your database enforce the constraints
+you need, make your Zod schemas match, and that's the connective tissue.
+
+**Server setup is as easy as defining TanStack DB collections.** The same Zod
+schemas that already power TanStack DB now drive your production database too,
+replicating writes up and back out to every consumer. ("Near-zero config" is
+literal — you pass Zod schemas, but you already needed those for TanStack DB.)
 
 The quickest way to get a sense for how to use this library is to check the
 [react example app](./example-react/README.md), and its minimal `App.tsx` and
@@ -52,9 +65,12 @@ Other modes (trusting relay, PostgREST/SSE, Supabase Realtime ride-along) are
 
 - **Wire format = TanStack DB's `write()` arg** (`{ type, value }`), multiplexed
   by `channel` (= table name), so one socket carries every collection.
-- **Client mints UUIDs.** Rows are stored server-side as JSON blobs keyed by PK,
-  so the resolved row always equals the sent row — no DDL, no `RETURNING`, no
-  reconciliation.
+- **Persisted into your real tables.** The server commits into structured tables
+  that reflect your schema — honoring your constraints, types, and other consumers
+  — and hands back the *resolved* row the database actually wrote. (Today's code
+  ships an uncontrolled blob fallback; structured tables are the active work — see
+  [`sqlite-do-todo.md`](./docs/sqlite-do-todo.md).)
+- **Client mints UUIDs** for stable optimistic keys.
 - **`seq`** comes from the DO's `_oplog` AUTOINCREMENT (a clean total order,
   because a DO is single-threaded). The write's HTTP response is the **ack**
   (carries `seq`); the same batch arriving on the socket is **settlement**.
