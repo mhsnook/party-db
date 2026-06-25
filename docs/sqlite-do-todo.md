@@ -80,9 +80,9 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
       embedded SQLite is sync, D1 is async (`batch()` for the atomic POST). Either
       DO serializes its write → `seq` → broadcast critical section (input-gating /
       `blockConcurrencyWhile`) so concurrent POSTs' awaits can't interleave ordering.
-      Both targets capture via `RETURNING` (the rows our statements write), not a
-      change feed: changes *outside* those rows — other services, cronjobs, trigger
-      side-effects on other rows — are the v2 WAL story.
+      Both targets capture via `RETURNING` (what the `/write` handler commits), not
+      a change feed: changes that never come through `/write` — other services,
+      cronjobs, trigger side-effects on rows we didn't return — are the v2 WAL story.
 - [ ] **The database is the authority.** A write is a genuine transactional commit
       the DB's constraints can reject; rejection fails the POST (client optimistic
       rollback), success *is* the acceptance. The server applies the batch in the
