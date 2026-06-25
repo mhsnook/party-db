@@ -242,7 +242,8 @@ transport is the same controlled DO-authority sync as v1 (ack, `seq`, fan-out,
 delta reconnect). Not the goal, but a real thing: a zero-config realtime
 collection store.
 
-**v1 — controlled by your RDBMS (SQLite first; this repo's active work).** The
+**v1 — controlled by your RDBMS (DO-controlled SQLite — embedded *or* D1; this
+repo's active work).** The
 server persists into structured tables, validates each row against its Zod schema
 server-side, lets the database validate (constraints/FKs), and returns the full
 ack → echo of the *resolved* row — still zero config. Transactions live in your
@@ -253,10 +254,21 @@ into request waterfalls, or into loosening referential integrity: the write
 transaction applies *inside the database*, where it always belonged, not at a
 middle layer.
 
-**v2 — swappable persistence sinks, and what they pull in.** Optional D1 or
-Postgres alongside DO-SQLite. D1 is mostly "handle a farther-away box." Postgres is
-the bigger bite: RPC support, RLS conventions, the per-user (and other partitioned)
-collection types, possibly the serializable read-slicing sketched in
+Two persistence targets, **one writer — the DO**. *Embedded DO-SQLite* is
+synchronous and private to the DO. *D1* is the first target your other consumers
+can actually read — which is when "your database is the global API" stops being a
+slogan — at the cost of being a farther-away box: persistence goes async, the
+atomic POST moves from `transactionSync` to D1's `batch()`, and the DO must
+explicitly serialize its write → `seq` → broadcast critical section (no free
+synchronous atomicity). The `seq`/oplog/echo model is unchanged because the DO
+stays the sole writer. (A *shared* D1 written by many DOs is the multi-writer
+problem — that's v2.)
+
+**v2 — Postgres, and the multi-writer world it opens.** Postgres alongside the DO
+targets, and shared databases written by many DOs (including a shared D1). The
+bigger bite: a real CDC/echo story (Postgres WAL / logical replication; a shared D1
+has no WAL to tail), RPC support, RLS conventions, the per-user (and other
+partitioned) collection types, possibly the serializable read-slicing sketched in
 [`unspecified.md`](./unspecified.md) / [`collection-types.md`](./collection-types.md),
 and maybe a non-realtime `queryCollection` fallback for tables we can't tail. And
 once two or three databases coexist, a `db` may compose tables from different

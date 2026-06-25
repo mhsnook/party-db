@@ -75,6 +75,12 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
       interface is shared.
 - [ ] **CRUD against typed columns** in `applyOne` (insert/update/delete into real
       columns), replacing the blob upsert.
+- [ ] **Pluggable async persistence sink (embedded DO-SQLite *or* D1).** Design
+      `applyOne`/`onRequest` against an async sink, not `transactionSync` directly:
+      embedded SQLite is sync, D1 is async (`batch()` for the atomic POST). Either
+      way the DO is the sole writer and must serialize the write → `seq` →
+      broadcast critical section (input-gating / `blockConcurrencyWhile`) so async
+      awaits can't interleave ordering. (Shared/multi-writer D1 is v2.)
 - [ ] **The database is the authority.** A write is a genuine transactional commit
       the DB's constraints can reject; rejection fails the POST (client optimistic
       rollback), success *is* the acceptance. The server applies the batch in the
