@@ -75,12 +75,15 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
       interface is shared.
 - [ ] **CRUD against typed columns** in `applyOne` (insert/update/delete into real
       columns), replacing the blob upsert.
-- [ ] **Pluggable async persistence sink (embedded DO-SQLite *or* D1).** Design
-      `applyOne`/`onRequest` against an async sink, not `transactionSync` directly:
-      embedded SQLite is sync, D1 is async (`batch()` for the atomic POST). Either
-      DO serializes its write → `seq` → broadcast critical section (input-gating /
-      `blockConcurrencyWhile`) so concurrent POSTs' awaits can't interleave ordering.
-      Both targets capture via `RETURNING` (what the `/write` handler commits), not
+- [ ] **Extract a `PersistenceAdapter` seam (embedded DO-SQLite *or* D1).** Pull the
+      apply step out of `applyOne` behind an interface — `apply(op, schema) → resolved
+      row` — so `onRequest` calls it blind to the target: blob (v0), structured SQL
+      (v1), or D1. Design it **async** (not `transactionSync` directly): embedded
+      SQLite is sync, D1 is async (`batch()` for the atomic POST). The DO serializes
+      its write → `seq` → broadcast section (input-gating / `blockConcurrencyWhile`)
+      so concurrent POSTs' awaits can't interleave ordering. Wins: each adapter is
+      unit-testable without miniflare, and v0→v1 is "swap the adapter," not "rewrite
+      `onRequest`." Both targets capture via `RETURNING` (what `/write` commits), not
       a change feed: changes that never come through `/write` — other services,
       cronjobs, trigger side-effects on rows we didn't return — are the v2 WAL story.
 - [ ] **The database is the authority.** A write is a genuine transactional commit
@@ -117,6 +120,10 @@ You currently cannot typecheck or test the package in isolation.
 - [ ] **Unit tests:** `applyBatch` (`src/client/apply.ts`); `SyncClient` routing /
       `pending` buffer / `waitForSeq` / high-water mark; `persist` grouping
       (`toEvent`, by-channel split); `partyTransport` `since`/`lastSeq` tracking.
+- [ ] *(optional enabler)* Export `makePersist(client)` from `collection.ts` and
+      pass it into `wireCollections`, so the write path tests above can run against a
+      mock `SyncClient`. It's already a closure — naming it is the whole change.
+      Speculative; do it only if it makes the `persist` tests cleaner.
 - [ ] **Server tests:** structured `applyOne` (insert/update/delete + constraint
       rejection + resolved row) + oplog seq; `onRequest` multi-batch atomic commit +
       broadcast order == seq order; `snapshot` vs `replaySince`; unknown-channel → 400.
@@ -141,12 +148,16 @@ You currently cannot typecheck or test the package in isolation.
       `NaN` on garbage today, `onConnect`).
 - [ ] Validate the POST body is actually `WriteBatch[]` before iterating — malformed
       body currently throws → 500 (`onRequest`).
-- [ ] **Settlement can hang forever.** `persist` awaits `waitForSeq`, which only
-      resolves when the seq streams back; if it never does (writer's channel not
-      registered, or a persistent disconnect) the mutation promise hangs. Bound it
-      (timeout → reject/retry) — note §7 deliberately waits on the *stream* not the
-      bare ack, so don't "fix" this by resolving on ack (reintroduces flicker);
-      reconnect's `?since` is the real re-delivery path.
+- [ ] **Settlement can hang forever — extract a `SeqTracker` while fixing it.**
+      `persist` awaits `waitForSeq`, which only resolves when the seq streams back; if
+      it never does (writer's channel not registered, or a persistent disconnect) the
+      mutation promise hangs. Pull settlement (the high-water mark + waiters) out of
+      `SyncClient` into a pure `SeqTracker` over `Cursor`: it gives the **timeout**
+      (→ reject/retry) a home, makes settlement testable without a transport, and
+      fixes the numeric-only watermark that silently drops string cursors (swap one
+      comparator for a v2 Postgres LSN). Note §7 deliberately waits on the *stream*
+      not the bare ack, so don't "fix" the hang by resolving on ack (reintroduces
+      flicker); reconnect's `?since` is the real re-delivery path.
 
 ### 5. Auth — **P1** (none today)
 
