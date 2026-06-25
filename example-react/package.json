@@ -1,5 +1,5 @@
 {
-  "name": "party-db-example",
+  "name": "party-db-example-react",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,15 +9,21 @@
   },
   "dependencies": {
     "@tanstack/db": "^0.6",
+    "@tanstack/react-db": "^0.1.88",
     "partyserver": "^0.0.71",
     "partysocket": "^1.1",
+    "react": "^19",
+    "react-dom": "^19",
     "zod": "^3.24"
   },
   "devDependencies": {
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
     "concurrently": "^9",
     "cross-env": "^7",
+    "typescript": "^5.7",
     "vite": "^6",
-    "wrangler": "^4",
-    "typescript": "^5.7"
+    "wrangler": "^4"
   }
 }
