@@ -107,7 +107,10 @@ hands back the **resolved** row the database actually wrote (defaults, generated
 columns, serials, trigger effects), which is what fans out to everyone. Zod is
 your first-line validation and your types on the client; the database is the
 authority on the server. You keep the two in agreement by defining schemas that
-match your tables — that agreement is the entire contract.
+match your tables — that agreement is the entire contract. In practice it's *one
+collection interface* — `{ name, key, schema }` — defined once and imported on both
+client and server; they may be distinct `clientCollection` / `serverCollection`
+entities if their fill-in-value rules differ, but the interface is shared.
 
 This ability to maintain transactional integrity means that what you currently
 implement as RPC functions, where you write one table, and then another, and
