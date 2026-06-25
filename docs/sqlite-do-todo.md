@@ -23,7 +23,7 @@ the next section.
 | 1 | One mode: DO-controlled | ✅ | WS down + `POST /write` up, DO SQLite |
 | 2 | Wire = `WriteEvent = Omit<ChangeMessage,'key'>` | ✅ | `src/protocol.ts` |
 | 3 | Multiplex by `channel` | ✅ | `SyncClient` registry; server keys tables by channel |
-| 4 | One interpreter both sides | 🟡 | client uses `applyBatch`; **server reimplements apply in SQL** (`applyOne`) and never uses the `ChannelSink` half of `interpreter.ts` — consistent with §12, but the shared-interpreter framing is half-unused |
+| 4 | Shared wire types + apply contract; per-target apply code | ✅ | framing corrected (was "one interpreter both sides"). Client applies via `applyBatch` (now `src/client/apply.ts`); server applies via `applyOne`/SQL. Shared = wire types + the atomic-in-order contract, not the loop. |
 | 5 | Client UUIDs; server blob + `_oplog` | ✅ | `onStart` / `applyOne` |
 | 6 | `seq` from `_oplog` AUTOINCREMENT via `RETURNING` | ✅ | `applyOne` |
 | 7 | optimistic → ack → settlement (`waitForSeq`) | ✅ | `persist` awaits each seq; see robustness gaps below |
@@ -47,7 +47,7 @@ isolation.
       implicit-`any`s: `collection.ts:63` (`sink`) and `party-db-server.ts:75`
       (`r`).
 - [ ] **Test runner** (vitest).
-- [ ] **Unit tests:** `applyBatch` (interpreter); `SyncClient` routing / `pending`
+- [ ] **Unit tests:** `applyBatch` (`src/client/apply.ts`); `SyncClient` routing / `pending`
       buffer / `waitForSeq` / high-water mark; `persist` grouping (`toEvent`,
       by-channel split); `partyTransport` `since`/`lastSeq` tracking.
 - [ ] **Server tests:** `applyOne` upsert/delete + oplog seq; `onRequest`

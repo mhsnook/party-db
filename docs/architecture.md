@@ -77,13 +77,20 @@ collection by channel.
 
 Why: one connection per room, not one per table.
 
-## 4. One interpreter on both sides
+## 4. Shared wire types + apply contract; per-target apply code
 
-`applyBatch(sink, batch)` is identical on client and server. Only the *sink*
-differs: a TanStack collection on the client, SQLite on the server.
+What every consumer shares is the wire format (§2) and the *contract* of applying
+a batch: do its ops atomically, in order. The apply *code* differs per target, by
+design — the client applies into a TanStack DB collection (`applyBatch` in
+`src/client/apply.ts`, driving TanStack's `sync({begin,write,commit,markReady})`);
+the server applies into SQLite directly (`applyOne`, inside one `transactionSync`
+over the whole POST); a future Postgres target translates to its own SQL.
 
-Why: if a batch applies in one place it applies everywhere — there is a single
-definition of "apply".
+Why not one shared `applyBatch` on both sides: the server also mints `seq` and
+wraps the *entire* multi-channel POST in a single transaction (§11) — a coarser
+boundary than a per-batch begin/commit. Forcing both through one function would
+fight the server's atomicity, not help it. The shared thing is the contract, not
+the loop.
 
 ## 5. Client mints UUIDs; the server stores JSON blobs + an oplog
 
@@ -181,8 +188,8 @@ adapter — is a **client cache**: even when it runs *on the server*, it is a cl
 *of* some upstream authority, not the authority itself. That is precisely why it
 cannot be the constraint/`RETURNING` authority or the persistence layer — and so
 why we skip trying to use it as the server sink, reaching for `ctx.storage.sql`
-(or a real database) directly. "Same interpreter both sides" holds at the protocol
-level; the sinks differ.
+(or a real database) directly. What's shared across sides is the wire protocol and
+the apply contract (§4), not the apply code — the sinks differ.
 
 ## Layering
 

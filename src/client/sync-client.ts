@@ -2,7 +2,7 @@
 // collections, routes each incoming batch to its channel, and lets a writer
 // await a specific seq's arrival (the settlement signal).
 
-import { applyBatch, type ChannelSink } from '../interpreter.ts'
+import { applyBatch, type ChannelSink } from './apply.ts'
 import type { Cursor, SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
 
 // A transport is just "a stream coming down" + "a way to push writes up".
