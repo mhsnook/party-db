@@ -1,7 +1,6 @@
 import { z } from 'zod'
 
-// Defined once, imported by both client and server (the server only needs the
-// shape if it wants to validate; storage is schema-agnostic blobs).
+// Defined once, imported by both client and server
 export const todoSchema = z.object({
   id: z.string(),
   text: z.string(),

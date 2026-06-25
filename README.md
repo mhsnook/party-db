@@ -10,9 +10,13 @@ with an extremely simple DX, and even a few capability enhancements for batches
 /transactions whose grouping and acknowledgement survive the trip to the server
 and back, and the fan-out to the websocket's subscribers.
 
-The example app in `/example` shows how much of this is just a thing wrapping
-the excellent work of PartyKit and Tanstack DB. `/example-react` is the same
-app rendered with React and TanStack DB's `useLiveQuery` hook.
+The quickest way to get a sense for how to use this library is to check the
+[react example app](./example-react/README.md), and its minimal `App.tsx` and
+`server.ts`, easy setup, working `useLiveQuery`, and zero-config writes with
+`todos.insert` and `todos.update`. There is also a [vanilla JS example
+app](./example/README.md), showing that PartyDB works anywhere you can use a
+Tanstack DB and a websocket.
+
 
 The transport is handled mostly by PartyKit's _PartyServer_ (server) and
 _PartySocket_ (client), with a bit of extra logic on the server to ensure
