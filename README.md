@@ -73,9 +73,9 @@ Other modes (trusting relay, PostgREST/SSE, Supabase Realtime ride-along) are
   by `channel` (= table name), so one socket carries every collection.
 - **Persisted into your real tables.** The server commits into structured tables
   that reflect your schema — honoring your constraints, types, and other consumers
-  — and hands back the *resolved* row the database actually wrote. (Today's code
-  ships an uncontrolled blob fallback; structured tables are the active work — see
-  [`sqlite-do-todo.md`](./docs/sqlite-do-todo.md).)
+  — and hands back the *resolved* row the database actually wrote. (Today ships
+  **v0** — uncontrolled blob storage; **v1**, the RDBMS-controlled path, is the
+  active work — see [`sqlite-do-todo.md`](./docs/sqlite-do-todo.md).)
 - **Client mints UUIDs** for stable optimistic keys.
 - **`seq`** comes from the DO's `_oplog` AUTOINCREMENT (a clean total order,
   because a DO is single-threaded). The write's HTTP response is the **ack**

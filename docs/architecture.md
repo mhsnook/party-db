@@ -41,21 +41,19 @@ The shape of it:
 3. The client passes a PartySocket connection and its schemas to `createPartyDb()`
    — live queries, optimistic writes, and confirmed sync all work.
 
-## 1. Starting with One mode: DO-controlled
+## 1. Starting with One mode: DO-controlled SQLite for v1
 
-Our initial deployment target is the same as PartyServer: a Durable Object that
-is both the authority and the SQLite persistence behind an otherwise-transparent
-partyserver. It owns the WebSocket (down) and `POST /write` (up) for its room.
+After the v0 proof-ofconcenpt, our first real deployment target is the same as
+PartyServer: a Durable Object that is both the authority and the SQLite
+persistence behind an otherwise-transparent partyserver. It owns the WebSocket
+(down) and `POST /write` (up) for its room.
 
 Why: a DO is single-threaded and has transactional SQLite, which hands us total
 ordering and durability for free. Other shapes (a trusting relay, PostgREST/SSE,
 Supabase Realtime) are designs only, parked in `unspecified.md`.
 
 For the moment, we are wanting to keep this library tightly focused on extending
-PartyKit, so our deployment target is their deployment target. (However, the
-structure of the thing seems to be able to travel; it could be that PartyKit
-becomes just one supported transport, and/or SQLite becomes just one supported
-persistence layer.)
+PartyKit, so our deployment target is their deployment target.
 
 ## 2. The wire format is TanStack DB's `write()` argument
 
@@ -68,7 +66,8 @@ is no translation on either end — we ship what we apply.
 
 This means that every consumer of the stream simply has to accept this `write`
 payload format, pass the same tests, produce the same results, etc. This package
-is meant to be a Tanstack DB tool.
+is meant to have the write-confirm-settle cycle land, at its terminus, in
+Tanstack DB collections.
 
 ## 3. Many collections multiplex over one connection
 
@@ -95,10 +94,11 @@ the loop.
 
 ## 5. The server persists into structured tables that reflect your schema
 
-The server's storage *is* your relational schema: real tables, real columns, real
-constraints and foreign keys — the shape your app already depends on and that your
-other consumers (reports, admin, jobs, other services) already read and write. We
-conform to that shape; we never ask the data to become something else.
+Your relational schema is a stakeholder in this whole thing; you may have a ton
+of other parts of your app and ecosystem that rely on its current structure,
+format, performance profile, infrastructure options, and the assurances it
+provides. A PartyDB replicates that shape and content to its consumers, without
+requiring the data take any particular shape.
 
 Why: your database is your app's global API, with masters beyond this library. So
 the server completes a write the way a web application does — a genuine
@@ -109,14 +109,17 @@ your first-line validation and your types on the client; the database is the
 authority on the server. You keep the two in agreement by defining schemas that
 match your tables — that agreement is the entire contract.
 
-This is what makes resolved-row reconciliation load-bearing (`WriteAck.changed`
-plus the resolved row on the stream): when the committed row differs from the sent
-row, the resolved row is the truth, and the client swaps its optimistic overlay
-for it.
+This ability to maintain transactional integrity means that what you currently
+implement as RPC functions, where you write one table, and then another, and
+another, in a specific order, that matters for the integrity checks in the
+database -- these can be implemented with the same specificity on the client,
+using Tanstack DB transactions. In the old way, the complexity was mixed on
+the RPC handler and the DB rules; now we're encouraging you to move it into
+the DB rules, and then write transactions that follow them.
 
-**We represent the write; we don't re-derive it.** The order you write to related
-tables, the shape of a multi-table change — that logic was always yours, and it
-stays yours; you just express it in TanStack DB operations (a `createTransaction`
+The complexity it getting a little bit clarified, and a little bit just moved
+from one place to another: from your RPC handler into the order in which you call
+your TanStack DB operations (a `createTransaction`
 for atomic grouping is an *optional* optimization) instead of in a bespoke RPC
 handler. The server doesn't recompute or pre-judge it — it applies your batch in
 order, in one transaction, and the database's constraints decide whether your
@@ -125,20 +128,21 @@ cheap *error-sooner* gate (nicer messages, don't open a doomed transaction), nev
 as the correctness authority. Correctness is the database's — it always was the
 real source of truth, even when something upstream pretended to be.
 
-**Status:** the shipped code is the *uncontrolled* fallback (5a), not this.
-Building the structured-table path is the active work — see
+**Status:** the shipped code is **v0** — the uncontrolled fallback (§5a). This
+section is **v1**, the active work — see the Roadmap below and
 [`sqlite-do-todo.md`](./sqlite-do-todo.md).
 
-### 5a. Uncontrolled mode (the small fallback)
+### 5a. Uncontrolled mode — v0 (the shipped baseline)
 
-A collection can opt out of all of the above: the server stores rows as opaque
-`(k TEXT PRIMARY KEY, data TEXT)` blobs keyed by PK (plus the
+This is what runs today. A collection can opt out of all of the above: the server
+stores rows as opaque `(k TEXT PRIMARY KEY, data TEXT)` blobs keyed by PK (plus the
 `_oplog(seq INTEGER PRIMARY KEY AUTOINCREMENT, channel, ops)`) and validates
 nothing — client schemas still exist (you always need them for TanStack DB), the
 server just doesn't care what they are. With client-minted UUID keys the resolved
-row equals the sent row, so there's no reconciliation. Fine for a pure "party
-room" with no real database behind it; a deliberately tiny corner we don't intend
-to invest in for now.
+row equals the sent row, so there's no reconciliation. It's real and shipped — a
+zero-config realtime collection store — over the same controlled transport (ack,
+`seq`, fan-out) as v1; it just doesn't control the *data*. We don't extend it; v1
+above is where the work goes.
 
 ## 6. `seq` is the authority's commit-log position
 
@@ -227,29 +231,40 @@ the apply contract (§4), not the apply code — the sinks differ.
 
 ## Roadmap
 
-**v1 — realtime RDBMS over a Durable Object (this repo).** The whole thing — the
-client's TanStack DB collections, the transport, and the server — is generated
-from a tiny footprint:
+**v0 — uncontrolled sync (shipped, done).** A PartyServer fills your TanStack DB
+collections with zero config: the client mints UUIDs, the server stores rows as
+opaque blobs (§5a) and validates nothing, and writes fan out to every subscriber.
+The *data* is uncontrolled — there's no real database underneath — but the
+transport is the same controlled DO-authority sync as v1 (ack, `seq`, fan-out,
+delta reconnect). Not the goal, but a real thing: a zero-config realtime
+collection store.
 
-1. the PartySocket config (host/room), and
-2. the collection configs to broadcast — each just a Zod schema, a `name`, and a
-   `key`. Notably **no** `onInsert/onUpdate/onDelete` to write.
+**v1 — controlled by your RDBMS (SQLite first; this repo's active work).** The
+server persists into structured tables, validates each row against its Zod schema
+server-side, lets the database validate (constraints/FKs), and returns the full
+ack → echo of the *resolved* row — still zero config. Transactions live in your
+TanStack DB transactions: we represent them in order and apply them in order, each
+row Zod-checked, then committed to the database. You still reason about write order
+— but only once, and it never forces you into RPCs where ordered CRUD would do,
+into request waterfalls, or into loosening referential integrity: the write
+transaction applies *inside the database*, where it always belonged, not at a
+middle layer.
 
-An enormous surface covered by almost nothing. The trade we ask in return: put
-your constraints in the database (they belonged there), and — in the Postgres
-story — your complex logic in DB-level RPCs / triggers / RLS. That's a good trade:
-the database is the correct final source of truth and was always the real
-security/auth boundary; anything at the app layer was provisional.
-
-**v2 — swappable persistence sinks.** DO-SQLite *and* Postgres (echo via the WAL)
-as interchangeable backends, plus the work that clusters around that. Keeping
-client and server aligned across schema versions gets a deliberately simple
-(slightly dumb, and fine) treatment here.
+**v2 — swappable persistence sinks, and what they pull in.** Optional D1 or
+Postgres alongside DO-SQLite. D1 is mostly "handle a farther-away box." Postgres is
+the bigger bite: RPC support, RLS conventions, the per-user (and other partitioned)
+collection types, possibly the serializable read-slicing sketched in
+[`unspecified.md`](./unspecified.md) / [`collection-types.md`](./collection-types.md),
+and maybe a non-realtime `queryCollection` fallback for tables we can't tail. And
+once two or three databases coexist, a `db` may compose tables from different
+places — or just conventions for running two side by side (one realtime + global,
+one not), where each collection picks its transport and the transport knows which
+loading strategies are valid for it. Lots to design; not yet.
 
 **v3 (horizon, not planned) — generate everything.** Point at your database, mark
 tables public / per-user / per-team, and codegen a fully-typed `db` of typed
-collections with typed insert/update and typed live queries (and RPCs). Change the
+collections with typed insert/update, typed live queries, and RPCs. Change the
 Postgres structure, re-run codegen, hover over `db`, and the new tables / columns /
 functions are just there — maybe including cross-schema-version client/server
-sync. This is the *only* place the "generate schemas/DDL" question lives; it is
-not in scope before then.
+sync. The *only* place the "generate schemas/DDL" question lives; not in scope
+before then.

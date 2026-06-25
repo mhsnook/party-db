@@ -1,17 +1,35 @@
-# Finish the SQLite Durable Object story — TODO
+# Finishing the RDBMS, SQLite, Durable Object story
 
-**Scope:** finish the **controlled** DO-SQLite story — the server committing into
-**structured tables that reflect your schema**, with the database as the authority
-(real columns, constraints, foreign keys, and the *resolved* row handed back).
-That structured-table path is what makes party-db usable for the real apps it's
-for — ones that already run an RDBMS — so it is the **spine** of this list, not an
-enhancement. Postgres/WAL, slicing, RLS, Supabase, and RPC are **parked** (bottom).
+We have completed version 0, and are now working toward version 1 (the first
+version I actually want to use in an actual app).
+
+Version 0 was enough to make these example apps work, and to connect the
+Tanstack DB collections over a PartyServer on a Durable Object. The DB collection
+is the entire API surface for all reads and writes, and the server handles
+them transparently with zero code and zero config. That was a good POC.
+
+Next, v1 is meant to work in the same Durable Object/PartyKit environment, but
+on a DO that has its own SQLite database that holds the authority on the data,
+provides the canonical order for the stream, and enables complete backfill/
+catchup -- in other words, it's the first version I actually want to use in a
+project!
+
+The major structural outcome here is the completion of this write-confirm-settle
+cycle where a couple things are true:
+
+- Tanstack DB collection operations on clients are the entire API
+- User performance about as good as the laws of physics currently allow
+- DX that handles all server logic, mutations, and realtime connection with less
+config than a `queryCollection`: no `queryFns`, no `onUpdate`
+
+v2+ (Postgres-WAL, RPCs, RLS, slicing, (Supabase?)) is **parked**
+(bottom); see architecture → Roadmap.
 
 **Where we actually are:** the transport/sync plumbing is built and solid — wire
 format, channel multiplexing, `seq`, optimistic → ack → settlement, delta
-reconnect, fan-out. What's *not* built is the persistence model: the code ships
-the **uncontrolled** fallback (schema-agnostic `(k, data)` blob upsert). So the
-work is making the data real, and making the package testable.
+reconnect, fan-out (this *is* v0). What's *not* built is the v1 persistence model:
+the code still does the schema-agnostic `(k, data)` blob upsert. So the work is
+making the data real, and making the package testable.
 
 Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks "done",
 **P1** needed for real use, **P2** polish.
@@ -145,24 +163,3 @@ You currently cannot typecheck or test the package in isolation.
       scenetest-cloud" — update it.
 - [ ] Example nit: `todos.toArray as Todo[]` is used as a value — confirm it's the
       getter, not a missing call.
-
----
-
-## Uncontrolled mode (the tiny fallback — not invested in now)
-
-The current blob path (`(k, data)` upsert, no schema enforcement) becomes an
-explicit opt-out, for a pure "party room" with no real database to honor. Client
-schemas still exist; the server just ignores them. Keep it working; don't grow it.
-
-## Explicitly parked (NOT part of the SQLite DO story)
-
-Tracked in [`collection-types.md`](./collection-types.md) and
-[`unspecified.md`](./unspecified.md):
-
-- Postgres / WAL persistence (logical replication, LSN seq, `pg_logical_emit_message`)
-- Read-level slicing (serializable `where` AST) and user-private / RLS shapes
-- Supabase Realtime transport
-- RPC escape hatch
-- Trusting relay mode
-- Partial/column-level diffs, offline write queues, schema version-hash handshake,
-  `subscribe(channels[])` bandwidth filtering
