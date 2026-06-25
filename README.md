@@ -4,11 +4,30 @@
 > The design is not really settled — see [`architecture.md`](./docs/architecture.md)
 > and [`unspecified.md`](./docs/unspecified.md).
 
-Live, persisted TanStack DB collections synced over a Durable Object, powered
-by PartyKit wherever possible, landing in Tanstack-native DB Collections, and
-with an extremely simple DX, and even a few capability enhancements for batches
-/transactions whose grouping and acknowledgement survive the trip to the server
-and back, and the fan-out to the websocket's subscribers.
+**party-db connects your TanStack DB collections to the relational database you
+already run** — over PartyKit, with near-zero config. You write `todos.insert()`
+on one client; every other client's collection receives the row and re-renders.
+party-db is everything in between: the `POST`, the durable commit into your real
+tables, the acknowledgement, the ordering, and the fan-out — conforming to your
+database's structure, types, and auth as it goes.
+
+**TanStack DB becomes your entire API.** Instead of writing API handlers on the
+server and `onInsert/onUpdate/onDelete` on the client, you glue them together with
+this. Your database still enforces its constraints; your `todos.insert()` still
+POSTs to the server and is acknowledged before it fans out to the live sync. You
+just don't write anything in between: make your database enforce the constraints
+you need, make your Zod schemas match, and that's the connective tissue.
+
+**Server setup is as easy as defining TanStack DB collections.** The same Zod
+schemas that already power TanStack DB now drive your production database too,
+replicating writes up and back out to every consumer. ("Near-zero config" is
+literal — you pass Zod schemas, but you already needed those for TanStack DB.)
+
+Already have a database? Generate Zod schemas straight from it with
+[`drizzle-zod`](https://orm.drizzle.team/docs/zod) and bring those — keeping your
+schemas honest to your tables is a code-time concern you already own for TanStack
+DB; party-db doesn't generate DDL or types for you (that's the far-future
+horizon, not today).
 
 The quickest way to get a sense for how to use this library is to check the
 [react example app](./example-react/README.md), and its minimal `App.tsx` and
@@ -24,9 +43,9 @@ ordering, backfill, and acknowledged writes, and on the client to make the DX
 buttery smooth: just pass it your PartySocket connection and the schemas/tables
 you want to pull off the wire, and it returns a map of all your Tanstack
 Collections, pre-wired for onInsert/onUpdate/onDelete, optimistic and confirmed
-writes, and a utility function to give you cross-collection transactions whose
-bundling survives the entire trip to the server and out to all connected clients
-(not possible without our batch/unroll logic).
+writes, and a utility function for cross-collection transactions that commit
+all-or-nothing in one POST on the server (subscribers then receive the constituent
+writes in order).
 
 Clients create their collections all at once using `createPartyDb()`, passing in
 the Zod schemas for their collections and the connection info for the PartyServer
@@ -52,9 +71,12 @@ Other modes (trusting relay, PostgREST/SSE, Supabase Realtime ride-along) are
 
 - **Wire format = TanStack DB's `write()` arg** (`{ type, value }`), multiplexed
   by `channel` (= table name), so one socket carries every collection.
-- **Client mints UUIDs.** Rows are stored server-side as JSON blobs keyed by PK,
-  so the resolved row always equals the sent row — no DDL, no `RETURNING`, no
-  reconciliation.
+- **Persisted into your real tables.** The server commits into structured tables
+  that reflect your schema — honoring your constraints, types, and other consumers
+  — and hands back the *resolved* row the database actually wrote. (Today ships
+  **v0** — uncontrolled blob storage; **v1**, the RDBMS-controlled path, is the
+  active work — see [`sqlite-do-todo.md`](./docs/sqlite-do-todo.md).)
+- **Client mints UUIDs** for stable optimistic keys.
 - **`seq`** comes from the DO's `_oplog` AUTOINCREMENT (a clean total order,
   because a DO is single-threaded). The write's HTTP response is the **ack**
   (carries `seq`); the same batch arriving on the socket is **settlement**.
@@ -119,12 +141,14 @@ serving its room's socket and `/write`, persisting to its own SQLite.
 ## Cross-collection atomic writes
 
 `db.todos` are first-class TanStack DB collections, so cross-collection atomic
-writes use TanStack's own `createTransaction`. But if you want to do multi-table
-transactions whose Transaction Envelope survives the entire round trip to the
-server and out to subscribers, you can use this `persist` function as your
-mutationFn. It sends your array of writes through the same steps: `/write` + seq
-+ acknowledge + settle, the same as with any `collection.update`, allowing the
-transaction envelope to keep its shape from client -> server -> subscribers.
+writes use TanStack's own `createTransaction` with this `persist` function as the
+mutationFn. It sends your whole transaction as one `/write` POST that the server
+commits **all-or-nothing**, and `isPersisted` resolves only once every assigned
+`seq` has settled — so the *write* is atomic from client to server, and then then
+subscribers receive the constituent writes **in order** (by `seq`) and apply them
+as they arrive. (They don't get a single atomic envelope, which is fine because
+the client DB is just replicating something that has already persisted on the
+server.
 
 ```ts
 import { createTransaction } from '@tanstack/db'
@@ -144,7 +168,7 @@ await tx.isPersisted.promise // both land in one POST, or neither does
 | File | Role |
 | --- | --- |
 | `src/protocol.ts` | wire contract: `WriteEvent` / `WriteBatch` / `SequencedBatch` / `WriteAck` |
-| `src/interpreter.ts` | `applyBatch(sink, batch)` — shared apply (client + server) |
+| `src/client/apply.ts` | `applyBatch(sink, batch)` — the client's batch-apply helper (drives TanStack's `sync`) |
 | `src/client/sync-client.ts` | one stream + channel registry + `waitForSeq` settlement |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
