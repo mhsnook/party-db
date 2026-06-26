@@ -18,6 +18,7 @@ export default defineConfig({
         // bind the room class to SQLite-backed DO storage (what v1 persists into)
         durableObjects: {
           Main: { className: 'Main', useSQLite: true },
+          Guarded: { className: 'Guarded', useSQLite: true },
         },
       },
     }),

@@ -8,15 +8,32 @@ import type { SequencedBatch } from '../protocol.ts'
 
 // The DO / PartyKit transport: down = the partysocket (hibernatable WS on the
 // server), up = POST to the same room (so the socket can hibernate).
-export function partyTransport(opts: { host: string; room: string; party?: string }): Transport {
+export function partyTransport(opts: {
+  host: string
+  room: string
+  party?: string
+  // optional credential for auth-gated rooms (the server reads it in `authorize`).
+  // Sent as `Authorization: Bearer <token>` on the POST, and as `?token=<token>`
+  // on the socket connect (browsers can't set headers on a WS upgrade). A function
+  // is re-read on every (re)connect / write, so a refreshed token is picked up.
+  token?: string | (() => string | undefined)
+}): Transport {
   const party = opts.party ?? 'main'
+  const tokenOf = () => (typeof opts.token === 'function' ? opts.token() : opts.token)
   let lastSeq: number | undefined // highest seq applied; drives delta reconnect
   const socket = new PartySocket({
     host: opts.host,
     room: opts.room,
     party,
-    // re-evaluated on every (re)connect: ask only for what we missed.
-    query: () => (lastSeq === undefined ? {} : { since: String(lastSeq) }),
+    // re-evaluated on every (re)connect: ask only for what we missed, and carry
+    // the (possibly refreshed) auth token since a WS upgrade can't use headers.
+    query: () => {
+      const token = tokenOf()
+      return {
+        ...(lastSeq === undefined ? {} : { since: String(lastSeq) }),
+        ...(token ? { token } : {}),
+      }
+    },
   })
   return {
     subscribe(onBatch) {
@@ -31,11 +48,15 @@ export function partyTransport(opts: { host: string; room: string; party?: strin
     async send(batches) {
       // PartySocket.fetch builds the party URL for us (host/scheme/route) — the
       // same room the socket is connected to.
+      const token = tokenOf()
       const res = await PartySocket.fetch(
         { host: opts.host, room: opts.room, party },
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify(batches),
         },
       )

@@ -222,11 +222,29 @@ You currently cannot typecheck or test the package in isolation.
 > monotonic straggler, per-channel, timeout reject / settle-before-timeout / no-timeout,
 > `rejectAll`, default + injected comparator); `SyncClient` string-cursor test updated.
 
-### 5. Auth — **P1** (none today)
+### 5. Auth — **P1** ✅ (landed)
 
-- [ ] Auth hook on **socket open** (`onConnect`) and **POST** (`onRequest`):
+- [x] Auth hook on **socket open** (`onConnect`) and **POST** (`onRequest`):
       bearer/session, reject unauthorized, pluggable so the room owner supplies the
-      check. Today any client can read the whole room and write to it.
+      check. *Landed:* one overridable `PartyDbServer.authorize(req, kind)` seam
+      (`src/server/auth.ts`) gates **both** doors with the same check — `kind:
+      'connect'` controls who can read the room, `kind: 'write'` who can POST. It
+      runs **before** any snapshot is sent or body parsed, so an unauthorized peer
+      learns nothing. Default is **open** (v0 behavior unchanged) until a subclass
+      plugs in a check. A rejected connect closes the socket with `1008` (policy
+      violation, never a snapshot); a rejected POST returns the owner's status
+      (default `401`) + a `WriteReject`, so TanStack rolls the optimistic mutation
+      back like any other rejection. `authorize` returns a bare boolean or a rich
+      `{ ok, status?, error? }`; a `bearer(req)` convenience is exported. The check
+      sees the raw `Request`, so the credential can come from an `Authorization`
+      header (POST) or `?token=…` (a browser WS upgrade can't set headers). Client
+      side: `partyTransport({ token })` carries it — header on the POST, query on
+      the connect.
+
+> *Tests:* 4 in `test/auth.test.ts` (decision helpers + `bearer` parsing) and 5 in
+> `test/integration/auth.test.ts` against a real auth-gated DO (`Guarded`): connect
+> denied → `1008`, no snapshot; connect allowed → snapshot; POST denied (missing /
+> wrong token) → `401`; POST allowed → `200`.
 
 ### 6. Cross-collection transaction visibility — **decided: ordered on receive**
 
