@@ -177,8 +177,9 @@ describe('SqliteAdapter — oplog: seq, snapshot, replaySince', () => {
     await adapter.write([ins('notes', { body: 'one' })]) // seq 1
     await adapter.write([ins('notes', { body: 'two' })]) // seq 2
     const delta = await adapter.replaySince(1)
-    expect(delta.map((b) => b.seq)).toEqual([2])
-    expect(delta[0].ops[0].value).toEqual({ id: 2, body: 'two', created: 'genesis' }) // resolved, from the oplog
+    expect(delta).not.toBeNull()
+    expect(delta!.map((b) => b.seq)).toEqual([2])
+    expect(delta![0].ops[0].value).toEqual({ id: 2, body: 'two', created: 'genesis' }) // resolved, from the oplog
   })
 })
 

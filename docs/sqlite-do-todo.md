@@ -171,19 +171,33 @@ You currently cannot typecheck or test the package in isolation.
       (`.github/workflows/ci.yml`: `pnpm install --frozen-lockfile` → `typecheck`
       → `test`).
 
-### 3. Oplog lifecycle — **P1** (`_oplog` grows forever today)
+### 3. Oplog lifecycle — **P1** ✅ (landed)
 
-- [ ] **Retention/compaction** of `_oplog` (tunable by rows/age). Nothing trims it now.
-- [ ] **`since`-floor fallback:** if a client's `since` is older than the oldest
-      retained seq, send a **fresh snapshot** instead of a gappy delta.
-      `replaySince` has no floor check, so post-compaction it would silently drop rows.
-- [ ] Lock the snapshot/seq consistency that single-threaded sync gives us with a
-      test (so a future refactor that adds an `await` mid-snapshot can't break it).
+- [x] **Retention/compaction** of `_oplog`. `SqliteAdapter` takes an `oplogRetention`
+      (rows) option — surfaced as `PartyDbServer.oplogRetention` — and compacts to the
+      most recent N rows inside the write transaction (so the floor is never torn).
+      Unset → unbounded (v0 behavior). Rows-based, not age: `since` is a seq cursor, so
+      a row count is the natural, deterministic knob; age would need a `ts` column +
+      migration for no real gain here. AUTOINCREMENT keeps seqs monotonic across
+      compaction (never reused), so the survivors stay a contiguous suffix.
+- [x] **`since`-floor fallback:** `replaySince` now returns `null` when the cursor
+      predates the oldest retained seq (the entries between are gone); `onConnect` then
+      sends a **fresh snapshot** instead of a gappy delta. An empty array stays a
+      *complete* delta (caught up), distinct from `null` (too old). Boundary tested:
+      a cursor at exactly `oldest − 1` still gets a delta.
+- [x] Lock the snapshot/seq consistency with a test: `snapshot` now reads the
+      watermark + every table inside one transaction (a consistent cut), and a test
+      asserts the reported `seq` is the head of the same oplog whose fold reconstructs
+      the snapshot's rows — so a future `await` slipped mid-snapshot would be caught.
+
+> *Tests:* 10 in `test/oplog-lifecycle.test.ts` (compaction, monotonic seq, floor
+> fallback + boundary, empty-delta vs null, snapshot/oplog consistency).
 
 ### 4. Robustness / input validation — **P1**
 
-- [ ] Validate `since` is a non-negative integer; else snapshot (`Number(since)` →
-      `NaN` on garbage today, `onConnect`).
+- [x] Validate `since` is a non-negative integer; else snapshot. *(Landed alongside
+      item 3: `onConnect`'s `cursorParam` rejects `NaN`/negative/non-integer → snapshot
+      rather than a `seq > NaN` query that silently returns nothing.)*
 - [ ] Validate the POST body is actually `WriteBatch[]` before iterating — malformed
       body currently throws → 500 (`onRequest`).
 - [ ] **Settlement can hang forever — extract a `SeqTracker` while fixing it.**

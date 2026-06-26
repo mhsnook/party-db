@@ -26,7 +26,9 @@ export interface PersistenceAdapter {
   // Full current state per collection + the latest seq, for a fresh connection.
   snapshot(): Promise<SequencedBatch[]>
 
-  // Just the oplog entries after `since`, in order — the delta a reconnecting
-  // client missed.
-  replaySince(since: number): Promise<SequencedBatch[]>
+  // The delta a reconnecting client missed — oplog entries after `since`, in
+  // order. Returns `null` when `since` predates what's still retained (compacted
+  // away), so the caller must send a fresh snapshot instead of a gappy delta. An
+  // empty array is a complete delta (the client missed nothing).
+  replaySince(since: number): Promise<SequencedBatch[] | null>
 }
