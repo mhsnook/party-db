@@ -12,10 +12,9 @@ export function partyTransport(opts: {
   host: string
   room: string
   party?: string
-  // optional credential for auth-gated rooms (the server reads it in `authorize`).
-  // Sent as `Authorization: Bearer <token>` on the POST, and as `?token=<token>`
-  // on the socket connect (browsers can't set headers on a WS upgrade). A function
-  // is re-read on every (re)connect / write, so a refreshed token is picked up.
+  // optional credential for auth-gated rooms: `Authorization: Bearer <token>` on
+  // the POST, `?token=<token>` on the connect (a WS upgrade can't set headers). A
+  // function is re-read on every (re)connect / write, so a refreshed token sticks.
   token?: string | (() => string | undefined)
 }): Transport {
   const party = opts.party ?? 'main'
@@ -26,7 +25,7 @@ export function partyTransport(opts: {
     room: opts.room,
     party,
     // re-evaluated on every (re)connect: ask only for what we missed, and carry
-    // the (possibly refreshed) auth token since a WS upgrade can't use headers.
+    // the token in the query since a WS upgrade can't set headers.
     query: () => {
       const token = tokenOf()
       return {
