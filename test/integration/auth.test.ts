@@ -22,8 +22,8 @@ describe('auth gate on the socket open (read)', () => {
   it('refuses an unauthorized upgrade with 401 before the WS handshake', async () => {
     const room = 'auth-connect-deny'
     const res = await SELF.fetch(gurl(room), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
-    expect(res.status).toBe(401) // no 101: the lobby short-circuits before the DO
-    expect(res.webSocket).toBeFalsy() // never got a socket, so never a snapshot
+    expect(res.status).toBe(401) // refused at the lobby, before the upgrade
+    expect(res.webSocket).toBeFalsy()
   })
 
   it('lets an authorized socket read the room', async () => {
@@ -35,7 +35,7 @@ describe('auth gate on the socket open (read)', () => {
       ws.addEventListener('message', (e) => resolve(JSON.parse(e.data as string)))
     })
     ws.accept()
-    expect(await first).toMatchObject({ channel: 'todos', ready: true }) // got the snapshot
+    expect(await first).toMatchObject({ channel: 'todos', ready: true })
     ws.close()
   })
 })
