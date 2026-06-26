@@ -11,6 +11,22 @@ party-db is everything in between: the `POST`, the durable commit into your real
 tables, the acknowledgement, the ordering, and the fan-out — conforming to your
 database's structure, types, and auth as it goes.
 
+**What you get:**
+
+- **Live queries** — components re-render when the data changes; no manual cache
+  invalidation.
+- **Optimistic, flicker-free writes** — `insert` / `update` / `delete` land
+  instantly, then settle on the server's confirmation, or roll back if it's
+  rejected.
+- **Realtime sync with no subscription code** — when any client writes, every
+  client with that collection live sees it.
+- **Typed end to end** — collections take their types from your Zod schema, so
+  reads *and* writes are type-checked.
+
+**Your database stays the source of truth.** Your tables, constraints, and auth are
+unchanged; party-db plugs into what you already run — no migration, no second copy
+of the truth.
+
 **TanStack DB becomes your entire API.** Instead of writing API handlers on the
 server and `onInsert/onUpdate/onDelete` on the client, you glue them together with
 this. Your database still enforces its constraints; your `todos.insert()` still

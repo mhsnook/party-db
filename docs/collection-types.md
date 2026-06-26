@@ -24,6 +24,7 @@ The two axes party-db is built around:
 | `powersync-db-collection` (PowerSync) | ✅ | ❌ needs the PowerSync service + Postgres/MySQL/Mongo |
 | `trailbase-db-collection` (TrailBase) | ✅ record subscriptions | ❌ standalone Rust binary; not a Worker/DO |
 | `rxdb-db-collection` (RxDB) | ✅ replication protocols | ⚠️ replication target *could* be a DO you write — not provided |
+| `supabase/tanstack-db` (Supabase)† | ✅ Supabase Realtime (Postgres Changes — WAL-based) | ❌ needs Supabase: Postgres + PostgREST + Realtime |
 | `query-db-collection` (TanStack Query) | ❌ fetch/refetch/poll | ✅ backend-agnostic; endpoint can be a DO (but not realtime on its own) |
 | `localStorageCollection` | ➖ cross-tab only | n/a (client-only) |
 | `localOnlyCollection` | ➖ in-memory | n/a (client-only) |
@@ -33,6 +34,24 @@ all-in-one-DO backend. The realtime ones each need an external service/DB; the
 DO-native piece is persistence-only (next). That gap is exactly what party-db
 fills — realtime sync whose whole authority + persistence + fan-out lives in one
 Durable Object.
+
+† `supabase/tanstack-db` is published by Supabase, not in the TanStack monorepo —
+an official adapter for an external backend, like the others above.
+
+**On `supabase/tanstack-db` specifically.** While we were heads-down on v0,
+Supabase published [`supabase/tanstack-db`](https://github.com/supabase/tanstack-db)
+— a *complete*, genuinely cool and promising solution for existing Supabase
+projects: live queries, optimistic mutations, automatic Realtime sync, fully typed,
+all respecting your existing Postgres / RLS / Auth with **no migration**. It reads
+via Supabase Realtime (Postgres Changes — i.e. the WAL) and writes straight through
+PostgREST, with no middle tier. We're aimed differently: Supabase and Durable
+Objects answer different infrastructure questions, and for teams already on the DO
+model we're going for something **extremely fast and cheap** — per-room
+hibernating-socket broadcast, an ordered `_oplog`, `?since` backfill, rather than
+per-row Realtime (which Supabase itself flags as message-heavy). But the headline
+is that Supabase is handing developers *basically the same API we are* — TanStack DB
+collections as the entire data layer over your real database. That's a good thing,
+and a strong signal that the shape is right.
 
 **The Cloudflare package is persistence, not a collection.**
 `cloudflare-durable-objects-db-sqlite-persistence` is *thin SQLite persistence for
@@ -122,4 +141,6 @@ trade-offs in [`unspecified.md`](./unspecified.md) → *Documented but NOT built
   the authoritative, complete echo.
 - **Supabase Realtime ride-along.** Use Supabase's existing replication stream as
   the down-transport; settle by primary key (no LSN in its payload). Effectively a
-  different project; filed, not focus.
+  different project; filed, not focus. Supabase's own
+  [`supabase/tanstack-db`](https://github.com/supabase/tanstack-db) is the reference
+  implementation of this lane — see Part 1.
