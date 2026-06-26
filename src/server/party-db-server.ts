@@ -20,7 +20,6 @@
 import { Server, type Connection, type ConnectionContext } from 'partyserver'
 import type { SequencedBatch, WriteAck, WriteBatch, WriteReject } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
-import { isAllowed, rejectionReason, rejectionStatus, type AuthDecision, type AuthKind } from './auth.ts'
 import type { PersistenceAdapter } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
 
@@ -38,15 +37,6 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // (the apply is synchronous), but the contract is async for D1, where two
   // concurrent POSTs' awaits could otherwise interleave the ordering.
   private queue: Promise<unknown> = Promise.resolve()
-
-  // The auth seam (see ./auth.ts). Override to gate who can read (`kind:
-  // 'connect'`, the socket open) and who can write (`kind: 'write'`, each POST).
-  // Default is open — v0 behavior — so existing rooms are unchanged until a
-  // subclass plugs in a bearer/session check. Runs before any snapshot is sent or
-  // body parsed, so an unauthorized peer learns nothing about the room.
-  protected authorize(_req: Request, _kind: AuthKind): AuthDecision | Promise<AuthDecision> {
-    return true
-  }
 
   // Override to swap the storage target (e.g. a D1 adapter). Default: the DO's
   // own embedded SQLite.
@@ -84,15 +74,6 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // back to a snapshot when `since` is absent, not a valid cursor, or older than
   // what the oplog still retains (replaySince → null) — never a gappy delta.
   async onConnect(conn: Connection, ctx: ConnectionContext) {
-    const decision = await this.authorize(ctx.request, 'connect')
-    if (!isAllowed(decision)) {
-      // 1008 = policy violation. The peer gets a close, never a snapshot, so an
-      // unauthorized client can't read the room. (Reason capped at the WS 123-byte
-      // limit.) Browsers can't set WS headers, so a connect token usually rides in
-      // `?token=…`; authorize() sees the raw Request and decides where to read it.
-      conn.close(1008, rejectionReason(decision).slice(0, 120))
-      return
-    }
     const cursor = cursorParam(new URL(ctx.request.url).searchParams.get('since'))
     const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
     const batches = delta ?? (await this.adapter.snapshot())
@@ -104,16 +85,6 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // post + its tags) is all-or-nothing — matching the client's atomic intent.
   async onRequest(req: Request): Promise<Response> {
     if (req.method !== 'POST') return new Response('not found', { status: 404 })
-
-    const decision = await this.authorize(req, 'write')
-    if (!isAllowed(decision)) {
-      // gate before parsing the body: an unauthorized writer does no work and
-      // gets the owner's chosen status (default 401) + reason, as a WriteReject so
-      // the client rolls its optimistic mutation back like any other rejection.
-      return Response.json({ error: rejectionReason(decision) } satisfies WriteReject, {
-        status: rejectionStatus(decision),
-      })
-    }
 
     let body: WriteBatch[]
     try {

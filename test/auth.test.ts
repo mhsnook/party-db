@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAllowed, rejectionReason, rejectionStatus, bearer } from '../src/server/auth.ts'
+import { authHooks, isAllowed, rejectionReason, rejectionStatus, bearer, type AuthKind } from '../src/server/auth.ts'
 
 describe('auth decision helpers', () => {
   it('reads the verdict from a bare boolean or the object form', () => {
@@ -33,5 +33,50 @@ describe('bearer', () => {
   it('returns null when absent or not a bearer header', () => {
     expect(bearer(req())).toBeNull()
     expect(bearer(req('Basic abc123'))).toBeNull()
+  })
+})
+
+describe('authHooks', () => {
+  const connect = (token?: string) =>
+    new Request(`https://x/parties/main/r${token ? `?token=${token}` : ''}`, { headers: { Upgrade: 'websocket' } })
+  const post = (token?: string) =>
+    new Request('https://x/parties/main/r', { method: 'POST', headers: token ? { authorization: `Bearer ${token}` } : {} })
+
+  // gate on a token in either place; record which door was checked.
+  const seen: AuthKind[] = []
+  const authorize = (r: Request, kind: AuthKind) => {
+    seen.push(kind)
+    const token = bearer(r) ?? new URL(r.url).searchParams.get('token')
+    return token === 'ok' ? true : { ok: false, status: 401, error: `no (${kind})` }
+  }
+  const hooks = authHooks(authorize)
+
+  it('passes an authorized connect through (returns undefined)', async () => {
+    expect(await hooks.onBeforeConnect(connect('ok'))).toBeUndefined()
+    expect(seen.at(-1)).toBe('connect')
+  })
+
+  it('refuses an unauthorized connect with a plain Response (no body parsing)', async () => {
+    const res = await hooks.onBeforeConnect(connect())
+    expect(res?.status).toBe(401)
+    expect(await res!.text()).toBe('no (connect)')
+  })
+
+  it('passes an authorized POST through', async () => {
+    expect(await hooks.onBeforeRequest(post('ok'))).toBeUndefined()
+    expect(seen.at(-1)).toBe('write')
+  })
+
+  it('refuses an unauthorized POST with a WriteReject JSON body', async () => {
+    const res = await hooks.onBeforeRequest(post())
+    expect(res?.status).toBe(401)
+    expect(await res!.json()).toEqual({ error: 'no (write)' })
+  })
+
+  it('does not auth-check non-POST requests (they fall through to the DO)', async () => {
+    const get = new Request('https://x/parties/main/r', { method: 'GET' })
+    const before = seen.length
+    expect(await hooks.onBeforeRequest(get)).toBeUndefined()
+    expect(seen.length).toBe(before) // authorize never ran
   })
 })

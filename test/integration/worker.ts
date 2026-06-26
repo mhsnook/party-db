@@ -3,7 +3,7 @@
 // full HTTP + WebSocket path, partyserver routing, DO storage and all.
 
 import { routePartykitRequest } from 'partyserver'
-import { PartyDbServer, definePartyCollection, bearer, type AuthKind } from '../../src/server/index.ts'
+import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthKind } from '../../src/server/index.ts'
 import { z } from 'zod'
 
 // `done` and `rev` are optional on the wire but defaulted in the table, so the
@@ -34,25 +34,29 @@ export class Main extends PartyDbServer {
   }
 }
 
-// The shared secret the guarded room expects. Exported so the auth test can send
+// The shared secret the guarded party expects. Exported so the auth test can send
 // it (header on POST, `?token=` on the WS upgrade).
 export const SECRET = 's3cret'
 
-// Same room as Main, but auth-gated: it overrides `authorize` to require the
-// token on both doors (connect = read, write = POST). This is the "room owner
-// supplies the check" story the v1 plan asks for.
-export class Guarded extends Main {
-  protected authorize(req: Request, kind: AuthKind) {
-    // POSTs carry the bearer header; a browser WS upgrade can't, so the connect
-    // door reads `?token=` instead. authorize() sees the raw Request either way.
-    const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
-    if (token === SECRET) return true
-    return { ok: false, status: 401, error: `unauthorized (${kind})` }
-  }
+// Same DO as Main; the auth lives in the lobby (below), not the class. A binding
+// is still needed so the `guarded` party has somewhere to route.
+export class Guarded extends Main {}
+
+// One check, gating both doors. It runs in the lobby (before the DO), so a bad
+// connect is refused before the WS upgrade and never wakes the object. The `main`
+// party stays open; only `guarded` requires the token — exactly how an app mixes
+// public and private parties under one routePartykitRequest call.
+const authorize = (req: Request, kind: AuthKind) => {
+  if (!new URL(req.url).pathname.includes('/parties/guarded/')) return true
+  // POSTs carry the bearer header; a browser WS upgrade can't, so the connect
+  // door reads `?token=` instead. authorize sees the raw Request either way.
+  const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
+  if (token === SECRET) return true
+  return { ok: false, status: 401, error: `unauthorized (${kind})` }
 }
 
 export default {
   async fetch(req: Request, env: unknown): Promise<Response> {
-    return (await routePartykitRequest(req, env as never)) ?? new Response('not found', { status: 404 })
+    return (await routePartykitRequest(req, env as never, authHooks(authorize))) ?? new Response('not found', { status: 404 })
   },
 }
