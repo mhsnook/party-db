@@ -1,138 +1,102 @@
-# party-db
+# PartyDB — Tanstack DB meets PartyKit
 
-> Status: This is a version 0.0.0, just kind of incubating the idea.
-> The design is not really settled — see [`architecture.md`](./docs/architecture.md)
-> and [`unspecified.md`](./docs/unspecified.md).
+> v0.0.0, incubating. Design: [`architecture.md`](./docs/architecture.md) · v1 plan
+> & roadmap: [`sqlite-do-todo.md`](./docs/sqlite-do-todo.md) · open questions:
+> [`unspecified.md`](./docs/unspecified.md).
 
-**party-db connects your TanStack DB collections to the relational database you
-already run** — over PartyKit, with near-zero config. You write `todos.insert()`
-on one client; every other client's collection receives the row and re-renders.
-party-db is everything in between: the `POST`, the durable commit into your real
-tables, the acknowledgement, the ordering, and the fan-out — conforming to your
-database's structure, types, and auth as it goes.
+**PartyDB connects your TanStack DB collections to your Database with
+optimistic updates and realtime sync — and near-zero config — over a
+Cloudflare Durable Object via PartyKit.** Your tables, constraints, and auth
+work unchanged; no migration, no second copy of the truth.
 
-**What you get:**
+If you're already familiar with Tanstack DB, you don't need to learn
+anything else; PartyDB handles everything after your `todos.insert()`
+and up until your `useLiveQuery(todos)` receives the updated data.
 
-- **Live queries** — components re-render when the data changes; no manual cache
-  invalidation.
-- **Optimistic, flicker-free writes** — `insert` / `update` / `delete` land
-  instantly, then settle on the server's confirmation, or roll back if it's
-  rejected.
-- **Realtime sync with no subscription code** — when any client writes, every
-  client with that collection live sees it.
-- **Typed end to end** — collections take their types from your Zod schema, so
-  reads *and* writes are type-checked.
+**Our Goals / Offerings for the Developer**
 
-**Your database stays the source of truth.** Your tables, constraints, and auth are
-unchanged; party-db plugs into what you already run — no migration, no second copy
-of the truth.
-
-**TanStack DB becomes your entire API.** Instead of writing API handlers on the
-server and `onInsert/onUpdate/onDelete` on the client, you glue them together with
-this. Your database still enforces its constraints; your `todos.insert()` still
-POSTs to the server and is acknowledged before it fans out to the live sync. You
-just don't write anything in between: make your database enforce the constraints
-you need, make your Zod schemas match, and that's the connective tissue.
-
-**Server setup is as easy as defining TanStack DB collections.** The same Zod
-schemas that already power TanStack DB now drive your production database too,
-replicating writes up and back out to every consumer. ("Near-zero config" is
-literal — you pass Zod schemas, but you already needed those for TanStack DB.)
-
-Already have a database? Generate Zod schemas straight from it with
-[`drizzle-zod`](https://orm.drizzle.team/docs/zod) and bring those — keeping your
-schemas honest to your tables is a code-time concern you already own for TanStack
-DB; party-db doesn't generate DDL or types for you (that's the far-future
-horizon, not today).
-
-The quickest way to get a sense for how to use this library is to check the
-[react example app](./example-react/README.md), and its minimal `App.tsx` and
-`server.ts`, easy setup, working `useLiveQuery`, and zero-config writes with
-`todos.insert` and `todos.update`. There is also a [vanilla JS example
-app](./example/README.md), showing that PartyDB works anywhere you can use a
-Tanstack DB and a websocket.
+- **Near-zero config** — You bring your database, set up one little PartyServer
+  and pass it your schemas — this is all the config you need.
+- **Tanstack Performance** — Tanstack DB's live queries already provide best-
+  in-class performance and fine-grained reactivity; data flows seamlessly from
+  the server to your components.
+- **Optimistic writes** — Collection updates like `todos.insert` (and `update`
+  / `delete`) land instantly on your client, then settle on the server's
+  confirmation, (or roll back if it's rejected); you don't have to configure
+  the Tanstack Collection's `onUpdate` functions, they just work.
+- **Typed end to end** — Collections take their types from your Zod schema, so
+  reads and writes are fully type-safe.
+- **Composable and bail-out-able** — You don't have to limit your app to just
+  single CRUD operations; you can compose them with the Collection's
+  transactions pattern, and those transactions are applied faithfully as an
+  atomic commit on the database before confirmation; you can call RPCs on the
+  server too, and as long as you yield back the changed rows, it *just works*.
+- **Seamless snapshot + backfill** — When a client connects, it loads a snapshot
+  of the published tables, notices the age of this snapshot (maybe each table
+  has different cache settings), and then loads up all the change operations
+  since that time and replays them, for optimal load-and-catchup performance,
+  and, as always, zero config.
 
 
-The transport is handled mostly by PartyKit's _PartyServer_ (server) and
-_PartySocket_ (client), with a bit of extra logic on the server to ensure
-ordering, backfill, and acknowledged writes, and on the client to make the DX
-buttery smooth: just pass it your PartySocket connection and the schemas/tables
-you want to pull off the wire, and it returns a map of all your Tanstack
-Collections, pre-wired for onInsert/onUpdate/onDelete, optimistic and confirmed
-writes, and a utility function for cross-collection transactions that commit
-all-or-nothing in one POST on the server (subscribers then receive the constituent
-writes in order).
+**Write → Confirm → Settle:** You (the developer, building a cool
+app with modern/realtime UX) will write `coll.insert()` in one place, and read
+`const { data } = useLiveQuery(...)` in another place — another component or
+another machine entirely!
 
-Clients create their collections all at once using `createPartyDb()`, passing in
-the Zod schemas for their collections and the connection info for the PartyServer
-that's serving them.
+**As of today** we support a single mode: Durable Object-controlled with SQLite
+persistence. This is v0 complete, working on v1.
 
-When the server makes edits, it fans them out to clients running PartySocket in
-the exact format of Tanstack DB's `write()` interface (the final step in making
-any change inside a collection). That lets us keep a simple SQLite interpreter of
-the write format on the server and apply the very same payload on every client.
+- **✅ v0 (no-server-schema mode):** Just gets changes from one DB client to the other clients
+- **⚡️ v1 (RDBMS, controlled mode):** Supports SQLite on the server, manages global ordering,
+  full catchups, server-client transaction parity. Real-time is limited to the changes that come
+  through the PartyServer (via PartyDB collection operations, or the `/write` handler).
+- **🗓️ v2 (Postgres + global WAL):** Will support Postgres as a server persistence target,
+  where we will take advantage of the global WAL, allowing PartyDB to be adopted incrementally
+  alongside your other systems and APIs, and unlocking some different ergonomics esp w/r/t
+  database triggers and async operations that aren't available with the initial `200 ok`.
+- **☁️ v3 (Full codegen):** ... TBD, but if the expectations from v2 work out, it seems possible
+  to generate everything just by pointing it at a Postgres DB and letting it codegen the rest.
 
-So the whole loop is: you `insert()` on the client, it POSTs to the room's
-`/write` channel using the same data format as Tanstack DB's `write()` function;
-the DO records it with its own persistence layer (SQLite by default), then
-party-fans-it-out over a hibernatable WebSocket; and every listening client
-applies that same exact `write` to its own copy of the collection.
-
-Scope is deliberately **one mode**: **DO-controlled**. The DO is the authority
-(its SQLite is the persistence layer) and an otherwise-transparent partyserver.
-Other modes (trusting relay, PostgREST/SSE, Supabase Realtime ride-along) are
-*documented but not built* — see [`unspecified.md`](./docs/unspecified.md).
-
-## The deal
-
-- **Wire format = TanStack DB's `write()` arg** (`{ type, value }`), multiplexed
-  by `channel` (= table name), so one socket carries every collection.
-- **Persisted into your real tables.** The server commits into structured tables
-  that reflect your schema — honoring your constraints, types, and other consumers
-  — and hands back the *resolved* row the database actually wrote. (Today ships
-  **v0** — uncontrolled blob storage; **v1**, the RDBMS-controlled path, is the
-  active work — see [`sqlite-do-todo.md`](./docs/sqlite-do-todo.md).)
-- **Client mints UUIDs** for stable optimistic keys.
-- **`seq`** comes from the DO's `_oplog` AUTOINCREMENT (a clean total order,
-  because a DO is single-threaded). The write's HTTP response is the **ack**
-  (carries `seq`); the same batch arriving on the socket is **settlement**.
-- **Optimistic, flicker-free.** `insert()` applies optimistically; the handler
-  awaits its `seq` on the stream before resolving, so the overlay drops straight
-  onto the synced row.
+**See it:** the [React example](./example-react/README.md) (`App.tsx` + `server.ts`,
+`useLiveQuery`, zero-config writes) or the [vanilla JS example](./example/README.md).
+(Yes, it really is that simple; we're not messing around about "near-zero config".)
 
 ## Client
 
 ```ts
 import { createPartyDb, partyTransport, definePartyCollection } from 'party-db/client'
 import { z } from 'zod'
+import { todoSchema, listSchema } from './my-schemas'
 
-const todoSchema = z.object({ id: z.string(), text: z.string(), done: z.boolean() })
-
+// ✅ This is the entire PartyDB setup right here
 const transport = partyTransport({ host: 'my-app.partykit.dev', room: 'team-42' })
 const { db, isConnecting } = createPartyDb(transport, [
   definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema }),
-  definePartyCollection({ name: 'lists', key: 'id' }),
+  definePartyCollection({ name: 'lists', key: 'id', schema: listSchema }),
 ])
 
 // db.todos is a normal TanStack DB collection.
-db.todos.insert({ id: crypto.randomUUID(), text: 'ship it', done: false })
+db.todos.insert({ id: crypto.randomUUID(), text: 'ship it', done: false, list_id })
 // -> optimistic locally -> POST /write -> ack(seq) -> arrives on socket -> settled.
 // every other client in 'team-42' sees it land too.
 ```
 
 That's the surface: a transport + some collection configs.
 
-## Server (Cloudflare Worker)
+## Server (Cloudflare Worker + PartyServer)
 
 ```ts
 import { PartyDbServer } from 'party-db/server'
 import { routePartykitRequest } from 'partyserver'
+// ✅ Same schemas you use on the client
+import { todoSchema, listSchema } from './my-schemas'
 
-// one room class serves BOTH the WebSocket and POST /write.
+// one room class serves BOTH the WebSocket and POST /write
+// broadcasts these tables to everyone in the shared room
 export class Main extends PartyDbServer {
   collections = [
-    { name: 'todos', key: 'id' },
-    { name: 'lists', key: 'id' },
+    { name: 'todos', key: 'id', schema: todoSchema },
+    { name: 'lists', key: 'id', schema: listSchema },
   ]
 }
 
@@ -162,9 +126,7 @@ mutationFn. It sends your whole transaction as one `/write` POST that the server
 commits **all-or-nothing**, and `isPersisted` resolves only once every assigned
 `seq` has settled — so the *write* is atomic from client to server, and then then
 subscribers receive the constituent writes **in order** (by `seq`) and apply them
-as they arrive. (They don't get a single atomic envelope, which is fine because
-the client DB is just replicating something that has already persisted on the
-server.
+as they arrive.
 
 ```ts
 import { createTransaction } from '@tanstack/db'
