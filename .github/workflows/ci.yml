@@ -1,14 +1,3 @@
-# Ready-to-use CI workflow for party-db.
-#
-# This bot can't push files under .github/workflows without the `workflow`
-# OAuth scope, so the workflow lives here as a reference. To activate it from a
-# local checkout:
-#
-#   mkdir -p .github/workflows && git mv docs/ci.yml .github/workflows/ci.yml
-#   git commit -m "Activate CI workflow"
-#
-# It runs `pnpm typecheck` (client + server projects) and `pnpm test` (vitest).
-
 name: CI
 
 on:
@@ -22,9 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm version comes from package.json's `packageManager` field.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
