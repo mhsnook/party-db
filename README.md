@@ -150,7 +150,11 @@ await tx.isPersisted.promise // both land in one POST, or neither does
 | `src/client/sync-client.ts` | one stream + channel registry + `waitForSeq` settlement |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
-| `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + DO SQLite |
+| `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
+| `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write`, behind a `PersistenceAdapter` |
+| `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1) |
+| `src/server/sqlite-adapter.ts` | `SqliteAdapter` — structured CRUD + `RETURNING`; blob fallback |
+| `src/server/columns.ts` | schema → injection-safe column allowlist + value codec |
 
 Settled decisions and their rationale live in [`architecture.md`](./docs/architecture.md);
 open questions and not-yet-built modes in [`unspecified.md`](./docs/unspecified.md).

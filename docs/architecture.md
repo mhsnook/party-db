@@ -92,8 +92,9 @@ What every consumer shares is the wire format (§2) and the *contract* of applyi
 a batch: do its ops atomically, in order. The apply *code* differs per target, by
 design — the client applies into a TanStack DB collection (`applyBatch` in
 `src/client/apply.ts`, driving TanStack's `sync({begin,write,commit,markReady})`);
-the server applies into SQLite directly (`applyOne`, inside one `transactionSync`
-over the whole POST); a future Postgres target translates to its own SQL.
+the server applies into SQLite via the `PersistenceAdapter` seam (`SqliteAdapter`,
+inside one transaction over the whole POST); a future D1/Postgres target is another
+adapter behind the same interface.
 
 Why not one shared `applyBatch` on both sides: the server also mints `seq` and
 wraps the *entire* multi-channel POST in a single transaction (§11) — a coarser
@@ -140,8 +141,13 @@ cheap *error-sooner* gate (nicer messages, don't open a doomed transaction), nev
 as the correctness authority. Correctness is the database's — it always was the
 real source of truth, even when something upstream pretended to be.
 
-**Status:** the shipped code is **v0** — the uncontrolled fallback (§5a). This
-section is **v1**, the active work — see the Roadmap below and
+**Status:** **landed.** The server persists into your structured tables via the
+`PersistenceAdapter` seam (`SqliteAdapter`): CRUD against your real columns,
+`RETURNING` for the resolved row, your constraints judge, and a `{name,key,schema}`
+interface shared by import. The schema-agnostic blob fallback (§5a) remains for
+collections that ship no schema. We do **not** create or migrate your tables — you
+bring them. Remaining edges (server-side Zod error-sooner gate, serial-PK overlay
+swap, the miniflare integration test) are tracked in
 [`sqlite-do-todo.md`](./sqlite-do-todo.md).
 
 ### 5a. Uncontrolled mode — v0 (the shipped baseline)

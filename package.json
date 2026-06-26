@@ -18,7 +18,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4",
     "typescript": "^5.7",
-    "vitest": "^3"
+    "vitest": "^3",
+    "zod": "^3.25.76"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -26,10 +27,10 @@
     ]
   },
   "peerDependencies": {
-    "@tanstack/db": "*",
     "@standard-schema/spec": "*",
-    "partysocket": "*",
-    "partyserver": "*"
+    "@tanstack/db": "*",
+    "partyserver": "*",
+    "partysocket": "*"
   },
   "peerDependenciesMeta": {
     "partysocket": {
