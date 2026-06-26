@@ -44,13 +44,13 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 | 1 | One mode: DO-controlled | ✅ | WS down + `POST /write` up, DO SQLite |
 | 2 | Wire = `WriteEvent = Omit<ChangeMessage,'key'>` | ✅ | `src/protocol.ts` |
 | 3 | Multiplex by `channel` | ✅ | `SyncClient` registry; server keys tables by channel |
-| 4 | Shared wire types + apply contract; per-target apply code | ✅ | client applies via `applyBatch` (`src/client/apply.ts`); server via `applyOne`/SQL |
-| 5 | **Persist into structured tables reflecting your schema** | ❌ | code ships the *uncontrolled* blob fallback (`onStart`/`applyOne`: `(k,data)` upsert). **Structured tables = the core work below.** |
-| 6 | `seq` from `_oplog` AUTOINCREMENT via `RETURNING` | ✅ | `applyOne` (mechanism is independent of the storage model) |
-| 7 | optimistic → ack → settlement (`waitForSeq`) | 🟡 | settlement works; **resolved-row swap not implemented** (blob makes resolved==sent) — see item 1 |
-| 8 | reconnect = delta via `?since` | ✅ | `partyTransport` query + `replaySince`/`snapshot`; see oplog-lifecycle gaps |
+| 4 | Shared wire types + apply contract; per-target apply code | ✅ | client applies via `applyBatch` (`src/client/apply.ts`); server via `SqliteAdapter` behind the `PersistenceAdapter` seam |
+| 5 | **Persist into structured tables reflecting your schema** | ✅ | `SqliteAdapter.applyStructured` does CRUD against your real columns + `RETURNING`; blob fallback kept for schema-less collections (v0 opt-out). We never DDL your tables — you bring them. |
+| 6 | `seq` from `_oplog` AUTOINCREMENT via `RETURNING` | ✅ | `SqliteAdapter.applyOne` (mechanism is independent of the storage model) |
+| 7 | optimistic → ack → settlement (`waitForSeq`) | ✅ | settlement + resolved-row swap: the server now streams the **resolved** rows (defaults/generated/serial) and echoes them in `WriteAck.changed`; the client's existing settlement drops the overlay onto them (flicker-free for client-minted keys; serial-PK key change is the documented nuance) |
+| 8 | reconnect = delta via `?since` | ✅ | `partyTransport` query + adapter `replaySince`/`snapshot` (oplog stores resolved ops, so the delta replays resolved rows); see oplog-lifecycle gaps |
 | 9 | broadcast inline, after commit, before responding | ✅ | `onRequest` |
-| 10 | schemas shared by import | 🟡 | client validates + types; **server ignores schemas** (`TableDef` is `{name,key}`) — becomes load-bearing once server & client share one collection interface (`{name,key,schema}`) and the server reads the column set + validates rows |
+| 10 | schemas shared by import | ✅ | one `{name,key,schema}` interface in `src/schema.ts`, imported both sides (no `TableDef`); the server reads the column allowlist + value codec from it |
 | 11 | `persist` binding; x-collection atomicity via TanStack | ✅ | server commits whole POST atomically + writer settles on all seqs; subscribers receive the writes ordered by `seq` |
 | 12 | authority is the database, not TanStack DB | ✅ | server sink is `ctx.storage.sql` (a real DB, not a TanStack cache) |
 
@@ -61,9 +61,9 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 > Practical ordering: do **item 2 (tooling)** first so you can build item 1 with
 > tests. But item 1 is the *point* — it's what "finish the SQLite story" means.
 
-### 1. Structured relational tables — **P0**
+### 1. Structured relational tables — **P0** ✅ (landed; see notes)
 
-- [ ] **Use the same client DB schema on the server.** Zod schemas are already used
+- [x] **Use the same client DB schema on the server.** Zod schemas are already used
       on the client to validate inserts and updated in to the Tanstack Collections.
       On the server they are just a very quick validator. Projects come with their
       own database and types, and Zod schemas that could power their Tanstack
@@ -73,9 +73,12 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
       `clientCollection` / `serverCollection` entities if their fill-in-value rules
       diverge (client optimistic defaults vs server/DB-resolved values), but the
       interface is shared.
-- [ ] **CRUD against typed columns** in `applyOne` (insert/update/delete into real
-      columns), replacing the blob upsert.
-- [ ] **Extract a `PersistenceAdapter` seam (embedded DO-SQLite *or* D1).** Pull the
+- [x] **CRUD against typed columns** in `applyOne` (insert/update/delete into real
+      columns), replacing the blob upsert. `SqliteAdapter.applyStructured`: distinct
+      `INSERT`/`UPDATE`/`DELETE` (not a blanket upsert) so constraints get to judge;
+      `INSERT`/`UPDATE` capture the committed row with `RETURNING *`. The blob upsert
+      stays only for schema-less collections.
+- [x] **Extract a `PersistenceAdapter` seam (embedded DO-SQLite *or* D1).** Pull the
       apply step out of `applyOne` behind an interface — `apply(op, schema) → resolved
       row` — so `onRequest` calls it blind to the target: blob (v0), structured SQL
       (v1), or D1. Design it **async** (not `transactionSync` directly): embedded
@@ -86,28 +89,48 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
       `onRequest`." Both targets capture via `RETURNING` (what `/write` commits), not
       a change feed: changes that never come through `/write` — other services,
       cronjobs, trigger side-effects on rows we didn't return — are the v2 WAL story.
-- [ ] **The database is the authority.** A write is a genuine transactional commit
+      *Landed:* `PersistenceAdapter` (`src/server/persistence.ts`) with `init`/`write`/
+      `snapshot`/`replaySince`, all async; `SqliteAdapter` over a narrow `SqlEngine`
+      seam (so it unit-tests against `node:sqlite`, no miniflare); `onRequest` is now
+      blind to the target and serializes its write→seq→broadcast section via a promise
+      queue (D1-ready). Swap targets by overriding `PartyDbServer.createAdapter()`.
+- [x] **The database is the authority.** A write is a genuine transactional commit
       the DB's constraints can reject; rejection fails the POST (client optimistic
       rollback), success *is* the acceptance. The server applies the batch in the
       order given, in one transaction — it does **not** re-derive write-ordering;
       the DB judges. Zod may run server-side as a cheap *error-sooner* gate, never
-      as the correctness authority.
-- [ ] **Injection-safe by construction.** Bind every *value* with `?` (the current
+      as the correctness authority. *Landed:* whole POST in one transaction; a
+      rejection rolls the lot back (tested: a valid batch + a failing batch ⇒
+      neither survives). Zod is not run server-side yet — noted below as the one
+      remaining error-sooner gate.
+- [x] **Injection-safe by construction.** Bind every *value* with `?` (the current
       code already does this for keys/data/etc.). Take every *identifier* — table
       and column names — from the schema/config allowlist, validated against
       `^[A-Za-z_][A-Za-z0-9_]*$`, **never** from the client payload's keys (build
       column lists from the Zod schema, not `Object.keys(row)`). Tiny surface — a
-      handful of statements.
-- [ ] **Resolved-row reconciliation (mandatory).** The committed row can differ
+      handful of statements. *Landed:* `assertIdent` + `columnsOf` (`src/server/
+      columns.ts`); the insert/update column list is the schema allowlist filtered to
+      present values, so a smuggled payload key is silently ignored (tested).
+- [x] **Resolved-row reconciliation (mandatory).** The committed row can differ
       from the sent row (defaults, generated columns, serials, trigger effects).
       Return the resolved row (`WriteAck.changed` + on the stream) and have the
       client swap its optimistic overlay for it. This is the piece the blob model
-      existed to avoid; it is required now (and completes §7).
-- [ ] **Serial / db-assigned PKs.** Falls out of resolved rows — support it instead
-      of forbidding it. (Client-minted UUIDs stay the easy default.)
-- [ ] **Constraint-error reporting.** Surface a DB rejection cleanly to the
+      existed to avoid; it is required now (and completes §7). *Landed:* the adapter
+      returns resolved ops; `onRequest` broadcasts them and sets `WriteAck.changed`;
+      the oplog stores resolved ops so reconnect deltas replay them too. The client's
+      existing `waitForSeq` settlement drops the overlay onto the resolved row — clean
+      for client-minted keys; for a serial PK the key changes, so the swap-by-key
+      nuance is noted (UUIDs stay the easy default).
+- [x] **Serial / db-assigned PKs.** Falls out of resolved rows — support it instead
+      of forbidding it. (Client-minted UUIDs stay the easy default.) *Landed:* a
+      column the client omits isn't named in the INSERT, so an `INTEGER PRIMARY KEY
+      AUTOINCREMENT` is assigned and comes back via `RETURNING` (tested).
+- [x] **Constraint-error reporting.** Surface a DB rejection cleanly to the
       mutating client (which constraint, which row), not a bare 500 — the app can't
       be made to change how it constrains data, so we report its verdict faithfully.
+      *Landed:* a rejected commit returns `409` with a `WriteReject` body (`error` +
+      best-effort `constraint`/`channel`); the transport already throws on non-ok, so
+      TanStack rolls the optimistic mutation back.
 
 ### 2. Project tooling & tests — **P0** (nothing exists; the foundation)
 
@@ -130,14 +153,20 @@ You currently cannot typecheck or test the package in isolation.
 - [x] *(optional enabler)* Export `makePersist(client)` from `collection.ts` — done;
       its `client` param is now `Pick<SyncClient, 'send' | 'waitForSeq'>` so the write
       path tests run against a two-method stub, no transport. `toEvent` exported too.
-- [ ] **Server tests:** structured `applyOne` (insert/update/delete + constraint
-      rejection + resolved row) + oplog seq; `onRequest` multi-batch atomic commit +
-      broadcast order == seq order; `snapshot` vs `replaySince`; unknown-channel → 400.
-      Write these against the **structured** path as it lands — don't entrench the
-      blob placeholder. *(Deferred: lands with item 1's structured path.)*
+- [x] **Server tests:** structured CRUD (insert/update/delete + constraint
+      rejection + resolved row, incl. defaults/serials/boolean+json round-trip) +
+      oplog seq; multi-batch atomic commit (one failing batch rolls back the rest);
+      `snapshot` vs `replaySince`; blob fallback; injection safety. 28 tests across
+      `test/columns.test.ts` + `test/sqlite-adapter.test.ts`, run against a real
+      engine via `node:sqlite` (no miniflare). *(`onRequest`'s HTTP envelope —
+      unknown-channel → 400, the 409 reject body, broadcast order == seq order — is
+      thin glue over the tested adapter; it's exercised by the integration test below
+      since it needs the `Server` harness.)*
 - [ ] **Integration test** (workers/miniflare pool): round-trip insert → ack →
-      settle → a second client sees the resolved row; reconnect delta replays the gap.
-      *(Deferred: pairs with the structured-path server tests above.)*
+      settle → a second client sees the resolved row; reconnect delta replays the gap;
+      `onRequest` 400/409 envelope + broadcast order. *(Still deferred: needs the
+      `@cloudflare/vitest-pool-workers` harness; the storage/CRUD logic underneath is
+      already covered by the node:sqlite adapter tests.)*
 - [x] **CI** running typecheck + tests on the branch
       (`.github/workflows/ci.yml`: `pnpm install --frozen-lockfile` → `typecheck`
       → `test`).

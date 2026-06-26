@@ -11,19 +11,15 @@
 // many channel-groups in one POST. No new vocabulary — `persist` is the seam.
 
 import { createCollection, type Collection } from '@tanstack/db'
-import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { SyncClient } from './sync-client.ts'
 import type { WriteBatch, WriteEvent } from '../protocol.ts'
+import { definePartyCollection, type PartyCollection } from '../schema.ts'
 
-export type PartyCollectionConfig<T extends object> = {
-  name: string // channel === table name
-  key: keyof T & string // primary key field → getKey
-  schema?: StandardSchemaV1<T> // shared zod/StandardSchema: types + validation
-}
-
-export function definePartyCollection<T extends object>(cfg: PartyCollectionConfig<T>) {
-  return cfg
-}
+// The collection interface is shared with the server — one `{ name, key, schema }`
+// defined in ../schema.ts, imported on both sides. Re-exported here (plus the
+// legacy `PartyCollectionConfig` alias) so client imports keep working.
+export { definePartyCollection, type PartyCollection }
+export type PartyCollectionConfig<T extends object> = PartyCollection<T>
 
 // exported for unit tests: a single TanStack mutation → one wire WriteEvent.
 export function toEvent(m: any): WriteEvent {

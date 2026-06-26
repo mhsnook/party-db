@@ -1,82 +1,76 @@
 // The slim DO-controlled server: a partyserver `Server` that serves BOTH the
-// hibernatable WebSocket (down) and POST /write (up) for a room, using the DO's
-// own SQLite as persistence.
+// hibernatable WebSocket (down) and POST /write (up) for a room, persisting into
+// the DO's own SQLite via a PersistenceAdapter.
 //
-// Super-simple contract: clients mint UUIDs and POST WriteEvents; the server
-// records them (one JSON blob per row + an _oplog for ordering), assigns a seq,
-// and fans out to every connected socket. No DDL per table, no RETURNING, no
-// constraints — rows are stored as blobs keyed by PK, so the resolved row always
-// equals the sent row. Validation, if any, rides on the shared schema.
+// What it is: the transport. It replaces the `onInsert/onUpdate/onDelete` + REST
+// endpoint + realtime fan-out + client ingest you'd otherwise hand-write. It does
+// NOT own your schema or your tables — you bring those (your app already has a
+// database). Declaring the collections (name, key, shared schema) is the whole
+// server:
 //
-// Subclass it and declare your collections:
 //   export class Room extends PartyDbServer {
-//     collections = [{ name: 'todos', key: 'id' }, { name: 'lists', key: 'id' }]
+//     collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
+//     // create YOUR tables however you migrate them; we only CRUD over them:
+//     onStart() {
+//       this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS todos (...)`)
+//       return super.onStart()
+//     }
 //   }
 
 import { Server, type Connection, type ConnectionContext } from 'partyserver'
-import type { SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
-
-export type TableDef = { name: string; key: string }
+import type { SequencedBatch, WriteAck, WriteBatch, WriteReject } from '../protocol.ts'
+import type { PartyCollection } from '../schema.ts'
+import type { PersistenceAdapter } from './persistence.ts'
+import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
 
 export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
   static options = { hibernate: true }
-  collections: TableDef[] = []
-  private tables = new Map<string, TableDef>()
+  collections: PartyCollection<any>[] = []
 
-  // The DO's own SQLite handle. Named `db` (not `sql`) so it doesn't shadow the
-  // base `Server.sql` tagged-template helper, which has a different signature.
-  private get db() {
-    return this.ctx.storage.sql
+  private adapter!: PersistenceAdapter
+  private channels = new Set<string>()
+  // serializes the write → seq → broadcast section. A no-op for embedded SQLite
+  // (the apply is synchronous), but the contract is async for D1, where two
+  // concurrent POSTs' awaits could otherwise interleave the ordering.
+  private queue: Promise<unknown> = Promise.resolve()
+
+  // Override to swap the storage target (e.g. a D1 adapter). Default: the DO's
+  // own embedded SQLite.
+  protected createAdapter(): PersistenceAdapter {
+    const engine: SqlEngine = {
+      exec: (query, ...bindings) => this.ctx.storage.sql.exec(query, ...bindings),
+      transaction: (fn) => this.ctx.storage.transactionSync(fn),
+    }
+    return new SqliteAdapter(engine, this.collections)
   }
 
   private send(conn: Connection, batch: SequencedBatch) {
     conn.send(JSON.stringify(batch))
   }
 
-  onStart() {
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS _oplog (
-         seq INTEGER PRIMARY KEY AUTOINCREMENT,
-         channel TEXT NOT NULL,
-         ops TEXT NOT NULL
-       )`,
+  // Run `fn` after every previously-queued write section completes, so the
+  // ordering of write → seq → broadcast across concurrent POSTs stays total.
+  private serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn)
+    this.queue = run.then(
+      () => {},
+      () => {},
     )
-    for (const c of this.collections) {
-      this.tables.set(c.name, c)
-      this.db.exec(`CREATE TABLE IF NOT EXISTS "${c.name}" (k TEXT PRIMARY KEY, data TEXT NOT NULL)`)
-    }
+    return run
+  }
+
+  async onStart() {
+    this.adapter = this.createAdapter()
+    for (const c of this.collections) this.channels.add(c.name)
+    await this.adapter.init()
   }
 
   // a reconnecting client passes ?since=<lastSeq> and gets only what it missed;
   // a fresh client gets a full snapshot. Both arrive as ordinary batches.
-  onConnect(conn: Connection, ctx: ConnectionContext) {
+  async onConnect(conn: Connection, ctx: ConnectionContext) {
     const since = new URL(ctx.request.url).searchParams.get('since')
-    if (since !== null) this.replaySince(conn, Number(since))
-    else this.snapshot(conn)
-  }
-
-  // delta reconnect: just the oplog entries after `since`, in order.
-  private replaySince(conn: Connection, since: number) {
-    const rows = this.db
-      .exec(`SELECT seq, channel, ops FROM _oplog WHERE seq > ? ORDER BY seq`, since)
-      .toArray()
-    for (const r of rows) {
-      this.send(conn, {
-        channel: r.channel as string,
-        seq: Number(r.seq),
-        ops: JSON.parse(r.ops as string),
-      })
-    }
-  }
-
-  // fresh connect: current state per collection, then ready.
-  private snapshot(conn: Connection) {
-    const seq = Number(this.db.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
-    for (const c of this.collections) {
-      const rows = this.db.exec(`SELECT data FROM "${c.name}"`).toArray()
-      const ops = rows.map((r) => ({ type: 'insert' as const, value: JSON.parse(r.data as string) }))
-      this.send(conn, { channel: c.name, seq, ops, ready: true })
-    }
+    const batches = since !== null ? await this.adapter.replaySince(Number(since)) : await this.adapter.snapshot()
+    for (const b of batches) this.send(conn, b)
   }
 
   // controlled mode writes come over HTTP, not the (hibernating) socket. The
@@ -84,57 +78,55 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // post + its tags) is all-or-nothing — matching the client's atomic intent.
   async onRequest(req: Request): Promise<Response> {
     if (req.method !== 'POST') return new Response('not found', { status: 404 })
-    const body = (await req.json()) as WriteBatch[]
 
-    const defs: TableDef[] = []
+    let body: WriteBatch[]
+    try {
+      body = (await req.json()) as WriteBatch[]
+    } catch {
+      return Response.json({ error: 'invalid JSON body' } satisfies WriteReject, { status: 400 })
+    }
+    if (!Array.isArray(body)) {
+      return Response.json({ error: 'body must be a WriteBatch[]' } satisfies WriteReject, { status: 400 })
+    }
     for (const batch of body) {
-      const def = this.tables.get(batch.channel)
-      if (!def) return new Response(`unknown channel: ${batch.channel}`, { status: 400 })
-      defs.push(def)
+      if (!this.channels.has(batch?.channel)) {
+        return Response.json({ error: `unknown channel: ${batch?.channel}`, channel: batch?.channel } satisfies WriteReject, {
+          status: 400,
+        })
+      }
     }
 
-    const sequenced: SequencedBatch[] = []
-    this.ctx.storage.transactionSync(() => {
-      for (let i = 0; i < body.length; i++) {
-        sequenced.push({ ...body[i], seq: this.applyOne(defs[i], body[i]) })
+    return this.serialize(async () => {
+      let sequenced: SequencedBatch[]
+      try {
+        sequenced = await this.adapter.write(body)
+      } catch (e) {
+        // the database rejected the commit (a constraint, a missing table, …).
+        // Hand the verdict back so the client can roll back and report it, not a
+        // bare 500.
+        return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
       }
+
+      // broadcast only after the commit succeeds; inline before responding keeps
+      // broadcast order == seq order. `changed` carries the resolved rows for a
+      // caller that holds no stream subscription.
+      const ack: WriteAck = { accepted: [], changed: sequenced }
+      for (const batch of sequenced) {
+        this.broadcast(JSON.stringify(batch))
+        ack.accepted.push({ channel: batch.channel, seq: batch.seq })
+      }
+      return Response.json(ack)
     })
-
-    // broadcast only after the commit succeeds; inline before responding keeps
-    // broadcast order == seq order.
-    const ack: WriteAck = { accepted: [] }
-    for (const batch of sequenced) {
-      this.broadcast(JSON.stringify(batch))
-      ack.accepted.push({ channel: batch.channel, seq: batch.seq })
-    }
-    return Response.json(ack)
   }
+}
 
-  // apply one batch's rows + its oplog entry; return the assigned seq. Caller
-  // owns the surrounding transaction.
-  private applyOne(def: TableDef, batch: WriteBatch): number {
-    for (const op of batch.ops) {
-      const key = String((op.value as any)[def.key])
-      if (op.type === 'delete') {
-        this.db.exec(`DELETE FROM "${def.name}" WHERE k = ?`, key)
-      } else {
-        this.db.exec(
-          `INSERT INTO "${def.name}" (k, data) VALUES (?, ?)
-           ON CONFLICT(k) DO UPDATE SET data = excluded.data`,
-          key,
-          JSON.stringify(op.value),
-        )
-      }
-    }
-    // RETURNING gives us the assigned seq without a second round-trip.
-    return Number(
-      this.db
-        .exec(
-          `INSERT INTO _oplog (channel, ops) VALUES (?, ?) RETURNING seq`,
-          batch.channel,
-          JSON.stringify(batch.ops),
-        )
-        .one().seq,
-    )
-  }
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+// best-effort: pull the offending constraint out of a SQLite error message like
+// "UNIQUE constraint failed: todos.id". Absent on non-constraint errors.
+function constraintOf(e: unknown): { constraint?: string } {
+  const m = /(\w+) constraint failed: ([^\s]+)/i.exec(messageOf(e))
+  return m ? { constraint: `${m[1].toUpperCase()}: ${m[2]}` } : {}
 }

@@ -1,1 +1,4 @@
-export { PartyDbServer, type TableDef } from './party-db-server.ts'
+export { PartyDbServer } from './party-db-server.ts'
+export { definePartyCollection, type PartyCollection } from '../schema.ts'
+export type { PersistenceAdapter } from './persistence.ts'
+export { SqliteAdapter, type SqlEngine, type SqlResult } from './sqlite-adapter.ts'

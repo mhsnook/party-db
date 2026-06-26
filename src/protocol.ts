@@ -49,3 +49,13 @@ export type WriteAck = {
   // stream. Empty when client-minted ids win and there are no generated cols.
   changed?: SequencedBatch[]
 }
+
+// Reply when the POST is rejected, so the mutating client gets the database's
+// verdict — not a bare 500. `error` is always set; `channel`/`constraint` are
+// best-effort context pulled from the failure. The client surfaces this and rolls
+// its optimistic mutation back.
+export type WriteReject = {
+  error: string
+  channel?: string
+  constraint?: string
+}
