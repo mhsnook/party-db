@@ -4,5 +4,8 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": []
   },
-  "include": ["src/client", "src/protocol.ts", "src/schema.ts", "src/index.ts", "test"]
+  "include": ["src/client", "src/protocol.ts", "src/schema.ts", "src/index.ts", "test"],
+  // the integration suite targets the workers runtime (cloudflare:test, DO types)
+  // which clashes with this DOM/node config; it's typechecked by its own tsconfig.
+  "exclude": ["test/integration"]
 }
