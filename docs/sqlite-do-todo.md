@@ -138,11 +138,9 @@ You currently cannot typecheck or test the package in isolation.
 - [ ] **Integration test** (workers/miniflare pool): round-trip insert → ack →
       settle → a second client sees the resolved row; reconnect delta replays the gap.
       *(Deferred: pairs with the structured-path server tests above.)*
-- [~] **CI** running typecheck + tests on the branch. Workflow is written and ready
-      (`pnpm install --frozen-lockfile` → `typecheck` → `test`), but the bot can't
-      push files under `.github/workflows` without the `workflow` OAuth scope, so it
-      sits at `docs/ci.yml` — `git mv docs/ci.yml .github/workflows/ci.yml` from a
-      local checkout to activate it.
+- [x] **CI** running typecheck + tests on the branch
+      (`.github/workflows/ci.yml`: `pnpm install --frozen-lockfile` → `typecheck`
+      → `test`).
 
 ### 3. Oplog lifecycle — **P1** (`_oplog` grows forever today)
 
