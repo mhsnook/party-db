@@ -39,13 +39,24 @@ type StructuredPlan = {
 type BlobPlan = { kind: 'blob'; name: string; key: string }
 type Plan = StructuredPlan | BlobPlan
 
+export type SqliteAdapterOptions = {
+  // keep at most this many _oplog rows; older entries are compacted away after
+  // each write. Undefined / 0 → unbounded (the _oplog grows forever, v0 behavior).
+  // A reconnecting client whose cursor predates the oldest retained seq gets a
+  // fresh snapshot instead of a gappy delta (see replaySince).
+  oplogRetention?: number
+}
+
 export class SqliteAdapter implements PersistenceAdapter {
   private plans = new Map<string, Plan>()
+  private retention: number
 
   constructor(
     private engine: SqlEngine,
     collections: PartyCollection<any>[],
+    opts: SqliteAdapterOptions = {},
   ) {
+    this.retention = opts.oplogRetention && opts.oplogRetention > 0 ? Math.floor(opts.oplogRetention) : 0
     for (const c of collections) {
       const name = assertIdent(c.name)
       const key = assertIdent(c.key)
@@ -79,8 +90,21 @@ export class SqliteAdapter implements PersistenceAdapter {
 
   async write(batches: WriteBatch[]): Promise<SequencedBatch[]> {
     // one transaction over the whole POST: a cross-collection write is
-    // all-or-nothing, and any constraint rejection rolls the lot back.
-    return this.engine.transaction(() => batches.map((b) => this.applyOne(b)))
+    // all-or-nothing, and any constraint rejection rolls the lot back. Compaction
+    // rides inside the same transaction so the oplog never has a torn floor.
+    return this.engine.transaction(() => {
+      const sequenced = batches.map((b) => this.applyOne(b))
+      this.compact()
+      return sequenced
+    })
+  }
+
+  // Trim the _oplog to the most recent `retention` rows. AUTOINCREMENT means seqs
+  // are never reused, so the remaining rows stay a contiguous suffix [min..max] —
+  // which is what lets replaySince decide cleanly whether a delta is still whole.
+  private compact() {
+    if (!this.retention) return
+    this.engine.exec(`DELETE FROM _oplog WHERE seq <= (SELECT MAX(seq) FROM _oplog) - ?`, this.retention)
   }
 
   // Apply one batch's ops to its table, write the resolved ops to the oplog, and
@@ -161,19 +185,35 @@ export class SqliteAdapter implements PersistenceAdapter {
   }
 
   async snapshot(): Promise<SequencedBatch[]> {
-    const seq = Number(this.engine.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
-    const out: SequencedBatch[] = []
-    for (const plan of this.plans.values()) {
-      const rows =
-        plan.kind === 'structured'
-          ? this.engine.exec(`SELECT * FROM "${plan.name}"`).toArray().map((r) => decodeRow(r, plan.kinds))
-          : this.engine.exec(`SELECT data FROM "${plan.name}"`).toArray().map((r) => JSON.parse(r.data as string))
-      out.push({ channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true })
-    }
-    return out
+    // read the seq and every table inside one transaction so the snapshot is a
+    // consistent cut: the rows are exactly the state as of `seq`, with no write
+    // slipping in between reading the watermark and reading the rows. (Today the
+    // DO is single-threaded so this is already true; the transaction locks it in
+    // against a future refactor that adds an await mid-snapshot.)
+    return this.engine.transaction(() => {
+      const seq = Number(this.engine.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
+      const out: SequencedBatch[] = []
+      for (const plan of this.plans.values()) {
+        const rows =
+          plan.kind === 'structured'
+            ? this.engine.exec(`SELECT * FROM "${plan.name}"`).toArray().map((r) => decodeRow(r, plan.kinds))
+            : this.engine.exec(`SELECT data FROM "${plan.name}"`).toArray().map((r) => JSON.parse(r.data as string))
+        out.push({ channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true })
+      }
+      return out
+    })
   }
 
-  async replaySince(since: number): Promise<SequencedBatch[]> {
+  // The delta a reconnecting client missed — oplog entries after `since`, in
+  // order. Returns `null` when the cursor predates the oldest retained seq: after
+  // compaction the entries in (since, min) are gone, so a delta would silently
+  // drop rows; the caller must send a fresh snapshot instead. An empty array is a
+  // real (complete) delta — the client missed nothing.
+  async replaySince(since: number): Promise<SequencedBatch[] | null> {
+    const min = Number(this.engine.exec(`SELECT MIN(seq) AS m FROM _oplog`).one().m ?? 0)
+    // min > 0 means we've forgotten everything below `min`. The next seq the
+    // client needs is since+1; if that's already been compacted away, fall back.
+    if (min > 0 && since + 1 < min) return null
     return this.engine
       .exec(`SELECT seq, channel, ops FROM _oplog WHERE seq > ? ORDER BY seq`, since)
       .toArray()

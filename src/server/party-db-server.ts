@@ -26,6 +26,10 @@ import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
 export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
   static options = { hibernate: true }
   collections: PartyCollection<any>[] = []
+  // keep at most this many _oplog rows per room (older entries are compacted away
+  // after each write); a client whose `since` predates the retained window gets a
+  // fresh snapshot. Undefined → unbounded. Override in your subclass to tune it.
+  oplogRetention?: number
 
   private adapter!: PersistenceAdapter
   private channels = new Set<string>()
@@ -41,7 +45,7 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       exec: (query, ...bindings) => this.ctx.storage.sql.exec(query, ...bindings),
       transaction: (fn) => this.ctx.storage.transactionSync(fn),
     }
-    return new SqliteAdapter(engine, this.collections)
+    return new SqliteAdapter(engine, this.collections, { oplogRetention: this.oplogRetention })
   }
 
   private send(conn: Connection, batch: SequencedBatch) {
@@ -66,10 +70,13 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   }
 
   // a reconnecting client passes ?since=<lastSeq> and gets only what it missed;
-  // a fresh client gets a full snapshot. Both arrive as ordinary batches.
+  // a fresh client gets a full snapshot. Both arrive as ordinary batches. We fall
+  // back to a snapshot when `since` is absent, not a valid cursor, or older than
+  // what the oplog still retains (replaySince → null) — never a gappy delta.
   async onConnect(conn: Connection, ctx: ConnectionContext) {
-    const since = new URL(ctx.request.url).searchParams.get('since')
-    const batches = since !== null ? await this.adapter.replaySince(Number(since)) : await this.adapter.snapshot()
+    const cursor = cursorParam(new URL(ctx.request.url).searchParams.get('since'))
+    const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
+    const batches = delta ?? (await this.adapter.snapshot())
     for (const b of batches) this.send(conn, b)
   }
 
@@ -118,6 +125,15 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       return Response.json(ack)
     })
   }
+}
+
+// Parse the `?since` query param into a usable cursor. null → snapshot: missing,
+// or garbage (NaN, negative, non-integer) that we won't turn into a `seq > NaN`
+// query that silently returns nothing.
+function cursorParam(raw: string | null): number | null {
+  if (raw === null) return null
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 0 ? n : null
 }
 
 function messageOf(e: unknown): string {
