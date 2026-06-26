@@ -17,10 +17,10 @@
     "test:integration": "vitest run -c vitest.integration.config.ts"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.8.59",
+    "@cloudflare/vitest-pool-workers": "0.16.20",
     "@cloudflare/workers-types": "^4",
     "typescript": "^5.7",
-    "vitest": "^3",
+    "vitest": "^4.1.9",
     "zod": "^3.25.76"
   },
   "pnpm": {

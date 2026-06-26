@@ -167,16 +167,13 @@ You currently cannot typecheck or test the package in isolation.
       `ready`); broadcast order == seq order under concurrent POSTs; and the POST
       envelope (unknown-channel 400, constraint 409, malformed-body 400, non-POST 404).
       7 tests in `test/integration/sync.test.ts` via `@cloudflare/vitest-pool-workers`
-      (`pnpm test:integration`). *(CI step pending: add `- run: pnpm test:integration`
-      to `.github/workflows/ci.yml` — the bot can't push workflow files without the
-      `workflow` OAuth scope.)* Pinned to `0.8.59` (the line that
-      supports vitest 3 — 0.16 needs vitest 4); isolated storage off (one room → one
-      DO per test; it also trips on SQLite's -wal/-shm sidecars). Note: under miniflare
-      `ctx.id.name` isn't exposed, so the tests pass partyserver's `x-partykit-room`
-      fallback header.
-- [x] **CI** running typecheck + tests on the branch
+      (`pnpm test:integration`, wired into CI). On vitest 4 + pool `0.16`, configured
+      with the `cloudflareTest` Vite plugin (the `defineWorkersConfig`/`poolOptions`
+      shape is gone). Note: under miniflare `ctx.id.name` isn't exposed, so the tests
+      pass partyserver's `x-partykit-room` fallback header.
+- [x] **CI** running typecheck + node tests + the workers integration suite
       (`.github/workflows/ci.yml`: `pnpm install --frozen-lockfile` → `typecheck`
-      → `test`).
+      → `test` → `test:integration`).
 
 ### 3. Oplog lifecycle — **P1** ✅ (landed)
 
