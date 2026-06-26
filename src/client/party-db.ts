@@ -2,7 +2,7 @@
 // configs, get back live TanStack DB collections. That's the whole surface.
 
 import PartySocket from 'partysocket'
-import { SyncClient, type Transport } from './sync-client.ts'
+import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type PartyCollectionConfig } from './collection.ts'
 import type { SequencedBatch } from '../protocol.ts'
 
@@ -49,8 +49,9 @@ export function partyTransport(opts: { host: string; room: string; party?: strin
 export function createPartyDb<C extends PartyCollectionConfig<any>[]>(
   transport: Transport,
   configs: C,
+  options?: SyncClientOptions,
 ) {
-  const client = new SyncClient(transport)
+  const client = new SyncClient(transport, options)
   const { db, persist } = wireCollections(client, configs)
   return {
     db,

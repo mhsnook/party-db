@@ -197,23 +197,30 @@ You currently cannot typecheck or test the package in isolation.
 > *Tests:* 10 in `test/oplog-lifecycle.test.ts` (compaction, monotonic seq, floor
 > fallback + boundary, empty-delta vs null, snapshot/oplog consistency).
 
-### 4. Robustness / input validation — **P1**
+### 4. Robustness / input validation — **P1** ✅ (landed)
 
 - [x] Validate `since` is a non-negative integer; else snapshot. *(Landed alongside
       item 3: `onConnect`'s `cursorParam` rejects `NaN`/negative/non-integer → snapshot
       rather than a `seq > NaN` query that silently returns nothing.)*
-- [ ] Validate the POST body is actually `WriteBatch[]` before iterating — malformed
-      body currently throws → 500 (`onRequest`).
-- [ ] **Settlement can hang forever — extract a `SeqTracker` while fixing it.**
-      `persist` awaits `waitForSeq`, which only resolves when the seq streams back; if
-      it never does (writer's channel not registered, or a persistent disconnect) the
-      mutation promise hangs. Pull settlement (the high-water mark + waiters) out of
-      `SyncClient` into a pure `SeqTracker` over `Cursor`: it gives the **timeout**
-      (→ reject/retry) a home, makes settlement testable without a transport, and
-      fixes the numeric-only watermark that silently drops string cursors (swap one
-      comparator for a v2 Postgres LSN). Note §7 deliberately waits on the *stream*
-      not the bare ack, so don't "fix" the hang by resolving on ack (reintroduces
-      flicker); reconnect's `?since` is the real re-delivery path.
+- [x] Validate the POST body is actually `WriteBatch[]` before iterating. *(Landed
+      with item 1: `onRequest` guards the `JSON.parse` and rejects a non-array body with
+      `400` + a `WriteReject`, instead of throwing → 500. Covered by the integration
+      test.)*
+- [x] **Settlement can hang forever — extract a `SeqTracker` while fixing it.**
+      Settlement (the per-channel high-water mark + waiters) is now a pure
+      `SeqTracker` (`src/client/seq-tracker.ts`); `SyncClient` holds one and delegates.
+      `waitForSeq` takes a **timeout** (`SyncClientOptions.settleTimeoutMs`, default
+      30 s, `Infinity` to disable) → a never-arriving seq **rejects** so the mutation
+      can roll back/retry instead of hanging; `close()` `rejectAll`s in-flight waiters
+      too. The tracker compares **`Cursor`s** through an injectable comparator
+      (`compareCursor` default), so string cursors are tracked, not silently dropped —
+      a v2 Postgres LSN is "pass a comparator," nothing else. Still waits on the
+      *stream*, not the ack (no flicker); reconnect's `?since` remains the real
+      re-delivery path, which is what makes the timeout safe.
+
+> *Tests:* 12 in `test/seq-tracker.test.ts` (settlement, high-water vs equality,
+> monotonic straggler, per-channel, timeout reject / settle-before-timeout / no-timeout,
+> `rejectAll`, default + injected comparator); `SyncClient` string-cursor test updated.
 
 ### 5. Auth — **P1** (none today)
 
