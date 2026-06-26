@@ -148,6 +148,7 @@ await tx.isPersisted.promise // both land in one POST, or neither does
 | `src/protocol.ts` | wire contract: `WriteEvent` / `WriteBatch` / `SequencedBatch` / `WriteAck` |
 | `src/client/apply.ts` | `applyBatch(sink, batch)` — the client's batch-apply helper (drives TanStack's `sync`) |
 | `src/client/sync-client.ts` | one stream + channel registry + `waitForSeq` settlement |
+| `src/client/seq-tracker.ts` | pure settlement: per-channel high-water mark, waiters, timeout |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |

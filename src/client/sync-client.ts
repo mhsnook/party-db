@@ -3,6 +3,7 @@
 // await a specific seq's arrival (the settlement signal).
 
 import { applyBatch, type ChannelSink } from './apply.ts'
+import { SeqTracker, type CursorCompare } from './seq-tracker.ts'
 import type { Cursor, SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
 
 // A transport is just "a stream coming down" + "a way to push writes up".
@@ -14,19 +15,32 @@ export type Transport = {
   isConnecting?: () => boolean
 }
 
-type Waiter = { channel: string; seq: number; resolve: () => void }
+export type SyncClientOptions = {
+  // reject a `waitForSeq` that hasn't settled within this many ms (default 30000),
+  // so a mutation can't hang forever if its seq never streams back. Pass `Infinity`
+  // to wait indefinitely. A committed write is re-delivered on reconnect regardless.
+  settleTimeoutMs?: number
+  // override how cursors are compared (the seam for a v2 Postgres LSN).
+  compareCursor?: CursorCompare
+}
+
+const DEFAULT_SETTLE_TIMEOUT_MS = 30_000
 
 export class SyncClient {
   private sinks = new Map<string, ChannelSink>()
   private pending = new Map<string, SequencedBatch[]>() // batches before register
-  // highest seq applied per channel. seq is room-monotonic and arrives in order,
-  // so a high-water mark is enough to settle writes — and it stays O(channels)
-  // instead of growing with every write ever seen. (DO scope: seq is numeric.)
-  private highest = new Map<string, number>()
-  private waiters: Waiter[] = []
+  // settlement (the per-channel high-water mark + waiters + timeout) lives in a
+  // pure SeqTracker, so it's testable without a transport and the timeout has a home.
+  private tracker: SeqTracker
+  private settleTimeoutMs: number
   private unsubscribe?: () => void
 
-  constructor(private transport: Transport) {
+  constructor(
+    private transport: Transport,
+    opts: SyncClientOptions = {},
+  ) {
+    this.tracker = new SeqTracker(opts.compareCursor)
+    this.settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
     this.unsubscribe = transport.subscribe((batch) => this.route(batch))
   }
 
@@ -43,16 +57,7 @@ export class SyncClient {
 
   private apply(sink: ChannelSink, batch: SequencedBatch) {
     applyBatch(sink, batch)
-    if (typeof batch.seq !== 'number') return
-    const prev = this.highest.get(batch.channel) ?? 0
-    if (batch.seq > prev) this.highest.set(batch.channel, batch.seq)
-    this.waiters = this.waiters.filter((w) => {
-      if (w.channel === batch.channel && (this.highest.get(w.channel) ?? 0) >= w.seq) {
-        w.resolve()
-        return false
-      }
-      return true
-    })
+    this.tracker.observe(batch.channel, batch.seq)
   }
 
   // a collection's sync() hands us its callbacks under a channel name.
@@ -72,14 +77,15 @@ export class SyncClient {
 
   // resolve once `seq` has been applied on the down-stream. This is the
   // settlement signal: a write handler awaits this so the optimistic overlay
-  // survives the ack->stream gap, then drops cleanly onto the synced row.
+  // survives the ack->stream gap, then drops cleanly onto the synced row. Rejects
+  // if it doesn't settle within the configured timeout (so the mutation can't hang).
   waitForSeq(channel: string, seq: Cursor): Promise<void> {
-    if (typeof seq !== 'number') return Promise.resolve()
-    if ((this.highest.get(channel) ?? 0) >= seq) return Promise.resolve()
-    return new Promise<void>((resolve) => this.waiters.push({ channel, seq, resolve }))
+    return this.tracker.waitFor(channel, seq, this.settleTimeoutMs)
   }
 
   close() {
     this.unsubscribe?.()
+    // nothing more will stream in — fail any in-flight waiters instead of hanging.
+    this.tracker.rejectAll('sync client closed')
   }
 }

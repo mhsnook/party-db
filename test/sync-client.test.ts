@@ -136,7 +136,7 @@ describe('SyncClient waitForSeq settlement', () => {
 
   it('tracks the high-water mark per channel independently', async () => {
     const t = fakeTransport()
-    const client = new SyncClient(t.transport)
+    const client = new SyncClient(t.transport, { settleTimeoutMs: Infinity })
     client.register('todos', recorder().sink)
     client.register('lists', recorder().sink)
     t.push(seqBatch('todos', 9, { id: 'a' }))
@@ -147,10 +147,19 @@ describe('SyncClient waitForSeq settlement', () => {
     expect(listsSettled).toBe(false) // todos' progress must not settle a lists write
   })
 
-  it('treats a non-numeric (opaque) cursor as already settled', async () => {
+  it('tracks string (opaque) cursors instead of treating them as pre-settled', async () => {
     const t = fakeTransport()
     const client = new SyncClient(t.transport)
-    await expect(client.waitForSeq('todos', 'lsn-0/16B3748')).resolves.toBeUndefined()
+    client.register('todos', recorder().sink)
+
+    let settled = false
+    const p = client.waitForSeq('todos', 'lsn-b').then(() => (settled = true))
+    await Promise.resolve()
+    expect(settled).toBe(false) // not auto-resolved just because it's a string
+
+    t.push({ channel: 'todos', seq: 'lsn-b', ops: [{ type: 'insert', value: { id: 'x' } }] })
+    await p
+    expect(settled).toBe(true)
   })
 })
 
