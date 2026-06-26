@@ -224,27 +224,32 @@ You currently cannot typecheck or test the package in isolation.
 
 ### 5. Auth — **P1** ✅ (landed)
 
-- [x] Auth hook on **socket open** (`onConnect`) and **POST** (`onRequest`):
-      bearer/session, reject unauthorized, pluggable so the room owner supplies the
-      check. *Landed:* one overridable `PartyDbServer.authorize(req, kind)` seam
-      (`src/server/auth.ts`) gates **both** doors with the same check — `kind:
-      'connect'` controls who can read the room, `kind: 'write'` who can POST. It
-      runs **before** any snapshot is sent or body parsed, so an unauthorized peer
-      learns nothing. Default is **open** (v0 behavior unchanged) until a subclass
-      plugs in a check. A rejected connect closes the socket with `1008` (policy
-      violation, never a snapshot); a rejected POST returns the owner's status
-      (default `401`) + a `WriteReject`, so TanStack rolls the optimistic mutation
-      back like any other rejection. `authorize` returns a bare boolean or a rich
-      `{ ok, status?, error? }`; a `bearer(req)` convenience is exported. The check
-      sees the raw `Request`, so the credential can come from an `Authorization`
-      header (POST) or `?token=…` (a browser WS upgrade can't set headers). Client
-      side: `partyTransport({ token })` carries it — header on the POST, query on
-      the connect.
+- [x] Auth hook on **socket open** and **POST**: bearer/session, reject
+      unauthorized, pluggable so the room owner supplies the check. *Landed:* gated
+      at partyserver's **lobby** — the idiomatic Cloudflare/PartyKit layer — not
+      inside the DO. `authHooks(authorize)` (`src/server/auth.ts`) builds the
+      `onBeforeConnect` / `onBeforeRequest` hooks for `routePartykitRequest` from
+      **one** check that gates both doors: `kind: 'connect'` (who can read) and
+      `kind: 'write'` (who can POST). Because the hooks run **in the worker before
+      the request reaches the DO**, a rejected connect gets a clean **HTTP `401`
+      before the WS upgrade** (not an accepted-then-closed socket) and **never
+      wakes the object**; a rejected POST returns the owner's status (default
+      `401`) + a `WriteReject`, so TanStack rolls the optimistic mutation back like
+      any other rejection. `authorize` returns a bare boolean or a rich `{ ok,
+      status?, error? }`; a `bearer(req)` convenience is exported. It sees the raw
+      `Request`, so the credential can come from an `Authorization` header (POST)
+      or `?token=…` (a browser WS upgrade can't set headers), and it can branch on
+      `req.url` to gate some parties and leave others open. Client side:
+      `partyTransport({ token })` carries it — header on the POST, query on the
+      connect. (Auth that needs per-room DO *state* is a separate, in-object
+      concern; this seam is for stateless credential checks, which is item 5.)
 
-> *Tests:* 4 in `test/auth.test.ts` (decision helpers + `bearer` parsing) and 5 in
-> `test/integration/auth.test.ts` against a real auth-gated DO (`Guarded`): connect
-> denied → `1008`, no snapshot; connect allowed → snapshot; POST denied (missing /
-> wrong token) → `401`; POST allowed → `200`.
+> *Tests:* 9 in `test/auth.test.ts` (decision helpers, `bearer` parsing, and
+> `authHooks` pass/refuse on each door, non-POST fall-through) and 6 in
+> `test/integration/auth.test.ts` against a real lobby-gated `guarded` party:
+> connect denied → `401` *before* the upgrade (no socket); connect allowed →
+> snapshot; POST denied (missing / wrong token) → `401`; POST allowed → `200`; the
+> open `main` party still accepts an unauthenticated POST.
 
 ### 6. Cross-collection transaction visibility — **decided: ordered on receive**
 
