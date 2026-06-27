@@ -8,7 +8,8 @@
 // WebSocket upgrade, and never wakes the DO. (Authorization that needs per-room DO
 // *state* is a separate, in-object concern; this seam is for stateless checks.)
 //
-//   const authorize = async (req: Request, kind: AuthKind) => {
+//   const authorize = async (req: Request, { kind, party }: AuthContext) => {
+//     if (party !== 'PrivateRoom') return true // gate some parties, leave others open
 //     const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
 //     return (await verify(token, kind)) ? true : { ok: false, status: 401 }
 //   }
@@ -22,51 +23,47 @@
 // the query (`?token=…`) while the POST uses an Authorization header; `authorize`
 // gets the raw Request and reads whichever.
 
+import type { Lobby } from 'partyserver'
 import type { WriteReject } from '../protocol.ts'
 
-type Awaitable<T> = T | Promise<T>
-
 export type AuthKind = 'connect' | 'write'
+
+// The resolved routing context partyserver already knows, handed to `authorize`
+// so it can branch per party/room without re-parsing the URL. `party` is the
+// Durable Object class name (e.g. `'PrivateRoom'`); `room` is the instance name.
+export type AuthContext = { kind: AuthKind; party: string; room: string }
 
 // A bare boolean for the common case; the object form lets the owner pick the
 // HTTP status and a reason the client sees.
 export type AuthDecision = boolean | { ok: boolean; status?: number; error?: string }
 
-export type Authorize = (req: Request, kind: AuthKind) => Awaitable<AuthDecision>
+export type Authorize = (req: Request, ctx: AuthContext) => AuthDecision | Promise<AuthDecision>
 
 // The hooks gate every party routed through this `routePartykitRequest` call —
-// branch on `req.url` inside `authorize` to leave some parties open.
-export function authHooks(authorize: Authorize): {
-  onBeforeConnect: (req: Request) => Promise<Response | undefined>
-  onBeforeRequest: (req: Request) => Promise<Response | undefined>
-} {
+// branch on `ctx.party` inside `authorize` to leave some parties open.
+export function authHooks(authorize: Authorize) {
+  const decide = async (req: Request, lobby: Lobby, kind: AuthKind) =>
+    normalize(await authorize(req, { kind, party: lobby.className, room: lobby.name }))
   return {
-    onBeforeConnect: async (req) => {
-      const d = await authorize(req, 'connect')
-      return isAllowed(d) ? undefined : new Response(rejectionReason(d), { status: rejectionStatus(d) })
+    onBeforeConnect: async (req: Request, lobby: Lobby) => {
+      const v = await decide(req, lobby, 'connect')
+      return v.ok ? undefined : new Response(v.error, { status: v.status })
     },
-    onBeforeRequest: async (req) => {
+    onBeforeRequest: async (req: Request, lobby: Lobby) => {
       // non-writes fall through to the DO (which 404s them); a rejected write is a
       // WriteReject so the client rolls back like any other POST rejection.
       if (req.method !== 'POST') return undefined
-      const d = await authorize(req, 'write')
-      return isAllowed(d)
-        ? undefined
-        : Response.json({ error: rejectionReason(d) } satisfies WriteReject, { status: rejectionStatus(d) })
+      const v = await decide(req, lobby, 'write')
+      return v.ok ? undefined : Response.json({ error: v.error } satisfies WriteReject, { status: v.status })
     },
   }
 }
 
-export function isAllowed(d: AuthDecision): boolean {
-  return typeof d === 'boolean' ? d : d.ok
-}
-
-export function rejectionReason(d: AuthDecision): string {
-  return (typeof d === 'object' && d.error) || 'unauthorized'
-}
-
-export function rejectionStatus(d: AuthDecision): number {
-  return (typeof d === 'object' && d.status) || 401
+// Collapse either decision form to a filled-in verdict (defaults: 401 / 'unauthorized').
+function normalize(d: AuthDecision): { ok: boolean; status: number; error: string } {
+  return typeof d === 'boolean'
+    ? { ok: d, status: 401, error: 'unauthorized' }
+    : { ok: d.ok, status: d.status ?? 401, error: d.error ?? 'unauthorized' }
 }
 
 // Pull the token out of an `Authorization: Bearer <token>` header, or null.

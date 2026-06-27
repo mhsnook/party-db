@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { SELF } from 'cloudflare:test'
 import { SECRET } from './worker.ts'
-import type { WriteBatch, WriteReject } from '../../src/protocol.ts'
+import type { WriteReject } from '../../src/protocol.ts'
+import { insert, partyUrl, roomHeader } from './helpers.ts'
 
 // The `guarded` party is gated by `authHooks(authorize)` in the worker lobby: it
 // requires `SECRET` on both doors — the socket open (read) and each POST (write).
@@ -10,13 +11,7 @@ import type { WriteBatch, WriteReject } from '../../src/protocol.ts'
 
 // A guarded-party URL. The connect token rides in `?token=` (a browser WS upgrade
 // can't set headers); the POST sends it as an Authorization header instead.
-const gurl = (room: string, token?: string) =>
-  `https://example.com/parties/guarded/${room}${token === undefined ? '' : `?token=${token}`}`
-
-// under miniflare `ctx.id.name` isn't exposed, so pass the room fallback header.
-const roomHeader = (room: string) => ({ 'x-partykit-room': room })
-
-const insert = (id: string, text: string): WriteBatch[] => [{ channel: 'todos', ops: [{ type: 'insert', value: { id, text } }] }]
+const gurl = (room: string, token?: string) => partyUrl('guarded', room, token === undefined ? {} : { token })
 
 describe('auth gate on the socket open (read)', () => {
   it('refuses an unauthorized upgrade with 401 before the WS handshake', async () => {
