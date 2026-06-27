@@ -79,6 +79,34 @@ Kept as designs so the protocol stays honest about where it could go.
     client UUID); and it does not replay missed events, so reconnect = re-snapshot.
   - **Supabase Edge** is request-scoped — fine for `/write`, a poor host for a
     long-lived replication slot or SSE. Stream wants Realtime or a separate consumer.
+  - **`@supabase/server` as the `/write` host (public beta, May 2026).** A DX/
+    boilerplate package, *not* persistent compute: `withSupabase({ auth }, handler)`
+    returns a standard `(Request) => Promise<Response>` with a pre-wired RLS-scoped
+    `ctx.supabase`, an admin `ctx.supabaseAdmin`, verified JWT claims, and CORS —
+    and the same handler runs on Edge Functions, Vercel, **Cloudflare Workers**, Hono,
+    and Bun. So our `/write` becomes *another `PersistenceAdapter` (§4) behind the same
+    interface*: the handler shape is identical to the Worker/DO `fetch` we already write;
+    only the sink moves from `ctx.storage.sql` / `transactionSync` to a Supabase client
+    call. This is the write *half* only — the stream stays decoupled (Realtime or a WAL
+    consumer, per the points above); a stateless ack is fine precisely because the
+    authoritative, ordered echo (`seq` = LSN, settle-by-PK) comes off that separate
+    stream, so `/write` returns an optimistic preview, not the order authority.
+    - **It closes the "auth on the POST" open-item for free.** `withSupabase({ auth:
+      'user' })` verifies the bearer before the handler runs, and because `ctx.supabase`
+      is RLS-scoped the database judges the write — exactly our "the database is the
+      authority on the server" stance (architecture §5). Write through `ctx.supabase`,
+      not `ctx.supabaseAdmin`, so RLS applies.
+    - **The one wrinkle: §11 atomicity doesn't survive a naive port.** supabase-js issues
+      one PostgREST request per `.from(x).insert()`, each its own transaction. A single-
+      mutation write maps perfectly — `.insert().select()` with `Prefer: return=
+      representation` gives the resolved row in one txn. But the multi-collection
+      `createTransaction` guarantee (architecture §11: the whole POST body commits in one
+      `transactionSync`, all-or-nothing) has no PostgREST equivalent. To keep it, ship the
+      grouped batch to a **Postgres RPC** — `ctx.supabase.rpc('apply_writes', { batch })`,
+      `security invoker` so RLS still bites — that loops the ordered ops in one transaction
+      and `RETURNING`s the resolved rows. That RPC *is* the Supabase persistence adapter.
+      So: simple writes → one PostgREST call; transactional writes → one RPC call; either
+      way the handler stays `withSupabase`-thin and portable from the Worker/DO `/write`.
   - **Preview ↔ echo correlation without touching user tables.** When the echo is the
     WAL, the `/write` ack is only an *optimistic preview* (best-effort yielded rows);
     the WAL is the authoritative, complete echo (it carries trigger/cascade/default
