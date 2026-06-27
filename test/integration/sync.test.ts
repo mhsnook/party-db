@@ -1,19 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { SELF } from 'cloudflare:test'
-import type { WriteAck, WriteBatch, WriteReject, SequencedBatch } from '../../src/protocol.ts'
+import type { WriteAck, WriteReject, SequencedBatch } from '../../src/protocol.ts'
+import { insert, partyUrl, roomHeader } from './helpers.ts'
 
 // Drive the real worker over HTTP + WS. Each test uses a distinct room so its
 // Durable Object starts empty.
 const url = (room: string, since?: number) =>
-  `https://example.com/parties/main/${room}${since === undefined ? '' : `?since=${since}`}`
-
-const insert = (id: string, text: string): WriteBatch[] => [
-  { channel: 'todos', ops: [{ type: 'insert', value: { id, text } }] },
-]
-
-// partyserver names the room from the URL path; under miniflare `ctx.id.name`
-// isn't exposed, so we also pass the documented `x-partykit-room` fallback header.
-const roomHeader = (room: string) => ({ 'x-partykit-room': room })
+  partyUrl('main', room, since === undefined ? {} : { since: String(since) })
 
 async function post(room: string, body: unknown): Promise<Response> {
   return SELF.fetch(url(room), {

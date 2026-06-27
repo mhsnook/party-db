@@ -236,16 +236,19 @@ You currently cannot typecheck or test the package in isolation.
       wakes the object**; a rejected POST returns the owner's status (default
       `401`) + a `WriteReject`, so TanStack rolls the optimistic mutation back like
       any other rejection. `authorize` returns a bare boolean or a rich `{ ok,
-      status?, error? }`; a `bearer(req)` convenience is exported. It sees the raw
-      `Request`, so the credential can come from an `Authorization` header (POST)
-      or `?token=…` (a browser WS upgrade can't set headers), and it can branch on
-      `req.url` to gate some parties and leave others open. Client side:
-      `partyTransport({ token })` carries it — header on the POST, query on the
-      connect. (Auth that needs per-room DO *state* is a separate, in-object
-      concern; this seam is for stateless credential checks, which is item 5.)
+      status?, error? }`; a `bearer(req)` convenience is exported. `authorize`
+      gets the raw `Request` (so the credential can come from an `Authorization`
+      header on the POST or `?token=…` on the WS upgrade, which can't set headers)
+      plus an `AuthContext` of partyserver's already-resolved `{ kind, party, room }`
+      — so it branches on the structured `party`/`room`, not URL string-matching,
+      to gate some parties and leave others open. Client side: `partyTransport({
+      token })` carries it — header on the POST, query on the connect. (Auth that
+      needs per-room DO *state* is a separate, in-object concern; this seam is for
+      stateless credential checks, which is item 5.)
 
-> *Tests:* 9 in `test/auth.test.ts` (decision helpers, `bearer` parsing, and
-> `authHooks` pass/refuse on each door, non-POST fall-through) and 6 in
+> *Tests:* 8 in `test/auth.test.ts` (`bearer` parsing, and `authHooks` pass/refuse
+> on each door, party/room forwarding, decision-shape normalization, non-POST
+> fall-through) and 6 in
 > `test/integration/auth.test.ts` against a real lobby-gated `guarded` party:
 > connect denied → `401` *before* the upgrade (no socket); connect allowed →
 > snapshot; POST denied (missing / wrong token) → `401`; POST allowed → `200`; the

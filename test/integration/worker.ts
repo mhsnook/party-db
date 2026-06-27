@@ -3,7 +3,7 @@
 // full HTTP + WebSocket path, partyserver routing, DO storage and all.
 
 import { routePartykitRequest } from 'partyserver'
-import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthKind } from '../../src/server/index.ts'
+import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthContext } from '../../src/server/index.ts'
 import { z } from 'zod'
 
 // `done` and `rev` are optional on the wire but defaulted in the table, so the
@@ -40,10 +40,10 @@ export const SECRET = 's3cret'
 // lobby (below), not the class.
 export class Guarded extends Main {}
 
-// Only `guarded` requires the token; `main` stays open — the mixed public/private
-// case under one routePartykitRequest call.
-const authorize = (req: Request, kind: AuthKind) => {
-  if (!new URL(req.url).pathname.includes('/parties/guarded/')) return true
+// Only the `Guarded` party requires the token; `Main` stays open — the mixed
+// public/private case under one routePartykitRequest call.
+const authorize = (req: Request, { kind, party }: AuthContext) => {
+  if (party !== 'Guarded') return true
   const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
   if (token === SECRET) return true
   return { ok: false, status: 401, error: `unauthorized (${kind})` }
