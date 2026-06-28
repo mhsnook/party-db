@@ -115,16 +115,43 @@ describe('partyTransport send', () => {
     ])
   })
 
-  it('throws when the write is rejected by the server', async () => {
+  it('throws a WriteError carrying the status + parsed reject (so apps manage it by kind)', async () => {
     Fake.fetch.mockResolvedValueOnce({
       ok: false,
-      status: 400,
-      text: async () => 'unknown channel: todos',
-      json: async () => ({}),
+      status: 409,
+      text: async () => JSON.stringify({ error: 'UNIQUE constraint failed: todos.id', constraint: 'UNIQUE: todos.id', channel: 'todos' }),
     })
     const transport = partyTransport({ host: 'example.com', room: 'r1' })
 
-    await expect(transport.send([{ channel: 'todos', ops: [] }])).rejects.toThrow(/400/)
+    await expect(transport.send([{ channel: 'todos', ops: [] }])).rejects.toMatchObject({
+      name: 'WriteError',
+      status: 409,
+      message: 'UNIQUE constraint failed: todos.id',
+      constraint: 'UNIQUE: todos.id',
+      channel: 'todos',
+    })
+  })
+
+  it('falls back cleanly when the rejection body is not JSON (a bare 404/proxy error)', async () => {
+    Fake.fetch.mockResolvedValueOnce({ ok: false, status: 404, text: async () => 'not found' })
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+
+    await expect(transport.send([{ channel: 'todos', ops: [] }])).rejects.toMatchObject({
+      name: 'WriteError',
+      status: 404,
+      message: 'not found',
+    })
+  })
+
+  it('wraps a no-response failure as a (retriable) TransportError, not a WriteError', async () => {
+    const cause = new Error('Failed to fetch')
+    Fake.fetch.mockRejectedValueOnce(cause)
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+
+    await expect(transport.send([{ channel: 'todos', ops: [] }])).rejects.toMatchObject({
+      name: 'TransportError',
+      cause,
+    })
   })
 })
 
