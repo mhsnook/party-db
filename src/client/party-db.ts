@@ -4,6 +4,7 @@
 import PartySocket from 'partysocket'
 import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type PartyCollectionConfig } from './collection.ts'
+import { WriteError, TransportError, toWriteReject } from './errors.ts'
 import type { SequencedBatch } from '../protocol.ts'
 
 // The DO / PartyKit transport: down = the partysocket (hibernatable WS on the
@@ -48,18 +49,25 @@ export function partyTransport(opts: {
       // PartySocket.fetch builds the party URL for us (host/scheme/route) — the
       // same room the socket is connected to.
       const token = tokenOf()
-      const res = await PartySocket.fetch(
-        { host: opts.host, room: opts.room, party },
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(token ? { authorization: `Bearer ${token}` } : {}),
+      let res: Awaited<ReturnType<typeof PartySocket.fetch>>
+      try {
+        res = await PartySocket.fetch(
+          { host: opts.host, room: opts.room, party },
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              ...(token ? { authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify(batches),
           },
-          body: JSON.stringify(batches),
-        },
-      )
-      if (!res.ok) throw new Error(`write failed: ${res.status} ${await res.text()}`)
+        )
+      } catch (cause) {
+        // the POST never got a response (offline, DNS, reset) — distinct from a
+        // server verdict, and retriable.
+        throw new TransportError('write request did not reach the server', { cause })
+      }
+      if (!res.ok) throw new WriteError(res.status, await toWriteReject(res))
       return res.json()
     },
     isConnecting: () => socket.readyState === socket.CONNECTING,
