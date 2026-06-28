@@ -263,12 +263,22 @@ You currently cannot typecheck or test the package in isolation.
       seeing the post and then its tag, in order, is fine). README overclaim
       corrected.
 
-### 7. DX / packaging polish — **P2**
+### 7. DX / packaging polish — **P2** ✅ (landed)
 
-- [ ] Build story: `exports` point at `.ts` source — fine for a source/monorepo
-      consumer, but a published package needs a build step. Decide, or document
-      "source-only for now."
-- [ ] `package.json` `description` still says "MOCK / PROPOSAL … not wired into
-      scenetest-cloud" — update it.
-- [ ] Example nit: `todos.toArray as Todo[]` is used as a value — confirm it's the
-      getter, not a missing call.
+- [x] **Build story: the library now builds to `dist/`.** `exports` point at the
+      built output (`./dist/**/*.js` + `.d.ts`), not `.ts` source. `pnpm build`
+      runs two `tsc` passes mirroring the existing client(DOM)/server(workers-types)
+      split — `tsconfig.build.client.json` + `tsconfig.build.server.json` — emitting
+      JS, `.d.ts`, and source/declaration maps. The `.ts` import specifiers are
+      rewritten to `.js` in the output via TS 5.7+ `rewriteRelativeImportExtensions`,
+      so the source can keep its explicit-extension imports. `main`/`types`/`files`
+      added; `prepack` builds before publish; CI runs `pnpm build`. The **examples
+      stay source-only** — they import the library by relative path
+      (`../../src/client/index.ts`), bypassing the `exports` map, so they don't need
+      and don't get a build step.
+- [x] **`package.json` `description` updated** — the "MOCK / PROPOSAL … not wired
+      into scenetest-cloud" text is gone; it now describes the v1 DO-SQLite-authority
+      sync model.
+- [x] **Example nit confirmed correct.** `todos.toArray` is a getter in
+      `@tanstack/db` (`get toArray(): …[]`), so `todos.toArray as Todo[]` (no call)
+      is right — not a missing `()`.
