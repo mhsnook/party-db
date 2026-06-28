@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import type { Lobby } from 'partyserver'
 import { authHooks, bearer, type AuthContext } from '../src/server/auth.ts'
 
 describe('bearer', () => {
@@ -17,7 +16,7 @@ describe('bearer', () => {
 })
 
 describe('authHooks', () => {
-  const lobby = { party: 'main', className: 'Main', name: 'r' } as unknown as Lobby
+  const lobby = { className: 'Main', name: 'r' }
   const connect = (token?: string) =>
     new Request(`https://x/parties/main/r${token ? `?token=${token}` : ''}`, { headers: { Upgrade: 'websocket' } })
   const post = (token?: string) =>

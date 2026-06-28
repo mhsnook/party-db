@@ -23,8 +23,13 @@
 // the query (`?token=…`) while the POST uses an Authorization header; `authorize`
 // gets the raw Request and reads whichever.
 
-import type { Lobby } from 'partyserver'
 import type { WriteReject } from '../protocol.ts'
+
+// The subset of partyserver's `Lobby` we read. Kept structural (not `Lobby<Env>`)
+// so the hooks assign to `routePartykitRequest` regardless of the worker's `Env`
+// binding type — a `Lobby<Env>` param would otherwise only line up when `Env` is
+// `never`.
+type ResolvedRoom = { className: string; name: string }
 
 export type AuthKind = 'connect' | 'write'
 
@@ -42,14 +47,14 @@ export type Authorize = (req: Request, ctx: AuthContext) => AuthDecision | Promi
 // The hooks gate every party routed through this `routePartykitRequest` call —
 // branch on `ctx.party` inside `authorize` to leave some parties open.
 export function authHooks(authorize: Authorize) {
-  const decide = async (req: Request, lobby: Lobby, kind: AuthKind) =>
+  const decide = async (req: Request, lobby: ResolvedRoom, kind: AuthKind) =>
     normalize(await authorize(req, { kind, party: lobby.className, room: lobby.name }))
   return {
-    onBeforeConnect: async (req: Request, lobby: Lobby) => {
+    onBeforeConnect: async (req: Request, lobby: ResolvedRoom) => {
       const v = await decide(req, lobby, 'connect')
       return v.ok ? undefined : new Response(v.error, { status: v.status })
     },
-    onBeforeRequest: async (req: Request, lobby: Lobby) => {
+    onBeforeRequest: async (req: Request, lobby: ResolvedRoom) => {
       // non-writes fall through to the DO (which 404s them); a rejected write is a
       // WriteReject so the client rolls back like any other POST rejection.
       if (req.method !== 'POST') return undefined
