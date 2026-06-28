@@ -43,26 +43,32 @@ app with modern/realtime UX) will write `coll.insert()` in one place, and read
 `const { data } = useLiveQuery(...)` in another place — another component or
 another machine entirely!
 
-**As of today** we support a single mode: Durable Object-controlled with SQLite
-persistence. This is v0 complete, working on v1.
+**As of today** we support the first two modes, transparent and RDBMS.
 
-- **✅ v0 (no-server-schema mode):** Just gets changes from one DB client to the other clients
-- **⚡️ v1 (RDBMS, controlled mode):** Supports SQLite on the server, manages global ordering,
-  full catchups, server-client transaction parity. Real-time is limited to the changes that come
-  through the PartyServer (via PartyDB collection operations, or the `/write` handler).
-- **🗓️ v2 (Postgres + global WAL):** Will support Postgres as a server persistence target,
-  where we will take advantage of the global WAL, allowing PartyDB to be adopted incrementally
-  alongside your other systems and APIs, and unlocking some different ergonomics esp w/r/t
-  database triggers and async operations that aren't available with the initial `200 ok`.
-- **☁️ v3 (Full codegen):** ... TBD, but if the expectations from v2 work out, it seems possible
-  to generate everything just by pointing it at a Postgres DB and letting it codegen the rest.
+ - Milestone 0: **Transparent mode:** clients hold collection schemas but the server passes write
+   messages through transparently; no auth
+ - Milestone 1: **RDBMS mode:** server and client share collection schemas and the server keeps
+   the authoritative and historical copy of the database in SQLite. Includes
+	auth, global seq, transactions, snapshot+backfill.
 
-**See it:** the [React example](./example-react/README.md) (`App.tsx` + `server.ts`,
-`useLiveQuery`, zero-config writes) or the [vanilla JS example](./example/README.md).
+**Future**
+
+- Milestone 2: **Postgres mode:** everything above, but working on postgres, (and also D1).
+  Plus: RPCs, RLS (protecting writes), global WAL, table-sharing config, user-protected tables.
+- Milestone 3: **Not just a party anymore:** query slicing, RLS-in-JS -- most apps
+  don't work as parties, you need to filter content by more than just public-or-userID.
+- Far Future: **Codegen mode:** build the entire system from a DB string or schemas, live
+  codegen, send schema changes over the wire, etc.
+
+
+**Examples:**
+
+- [React + SQLite](./example-react-RDBMS/README.md) (RDBMS mode, etc. from Milestone 1)
+- [React](./example-react/README.md) (`App.tsx` + `server.ts`,
+`useLiveQuery`, zero-config writes, Milestone 0)
+ - [vanilla JS](./example/README.md)
+
 (Yes, it really is that simple; we're not messing around about "near-zero config".)
-For the v1 additions, the [rdbms + auth example](./example-react-rdbms/README.md)
-serves writes off a real structured SQLite table and password-gates them (reads
-stay open) — showing where `authHooks` and a shared server schema slot in.
 
 ## Client
 

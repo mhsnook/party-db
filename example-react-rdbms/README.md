@@ -39,11 +39,10 @@ export class Main extends PartyDbServer {
   // 🆕 share the schema so writes CRUD into REAL columns, not a blob
   collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
 
-  // 🆕 you bring the table; the server never DDLs yours
+  // 🆕 you bring the table; the server never DDLs yours. The schema lives in
+  //    ./migrations — server.ts stays the PartyDB, not the database setup.
   onStart() {
-    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS todos (
-      id TEXT PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0
-    )`)
+    migrate(this.ctx.storage.sql)
     return super.onStart()
   }
 }

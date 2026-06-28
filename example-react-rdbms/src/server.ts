@@ -1,6 +1,7 @@
 import { routePartykitRequest } from 'partyserver'
 import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthContext } from '../../src/server/index.ts'
 import { todoSchema, type Todo } from './schema.ts'
+import { migrate } from './migrations/index.ts'
 
 // The password. Real apps verify a session/JWT here; a shared string keeps the
 // demo to one moving part. It's printed on the page on purpose.
@@ -10,18 +11,13 @@ const PASSWORD = 's3cret'
 //
 // (1) We share the zod schema with the server, so writes CRUD into the REAL
 //     columns of a table WE own — not a generic blob. The server never DDLs your
-//     tables; you bring them. So we create one in onStart().
+//     tables; you bring them, so the schema lives in ./migrations and we apply it
+//     on start — server.ts stays the PartyDB, not the database setup.
 export class Main extends PartyDbServer {
   collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
 
   onStart() {
-    this.ctx.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS todos (
-         id   TEXT PRIMARY KEY,
-         text TEXT NOT NULL,
-         done INTEGER NOT NULL DEFAULT 0
-       )`,
-    )
+    migrate(this.ctx.storage.sql)
     return super.onStart()
   }
 }
