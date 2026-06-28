@@ -239,6 +239,53 @@ why we skip trying to use it as the server sink, reaching for `ctx.storage.sql`
 (or a real database) directly. What's shared across sides is the wire protocol and
 the apply contract (§4), not the apply code — the sinks differ.
 
+## 13. Auth: we forward the principal, the authority enforces
+
+party-db does not own an auth model. The one thing it does is **forward the
+caller's credential unmodified** — the `Authorization` bearer rides the `/write`
+POST (and the stream open) straight through to the sink — and then whatever sits
+behind the sink decides. We never parse, judge, or impersonate the decision; we
+carry identity to the place that already enforces policy.
+
+Why: this is the same agnosticism as §5 (your schema is the authority) applied to
+auth. The middle tier stays thin precisely because it conducts the principal
+instead of re-deciding permission. It also makes the auth granularity the
+*developer's* choice, not ours — and party-db is byte-for-byte identical across
+those choices:
+
+- **Per-user RLS.** Forward a user JWT; the database re-derives identity
+  (`request.jwt.claims` → `auth.uid()`) *inside the write transaction* and RLS
+  judges it. Free on the Postgres/Supabase target, which already owns an RLS
+  engine; on the DO/SQLite target there is no policy engine, so per-row auth there
+  is hand-rolled in the apply step (the room-as-boundary model is the natural fit
+  for that target instead).
+- **Room-as-principal.** Don't forward a user token; give the room its own auth
+  boundary and write through a privileged role. Same library, different sink
+  client.
+
+**Bring-your-own-auth is therefore transitive, not an integration.** The chain is:
+your provider issues a JWT → the client sends it as the bearer → party-db forwards
+it → your database verifies it against its configured JWKS → RLS. We integrate with
+no auth vendor; the contract is "we forward your bearer." Any issuer the database
+trusts works — Clerk and WorkOS have native Supabase third-party-auth support,
+better-auth (or anything) via custom OIDC — subject only to the database's own
+requirements (asymmetric-signed JWT with a `kid` over a discoverable JWKS, and a
+`role` claim mapping to a DB role). None of that is party-db's concern; it's the
+developer's issuer config plus their RLS policies.
+
+Two consequences worth stating because they bound the pattern:
+
+- **The free part is asymmetric.** Forwarding the principal covers the write and
+  the *snapshot* read (both go through the user-scoped client → RLS-filtered for
+  free). The *live fan-out* (broadcast) happens after the authority and is **not**
+  re-judged per subscriber — making the down-stream respect the same policy is the
+  read-level-slicing work in [`unspecified.md`](./unspecified.md), not something
+  forwarding gives you.
+- **`RETURNING` needs a read policy.** Settling on the resolved row (§5, §7)
+  depends on the write handing the row back. If the principal may write but has no
+  SELECT policy on that row, the write commits and the echo is empty. Executing as
+  the user means the resolved row is what *that* principal is allowed to see.
+
 ## Layering
 
 | Layer | What |
