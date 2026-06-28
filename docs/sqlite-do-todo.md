@@ -14,29 +14,18 @@ provides the canonical order for the stream, and enables complete backfill/
 catchup -- in other words, it's the first version I actually want to use in a
 project!
 
-The major structural outcome here is the completion of this write-confirm-settle
-cycle where a couple things are true:
-
 - Tanstack DB collection operations on clients are the entire API
 - User performance about as good as the laws of physics currently allow
 - DX that handles all server logic, mutations, and realtime connection with less
 config than a `queryCollection`: no `queryFns`, no `onUpdate`
 
-v2+ (Postgres-WAL, RPCs, RLS, slicing, (Supabase?)) is **parked**
-(bottom); see architecture → Roadmap.
-
-**Where we actually are:** the transport/sync plumbing is built and solid — wire
-format, channel multiplexing, `seq`, optimistic → ack → settlement, delta
-reconnect, fan-out (this *is* v0). What's *not* built is the v1 persistence model:
-the code still does the schema-agnostic `(k, data)` blob upsert. So the work is
-making the data real, and making the package testable.
-
-Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks "done",
-**P1** needed for real use, **P2** polish.
 
 ---
 
 ## Where we are — conformance to architecture.md
+
+Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks "done",
+**P1** needed for real use, **P2** polish.
 
 | § | Decision | Status | Note |
 | --- | --- | --- | --- |
@@ -61,34 +50,27 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 > Practical ordering: do **item 2 (tooling)** first so you can build item 1 with
 > tests. But item 1 is the *point* — it's what "finish the SQLite story" means.
 
-### 1. Structured relational tables — **P0** ✅ (landed; see notes)
+### 1. ✅ Structured RDBMS tables — **P0**
 
 - [x] **Use the same client DB schema on the server.** Zod schemas are already used
       on the client to validate inserts and updated in to the Tanstack Collections.
       On the server they are just a very quick validator. Projects come with their
-      own database and types, and Zod schemas that could power their Tanstack
-      Collections, and we're able to extrapolate the rest. Server and client
+      own database and types/schemas, we extrapolate the rest. Server and client
       collections **share one interface** — `{ name, key, schema }`, defined once
-      and imported on both sides (no separate `TableDef`). They might be distinct
-      `clientCollection` / `serverCollection` entities if their fill-in-value rules
-      diverge (client optimistic defaults vs server/DB-resolved values), but the
-      interface is shared.
+      and imported on both sides.
 - [x] **CRUD against typed columns** in `applyOne` (insert/update/delete into real
       columns), replacing the blob upsert. `SqliteAdapter.applyStructured`: distinct
       `INSERT`/`UPDATE`/`DELETE` (not a blanket upsert) so constraints get to judge;
-      `INSERT`/`UPDATE` capture the committed row with `RETURNING *`. The blob upsert
-      stays only for schema-less collections.
-- [x] **Extract a `PersistenceAdapter` seam (embedded DO-SQLite *or* D1).** Pull the
+      `INSERT`/`UPDATE` capture the committed row with `RETURNING *`.
+- [x] **Extract a `PersistenceAdapter` seam (embedded DO-SQLite or D1).** Pull the
       apply step out of `applyOne` behind an interface — `apply(op, schema) → resolved
-      row` — so `onRequest` calls it blind to the target: blob (v0), structured SQL
-      (v1), or D1. Design it **async** (not `transactionSync` directly): embedded
-      SQLite is sync, D1 is async (`batch()` for the atomic POST). The DO serializes
-      its write → `seq` → broadcast section (input-gating / `blockConcurrencyWhile`)
-      so concurrent POSTs' awaits can't interleave ordering. Wins: each adapter is
-      unit-testable without miniflare, and v0→v1 is "swap the adapter," not "rewrite
-      `onRequest`." Both targets capture via `RETURNING` (what `/write` commits), not
-      a change feed: changes that never come through `/write` — other services,
-      cronjobs, trigger side-effects on rows we didn't return — are the v2 WAL story.
+      row` — so `onRequest` calls it blind to the target, whether it's the v0 blob
+		(v0), SQLite on the Durable Object (v1), or a call over the network to another
+		database (D1 and Postgres, coming up soon). `batch()` for the atomic POST. The
+		DO serializes its write → `seq` → broadcast section to maintain ordering.
+		**Limitation:** Both targets capture via `RETURNING` (what `/write` commits), not
+      a change feed: changes that come in via cronjobs, trigger effects, or other APIs
+		can't be captured yet — stay tuned for v2's WAL story.
       *Landed:* `PersistenceAdapter` (`src/server/persistence.ts`) with `init`/`write`/
       `snapshot`/`replaySince`, all async; `SqliteAdapter` over a narrow `SqlEngine`
       seam (so it unit-tests against `node:sqlite`, no miniflare); `onRequest` is now
@@ -97,12 +79,11 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 - [x] **The database is the authority.** A write is a genuine transactional commit
       the DB's constraints can reject; rejection fails the POST (client optimistic
       rollback), success *is* the acceptance. The server applies the batch in the
-      order given, in one transaction — it does **not** re-derive write-ordering;
-      the DB judges. Zod may run server-side as a cheap *error-sooner* gate, never
-      as the correctness authority. *Landed:* whole POST in one transaction; a
-      rejection rolls the lot back (tested: a valid batch + a failing batch ⇒
-      neither survives). Zod is not run server-side yet — noted below as the one
-      remaining error-sooner gate.
+      order given, in one transaction. Zod may run server-side as a cheap *error-
+		sooner* gate, but the commit authority is still the database itself. *Landed:*
+		whole POST in one transaction; a rejection rolls the lot back (tested: a valid
+		batch + a failing batch ⇒ neither survives). Zod is not run server-side yet —
+		noted below as the one remaining error-sooner gate.
 - [x] **Injection-safe by construction.** Bind every *value* with `?` (the current
       code already does this for keys/data/etc.). Take every *identifier* — table
       and column names — from the schema/config allowlist, validated against
@@ -114,8 +95,7 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 - [x] **Resolved-row reconciliation (mandatory).** The committed row can differ
       from the sent row (defaults, generated columns, serials, trigger effects).
       Return the resolved row (`WriteAck.changed` + on the stream) and have the
-      client swap its optimistic overlay for it. This is the piece the blob model
-      existed to avoid; it is required now (and completes §7). *Landed:* the adapter
+      client swap its optimistic overlay for it, completing §7. *Landed:* the adapter
       returns resolved ops; `onRequest` broadcasts them and sets `WriteAck.changed`;
       the oplog stores resolved ops so reconnect deltas replay them too. The client's
       existing `waitForSeq` settlement drops the overlay onto the resolved row — clean
@@ -276,9 +256,3 @@ You currently cannot typecheck or test the package in isolation.
       stay source-only** — they import the library by relative path
       (`../../src/client/index.ts`), bypassing the `exports` map, so they don't need
       and don't get a build step.
-- [x] **`package.json` `description` updated** — the "MOCK / PROPOSAL … not wired
-      into scenetest-cloud" text is gone; it now describes the v1 DO-SQLite-authority
-      sync model.
-- [x] **Example nit confirmed correct.** `todos.toArray` is a getter in
-      `@tanstack/db` (`get toArray(): …[]`), so `todos.toArray as Todo[]` (no call)
-      is right — not a missing `()`.
