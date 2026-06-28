@@ -7,5 +7,7 @@
   "include": ["src/client", "src/protocol.ts", "src/schema.ts", "src/index.ts", "test"],
   // the integration suite targets the workers runtime (cloudflare:test, DO types)
   // which clashes with this DOM/node config; it's typechecked by its own tsconfig.
-  "exclude": ["test/integration"]
+  // the benchmarks use node APIs (node:sqlite, process) absent from this DOM/no-types
+  // config; they're run, not typechecked (`pnpm bench`).
+  "exclude": ["test/integration", "test/bench"]
 }
