@@ -1,0 +1,18 @@
+{
+  // Emit the client half to dist/ (mirrors tsconfig.client.json's DOM lib).
+  // `rewriteRelativeImportExtensions` rewrites our `./foo.ts` specifiers to
+  // `./foo.js` in the output, so emitting with `allowImportingTsExtensions`
+  // is allowed. Shared files (protocol/schema/index) are also emitted by the
+  // server build; the output is identical, last writer wins.
+  "extends": "./tsconfig.client.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/client", "src/protocol.ts", "src/schema.ts", "src/index.ts"]
+}

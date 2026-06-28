@@ -1,0 +1,15 @@
+{
+  // Emit the server half to dist/ (mirrors tsconfig.server.json's Workers types).
+  // See tsconfig.build.client.json for the `rewriteRelativeImportExtensions` note.
+  "extends": "./tsconfig.server.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/server", "src/protocol.ts", "src/schema.ts", "src/index.ts"]
+}

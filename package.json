@@ -2,15 +2,35 @@
   "name": "party-db",
   "version": "0.0.0",
   "private": true,
-  "description": "MOCK / PROPOSAL — multiplexed TanStack DB collection sync over a single transport (Durable Object WS, or PostgREST SSE). Not wired into scenetest-cloud; lives here for problem-space context, destined for its own monorepo.",
+  "description": "Multiplexed TanStack DB collection sync over a PartyKit transport",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
   "exports": {
-    ".": "./src/index.ts",
-    "./client": "./src/client/index.ts",
-    "./server": "./src/server/index.ts",
-    "./protocol": "./src/protocol.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "default": "./dist/protocol.js"
+    }
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.client.json && tsc -p tsconfig.build.server.json",
+    "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.client.json && tsc -p tsconfig.server.json",
     "test": "vitest run",
     "test:watch": "vitest",

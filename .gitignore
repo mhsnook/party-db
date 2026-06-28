@@ -1,4 +1,5 @@
 node_modules
+dist
 
 # installed by `npx skills add` — personal agent tooling, not party-db code
 skills-lock.json
