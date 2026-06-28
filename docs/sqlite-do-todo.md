@@ -256,3 +256,49 @@ You currently cannot typecheck or test the package in isolation.
       stay source-only** — they import the library by relative path
       (`../../src/client/index.ts`), bypassing the `exports` map, so they don't need
       and don't get a build step.
+
+### 8. Deferred — in scope, not yet built
+
+The v1 transport + persistence story is done; these are the next slice, logged
+here (not pushed into the parked v2 WAL/RPC/RLS/slicing story at the top).
+
+- [ ] **D1 adapter — P1.** The seam is already built *for* it: `PersistenceAdapter`
+      is async, `onRequest` serializes its write→seq→broadcast section behind a
+      promise queue, and capture is via `RETURNING`. What's missing is the
+      `D1Adapter` itself — the atomic POST over D1's async `batch()` instead of
+      `transactionSync`. This completes v1's "embedded *or* D1," and D1 is the
+      first target other consumers can read directly. Swap it in by overriding
+      `PartyDbServer.createAdapter()`. *(Benchmarked the async contract this rides
+      on: `pnpm bench` — overhead is at/below noise on the embedded path.)*
+- [ ] **Server-side Zod gate — P2.** Run each row's shared Zod schema in
+      `onRequest` as a cheap *error-sooner* gate — reject malformed writes before
+      the DB does — **never** as the correctness authority (the database still
+      judges; §1). Today nothing Zod runs server-side; the DB is the only gate.
+      *(architecture.md's v1 paragraph currently overclaims this as shipped — fix
+      that wording when this lands.)*
+- [ ] **Serial / db-assigned PK reconciliation — P2.** The optimistic→resolved
+      swap is keyed by `key`; a serial/identity PK *changes* on commit (client
+      temp id → db-assigned id), so that path has a documented rough edge (the key
+      changes, so the swap-by-key can flicker). UUIDs stay the zero-friction
+      default; smooth the serial case by carrying a temp-key → resolved-key remap
+      through settlement.
+- [ ] **Publish the package — P2.** The build landed (§7); actually shipping it is
+      still undone — flip `private: true`, set a real version, publish to a registry.
+- [ ] **Name & document the lobby permission surface — P2 (docs/DX).** What
+      `authHooks` + `AuthContext` already do (§5) deserves a first-class
+      "customize room permissions" / "lobby options" story, not to be left buried
+      in the auth source. One stateless `authorize(req, ctx)` at the lobby (in the
+      worker, before the DO) already lets you do per-room decisions by *identity*:
+      - gate by `kind` — reads open, writes token-gated (the rdbms example);
+      - gate by `party` — lock down `PrivateRoom`, leave `main` open;
+      - gate by `room` name — e.g. rooms named `private-*` require a token;
+      - and the check can be **async and call out** — verify a JWT, hit an auth
+        API, or look up membership in an *external* database.
+- [ ] **In-object (stateful) auth — in scope but deferred due to YAGNI.**
+      Authorization that depends on the room's *own* DO state — membership/roles
+      stored in the room, per-row RLS, rate limits/ban lists — can't be done at the
+      lobby (it runs before the DO, with no `ctx.storage`). It needs a *second*
+      seam: an in-object hook (e.g. `authorizeInObject`) consulted in
+      `onConnect`/`onRequest` with `this.ctx.storage` access, which *does* wake the
+      DO (a different perf/security profile from the lobby gate). Distinct from v2's
+      RLS conventions. Not building it until something actually needs it.
