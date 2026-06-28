@@ -1,4 +1,7 @@
 {
+  // the browser/client half (App, main, schema). server.ts targets the workers
+  // runtime — DOM and Workers types clash in one config — so it's typechecked by
+  // tsconfig.worker.json instead. `pnpm typecheck` runs both.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -12,5 +15,6 @@
     "skipLibCheck": true,
     "types": ["vite/client"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/server.ts"]
 }

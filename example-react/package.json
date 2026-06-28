@@ -5,18 +5,20 @@
   "scripts": {
     "dev": "concurrently -k -n worker,client \"npm:dev:worker\" \"npm:dev:client\"",
     "dev:worker": "cross-env CLOUDFLARE_CF_FETCH_ENABLED=false wrangler dev",
-    "dev:client": "vite"
+    "dev:client": "vite",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json"
   },
   "dependencies": {
     "@tanstack/db": "^0.6",
     "@tanstack/react-db": "^0.1.88",
-    "partyserver": "^0.0.71",
-    "partysocket": "^1.1",
+    "partyserver": "^0.5",
+    "partysocket": "^1.3",
     "react": "^19",
     "react-dom": "^19",
     "zod": "^3.24"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
