@@ -60,6 +60,9 @@ persistence. This is v0 complete, working on v1.
 **See it:** the [React example](./example-react/README.md) (`App.tsx` + `server.ts`,
 `useLiveQuery`, zero-config writes) or the [vanilla JS example](./example/README.md).
 (Yes, it really is that simple; we're not messing around about "near-zero config".)
+For the v1 additions, the [rdbms + auth example](./example-react-rdbms/README.md)
+serves writes off a real structured SQLite table and password-gates them (reads
+stay open) — showing where `authHooks` and a shared server schema slot in.
 
 ## Client
 

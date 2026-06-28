@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>party-db react demo · rdbms + auth</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 16px/1.5 system-ui, sans-serif; max-width: 30rem; margin: 3rem auto; padding: 0 1.25rem; }
+      h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+      .sub { margin: 0 0 1.5rem; color: #888; font-size: 0.9rem; }
+      .sub code { background: #8882; padding: 0.05rem 0.3rem; border-radius: 4px; }
+      .sub .ok { color: #16a34a; }
+      .sub .lock { color: #d97706; }
+      form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+      input[type="text"], form input:not([type]) { flex: 1; }
+      form input:not([type="checkbox"]) { padding: 0.5rem 0.6rem; border: 1px solid #8884; border-radius: 6px; font: inherit; }
+      form button { padding: 0.5rem 0.9rem; border: 0; border-radius: 6px; background: #4f46e5; color: #fff; font: inherit; cursor: pointer; }
+      ul { list-style: none; padding: 0; margin: 0; }
+      li { display: flex; align-items: center; gap: 0.6rem; padding: 0.45rem 0; border-bottom: 1px solid #8881; }
+      li button { margin-left: auto; border: 0; background: none; cursor: pointer; color: #999; }
+      .count { color: #888; font-size: 0.9rem; }
+      footer { margin-top: 2rem; font-size: 0.85rem; color: #888; }
+      footer a { color: inherit; }
+
+      /* login bar + write error */
+      .auth { margin: 0 0 1rem; font-size: 0.9rem; align-items: center; }
+      .auth button { padding: 0.35rem 0.7rem; border: 0; border-radius: 6px; background: #6b7280; color: #fff; font: inherit; cursor: pointer; }
+      .error { margin: 0 0 1rem; padding: 0.5rem 0.7rem; border-radius: 6px; background: #ef44441a; color: #b91c1c; font-size: 0.9rem; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
