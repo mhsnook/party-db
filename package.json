@@ -1,9 +1,26 @@
 {
   "name": "party-db",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.0.1",
   "description": "Multiplexed TanStack DB collection sync over a PartyKit transport",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mhsnook/party-db.git"
+  },
+  "homepage": "https://github.com/mhsnook/party-db#readme",
+  "bugs": {
+    "url": "https://github.com/mhsnook/party-db/issues"
+  },
+  "keywords": [
+    "tanstack-db",
+    "partykit",
+    "partyserver",
+    "durable-objects",
+    "sync",
+    "realtime",
+    "cloudflare"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
