@@ -1,7 +1,8 @@
 # PartyDB — Tanstack DB meets PartyKit
 
-> v0.0.0, incubating. Design: [`architecture.md`](./docs/architecture.md) · v1 plan
-> & roadmap: [`sqlite-do-todo.md`](./docs/sqlite-do-todo.md) · open questions:
+> v0.0.0, incubating. Cookbooks: [`docs/cookbooks`](./docs/cookbooks/) · Design:
+> [`architecture.md`](./docs/architecture.md) · v1 plan & roadmap:
+> [`sqlite-do-todo.md`](./docs/sqlite-do-todo.md) · open questions:
 > [`unspecified.md`](./docs/unspecified.md).
 
 **PartyDB connects your TanStack DB collections to your Database with

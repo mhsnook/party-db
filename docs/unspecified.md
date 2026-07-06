@@ -8,6 +8,13 @@ Append, don't prune; promote an item to `architecture.md` once it's decided.
 - **insert/update schemas.** Accept optional `insertSchema`/`updateSchema` (default
   to `schema`) for write-time validation and payload shape (insert = full row,
   update = patch).
+  - **Request-context refinements.** Some rules aren't a pure function of the row —
+    e.g. `author_id === <the requester's uid>`. Let the write schema be a *function of
+    a small per-request context* (`writeSchema: (ctx) => schema.refine(...)`), where
+    `ctx.uid` comes from an `auth = (req) => uid` getter on the server that party-db
+    resolves once per request (same request it already sees at the lobby). The lib
+    stays out of validation — it just hands Zod the one thing the row can't carry: who
+    is asking. See [cookbook 2](./cookbooks/02-server-validation.md).
 - **Subscription / filtering.** Today the server broadcasts every channel and the
   client ignores unknowns. A `subscribe(channels[])` control message would let the
   server send only relevant batches + backlog. Matters as channel count grows.
