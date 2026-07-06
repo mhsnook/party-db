@@ -3,6 +3,7 @@
   "name": "party-db-example-react-rdbms",
   "main": "src/server.ts",
   "compatibility_date": "2026-01-01",
+  "assets": { "directory": "./dist" },
   "durable_objects": {
     "bindings": [{ "name": "Main", "class_name": "Main" }]
   },

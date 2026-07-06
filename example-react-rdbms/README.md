@@ -99,3 +99,27 @@ transparent, and a rejected write arrives as a structured error the app handles.
 | `src/auth.tsx` | the tiny auth context: `loggedIn` + the token the transport sends |
 | `src/schema.ts` | shared zod schema — now also used **server-side** for structured CRUD |
 | `src/server.ts` | the `PartyDbServer` room: a **real table** + `authHooks(authorize)` |
+
+## Deploy the Example Site
+
+This example's `wrangler.jsonc` points `assets` at the Vite build, so one Worker
+serves both the react app from `dist/`, and everything else (`/parties/*`,
+including the WebSocket) falls through to the worker/the Durable Object (no CORS).
+
+```bash
+pnpm install                # root install — the worker bundle resolves
+cd example-react-rdbms      # partyserver/@tanstack/db from ../../node_modules
+pnpm install
+pnpm deploy:cf              # vite build && wrangler deploy
+```
+
+Wrangler prints your `*.workers.dev` URL when it's done (first run will walk you
+through `wrangler login`).
+
+To deploy on every push instead, connect the repo in the Cloudflare dashboard as
+a **Worker** (Workers & Pages → Create → Workers → import repository — not a
+Pages project) with:
+
+- **Root directory**: `example-react-rdbms`
+- **Build command**: `pnpm install --dir ../.. && pnpm install && pnpm build`
+- **Deploy command**: `pnpm exec wrangler deploy`
