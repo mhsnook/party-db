@@ -4,8 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n worker,client \"npm:dev:worker\" \"npm:dev:client\"",
-    "dev:worker": "cross-env CLOUDFLARE_CF_FETCH_ENABLED=false wrangler dev",
+    "dev:worker": "mkdir -p dist && cross-env CLOUDFLARE_CF_FETCH_ENABLED=false wrangler dev",
     "dev:client": "vite",
+    "build": "vite build",
+    "deploy:cf": "vite build && wrangler deploy",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json"
   },
   "dependencies": {
