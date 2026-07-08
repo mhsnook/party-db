@@ -10,9 +10,7 @@ import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthConte
 import { routePartykitRequest } from 'partyserver'
 import { todoSchema, type Todo } from './schema.ts'
 
-// A shared string keeps the recipe to one moving part. A real app verifies a
-// session/JWT (recipe 3) and compares with a constant-time check — and never puts
-// the expected credential in a response body.
+// Shared string keeps the recipe to one moving part; a real app verifies a session/JWT (recipe 3), compares constant-time, and never echoes the credential.
 const PASSWORD = 's3cret'
 
 const authorize = (req: Request, { kind }: AuthContext) => {
@@ -27,14 +25,11 @@ export class Main extends PartyDbServer {
 }
 
 export default {
-  fetch: (req: Request, env: unknown) =>
-    // authHooks runs authorize at the lobby, before the request reaches the Durable
-    // Object — a rejected read never upgrades the socket, a rejected write never wakes the DO.
-    routePartykitRequest(
-		req,
-		env,
-		authHooks(authorize)).then((r) => r ?? new Response('not found', { status: 404 })
-	),
+  // authHooks runs authorize at the lobby, before the request reaches the DO
+  async fetch(req: Request, env: unknown): Promise<Response> {
+    const response = await routePartykitRequest(req, env, authHooks(authorize))
+    return response ?? new Response('not found', { status: 404 })
+  },
 }
 ```
 
