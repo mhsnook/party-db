@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import type { SequencedBatch } from '../../src/protocol.ts'
+import type { SequencedBatch, WriteBatch } from '../../src/protocol.ts'
 import { connect, insert, post } from './helpers.ts'
+
+const del = (id: string): WriteBatch[] => [{ channel: 'todos', ops: [{ type: 'delete', value: { id } }] }]
 
 // The worker under test sets `oplogRetention = 50` (test/integration/worker.ts).
 // Past that floor the _oplog is compacted, so a reconnecting client whose `since`
@@ -76,6 +78,40 @@ describe('reconnect falls back to a snapshot when ?since is garbage', () => {
     await c.waitFor(1)
     expect(c.batches[0].ready).toBe(true)
     expect((c.batches[0].ops[0].value as { id: string }).id).toBe('g1')
+    c.ws.close()
+  })
+})
+
+describe('a stale reconnect heals: the fallback snapshot carries reset', () => {
+  it('marks the snapshot reset:true, drops a server-side delete, and reloads current state', async () => {
+    const room = 'reconnect-heals'
+    // client A applies rows a, b (seqs 1, 2) then goes away.
+    expect((await post(room, insert('a', 'aaa'))).status).toBe(200) // seq 1
+    expect((await post(room, insert('b', 'bbb'))).status).toBe(200) // seq 2
+    const sinceA = 2 // A's last-applied cursor
+
+    // while A is gone: delete a (seq 3), then write enough rows to compact the
+    // oplog floor past A's cursor. total oplog seq reaches RETENTION+8 = 58, so
+    // compact() drops seq <= 8 — A's cursor (2) is now below the retained floor.
+    expect((await post(room, del('a'))).status).toBe(200) // seq 3
+    const fresh = RETENTION + 5 // 55 more writes → max seq 58, floor at seq 9
+    for (let i = 1; i <= fresh; i++) {
+      expect((await post(room, insert(`n${i}`, `new ${i}`))).status).toBe(200)
+    }
+
+    // A reconnects with its stale cursor; replaySince → null → fallback snapshot.
+    const c = await connect(room, sinceA)
+    await c.waitFor(1)
+    const first = c.batches[0] as SequencedBatch
+    // the snapshot resets the client: both the replay sentinel AND the clear marker
+    expect(first.ready).toBe(true)
+    expect(first.reset).toBe(true)
+
+    const ids = new Set(first.ops.map((op) => (op.value as { id: string }).id))
+    expect(ids.has('a')).toBe(false) // the delete is reflected — no ghost row
+    expect(ids.has('b')).toBe(true) // the survivor is present
+    for (let i = 1; i <= fresh; i++) expect(ids.has(`n${i}`)).toBe(true) // and every new row
+    expect(ids.size).toBe(fresh + 1) // b + n1..n55, nothing else
     c.ws.close()
   })
 })

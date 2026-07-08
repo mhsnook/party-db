@@ -11,7 +11,7 @@ update your row when done.
 |------|-------|----------|--------|------------|--------|
 | 001 | Typecheck the integration suite + reconnect fallback tests | P1 | M | — | DONE |
 | 002 | Fix `.one()` zero-row drift (update-of-missing-row) | P1 | S | 001 | DONE |
-| 003 | Snapshot reset: wire `truncate` for fallback snapshots | P1 | M | 001 | TODO |
+| 003 | Snapshot reset: wire `truncate` for fallback snapshots | P1 | M | 001 | DONE |
 | 004 | Serialize `onConnect` against concurrent writes | P2 | M | 001, 003 | TODO |
 | 005 | Cap `POST /write` size + default oplog retention | P1 | S | **003 (hard)** | TODO |
 | 006 | 409 only for constraint verdicts; internals → generic 500 | P1 | S | 002 | TODO |

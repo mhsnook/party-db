@@ -31,6 +31,7 @@ function recorder() {
     write: (op) => void ops.push(op.value),
     commit: () => {},
     markReady: () => {},
+    truncate: () => {},
   }
   return { sink, ops }
 }

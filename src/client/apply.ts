@@ -18,13 +18,22 @@ export type ChannelSink = {
   write: (op: WriteEvent) => void
   commit: () => void
   markReady: () => void
+  // clear the collection before applying this batch's writes. TanStack DB's own
+  // sync param; only used for `reset` (snapshot) batches. Must be called inside a
+  // begin()/commit() window — the clear + reload commit atomically.
+  truncate: () => void
 }
 
 // Apply one ordered batch to one channel's sink. begin/commit bracket the batch
-// so a multi-op batch (add a post AND tag it) lands atomically.
+// so a multi-op batch (add a post AND tag it) lands atomically. A `reset` batch
+// (a fallback snapshot) truncates first, inside the same window, so the reload
+// replaces prior state in one commit — no duplicate-key throws, no ghost rows.
 export function applyBatch(sink: ChannelSink, batch: SequencedBatch) {
-  if (batch.ops.length) {
+  // a reset with zero ops still opens the window: truncating an emptied room is
+  // the ghost-row cure. Non-reset empty batches remain a no-op.
+  if (batch.reset || batch.ops.length) {
     sink.begin()
+    if (batch.reset) sink.truncate()
     for (const op of batch.ops) sink.write(op)
     sink.commit()
   }
