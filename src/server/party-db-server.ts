@@ -28,8 +28,15 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   collections: PartyCollection<any>[] = []
   // keep at most this many _oplog rows per room (older entries are compacted away
   // after each write); a client whose `since` predates the retained window gets a
-  // fresh snapshot. Undefined → unbounded. Override in your subclass to tune it.
-  oplogRetention?: number
+  // fresh reset snapshot (see docs/architecture.md §8). Override in your subclass;
+  // set 0 for unbounded (the pre-1.0 behavior).
+  oplogRetention = 10_000
+  // reject a POST /write whose body exceeds this many bytes (413). Bounds DO
+  // memory per request. Override to tune; 0 disables the check.
+  maxWriteBytes = 1_048_576 // 1 MiB
+  // reject a POST /write carrying more than this many ops across all batches
+  // (413). Override to tune; 0 disables the check.
+  maxWriteOps = 1_000
 
   private adapter!: PersistenceAdapter
   private channels = new Set<string>()
@@ -93,9 +100,20 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   async onRequest(req: Request): Promise<Response> {
     if (req.method !== 'POST') return new Response('not found', { status: 404 })
 
+    // bound DO memory per request BEFORE buffering the body: trust content-length
+    // when the client sends one, and re-check the actual text for those that don't.
+    const declared = Number(req.headers.get('content-length'))
+    if (this.maxWriteBytes > 0 && declared > this.maxWriteBytes) {
+      return Response.json({ error: `write too large (max ${this.maxWriteBytes} bytes)` } satisfies WriteReject, { status: 413 })
+    }
+    const text = await req.text()
+    if (this.maxWriteBytes > 0 && text.length > this.maxWriteBytes) {
+      return Response.json({ error: `write too large (max ${this.maxWriteBytes} bytes)` } satisfies WriteReject, { status: 413 })
+    }
+
     let body: WriteBatch[]
     try {
-      body = (await req.json()) as WriteBatch[]
+      body = JSON.parse(text) as WriteBatch[]
     } catch {
       return Response.json({ error: 'invalid JSON body' } satisfies WriteReject, { status: 400 })
     }
@@ -108,6 +126,15 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
           status: 400,
         })
       }
+      if (!Array.isArray(batch.ops)) {
+        return Response.json({ error: `ops must be an array (channel: ${batch.channel})`, channel: batch.channel } satisfies WriteReject, {
+          status: 400,
+        })
+      }
+    }
+    const opCount = body.reduce((n, b) => n + (b?.ops?.length ?? 0), 0)
+    if (this.maxWriteOps > 0 && opCount > this.maxWriteOps) {
+      return Response.json({ error: `write carries too many ops (max ${this.maxWriteOps})` } satisfies WriteReject, { status: 413 })
     }
 
     return this.serialize(async () => {
