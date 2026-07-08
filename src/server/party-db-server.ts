@@ -142,10 +142,16 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       try {
         sequenced = await this.adapter.write(body)
       } catch (e) {
-        // the database rejected the commit (a constraint, a missing table, …).
-        // Hand the verdict back so the client can roll back and report it, not a
-        // bare 500.
-        return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
+        // a constraint rejection is the database's verdict on the DATA — hand it
+        // back faithfully (409) so the client can roll back and report it. Anything
+        // else (missing table, adapter bug) is an internal fault: log the detail
+        // server-side and keep the response generic, or we'd echo schema internals
+        // to any writer and mislabel 500-class faults as data rejections.
+        if (isConstraintError(e)) {
+          return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
+        }
+        console.error('party-db write failed:', e)
+        return Response.json({ error: 'internal error applying write' } satisfies WriteReject, { status: 500 })
       }
 
       // broadcast only after the commit succeeds; inline before responding keeps
@@ -172,6 +178,12 @@ function cursorParam(raw: string | null): number | null {
 
 function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+// SQLite phrases every constraint rejection with this substring; anything else
+// coming out of the adapter is an internal fault, not a data verdict.
+function isConstraintError(e: unknown): boolean {
+  return /constraint failed/i.test(messageOf(e))
 }
 
 // best-effort: pull the offending constraint out of a SQLite error message like
