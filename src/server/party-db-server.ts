@@ -70,17 +70,14 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   }
 
   // a reconnecting client passes ?since=<lastSeq> and gets only what it missed;
-  // a fresh client gets a full snapshot. Both arrive as ordinary batches. We fall
-  // back to a snapshot when `since` is absent, not a valid cursor, or older than
-  // what the oplog still retains (replaySince → null) — never a gappy delta.
+  // a fresh client gets a full snapshot. We fall back to a snapshot when `since` is
+  // absent, not a valid cursor, or older than the oplog still retains (replaySince
+  // → null) — never a gappy delta (docs/architecture.md §8).
   //
-  // The read-and-send runs through the SAME queue as writes: the adapter awaits in
-  // here yield the event loop, so without serialization a concurrent POST could
-  // commit and broadcast between the snapshot READ and its SEND — the freshly
-  // accepted socket (already in `broadcast`) would then see a newer seq before the
-  // older snapshot (e.g. an update for a row it hasn't loaded). Serializing makes
-  // initial delivery atomic w.r.t. writes; the send loop is synchronous ws.send
-  // enqueues (docs/architecture.md §9), so we don't hold the queue on network I/O.
+  // Runs through the same queue as writes so the snapshot read and its send are
+  // atomic w.r.t. writes — otherwise a concurrent commit could broadcast a newer
+  // seq to this socket before its snapshot lands. The send loop is synchronous
+  // ws.send enqueues, so the queue is never held on network I/O.
   async onConnect(conn: Connection, ctx: ConnectionContext) {
     await this.serialize(async () => {
       const cursor = cursorParam(new URL(ctx.request.url).searchParams.get('since'))

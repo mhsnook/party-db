@@ -34,11 +34,9 @@ export type SequencedBatch<T extends object = Record<string, unknown>> = WriteBa
   seq: Cursor
   // sentinel: this channel's backlog has been fully replayed to you.
   ready?: boolean
-  // this batch is a full snapshot of the channel: the consumer must clear its
-  // state before applying (reconnect fell back past the retained oplog, so a
-  // plain delta would re-insert rows it already holds and leave deleted rows as
-  // ghosts). Old clients ignore the unknown field; a server that never falls back
-  // simply never sets it — backward-compatible both ways.
+  // this batch replaces the channel rather than appending to it: the consumer
+  // clears its state before applying (see docs/architecture.md §8). Optional and
+  // ignored by consumers that don't implement it, so it's backward-compatible.
   reset?: boolean
 }
 
