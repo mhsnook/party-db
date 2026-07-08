@@ -12,31 +12,44 @@ import { jwtVerify, createRemoteJWKSet } from 'jose'
 import { WorkOS } from '@workos-inc/node'
 import { cardSchema } from './schema.ts'
 
+type Env = { WORKOS_API_KEY: string; WORKOS_CLIENT_ID: string }
+
 export class Main extends PartyDbServer {
   collections = [definePartyCollection({ name: 'cards', key: 'id', schema: cardSchema })]
 }
 
-// WorkOS AuthKit hands users a signed JWT. We verify it against WorkOS's public keys
-// and jose caches them so there's no network round-trip per request.
-const workos = new WorkOS(env.WORKOS_API_KEY)
-const JWKS = createRemoteJWKSet(new URL(workos.userManagement.getJwksUrl(env.WORKOS_CLIENT_ID)))
+// WorkOS AuthKit hands users a signed JWT; we verify it against WorkOS's public keys.
+// `env` bindings only exist inside a handler, so we build the client on the first
+// request and reuse the closure — jose keeps its JWKS cache alive with it, so there's
+// still no network round-trip per request.
+let authorize: Authorize | undefined
 
-const authorize: Authorize = async (req, { room }) => {
-  const token = bearer(req) ?? new URL(req.url).searchParams.get('token') // header on writes, ?token= on connect
-  if (!token) return { ok: false, status: 401 }
-  try {
-    const { payload } = await jwtVerify(token, JWKS)
-    return payload.org_id === room ? true : { ok: false, status: 403, error: 'not your board' }
-  } catch {
-    return { ok: false, status: 401 } // bad or expired token
+const makeAuthorize = (env: Env): Authorize => {
+  const workos = new WorkOS(env.WORKOS_API_KEY)
+  const JWKS = createRemoteJWKSet(new URL(workos.userManagement.getJwksUrl(env.WORKOS_CLIENT_ID)))
+  return async (req, { room }) => {
+    const token = bearer(req) ?? new URL(req.url).searchParams.get('token') // header on writes, ?token= on connect
+    if (!token) return { ok: false, status: 401 }
+    try {
+      const { payload } = await jwtVerify(token, JWKS)
+      return payload.org_id === room ? true : { ok: false, status: 403, error: 'not your board' }
+    } catch {
+      return { ok: false, status: 401 } // bad or expired token
+    }
   }
 }
 
 export default {
-  fetch: (req: Request, env: unknown) =>
-    routePartykitRequest(req, env as never, authHooks(authorize)).then((r) => r ?? new Response('not found', { status: 404 })),
+  fetch: (req: Request, env: Env) =>
+    routePartykitRequest(req, env as never, authHooks((authorize ??= makeAuthorize(env)))).then(
+      (r) => r ?? new Response('not found', { status: 404 }),
+    ),
 }
 ```
+
+`env` is only populated inside `fetch`, so the WorkOS client can't be built at module
+scope — we build it on the first request and cache the closure in `authorize` for the
+rest of the isolate's life.
 
 Client sends its WorkOS token when connecting; that's the only auth-aware line:
 

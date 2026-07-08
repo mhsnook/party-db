@@ -10,13 +10,16 @@ import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthConte
 import { routePartykitRequest } from 'partyserver'
 import { todoSchema, type Todo } from './schema.ts'
 
-const PASSWORD = 's3cret' // a real app checks a session/JWT here
+// A shared string keeps the recipe to one moving part. A real app verifies a
+// session/JWT (recipe 3) and compares with a constant-time check — and never puts
+// the expected credential in a response body.
+const PASSWORD = 's3cret'
 
 const authorize = (req: Request, { kind }: AuthContext) => {
   // ✅ reads are open to everyone
   if (kind === 'connect') return true
   // ✅ only writes are password-protected
-  return bearer(req) === PASSWORD ? true : { ok: false, status: 401, error: `enter "${PASSWORD}" to write` }
+  return bearer(req) === PASSWORD ? true : { ok: false, status: 401, error: 'a write token is required' }
 }
 
 export class Main extends PartyDbServer {
