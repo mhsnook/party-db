@@ -194,14 +194,23 @@ full snapshot followed by a `ready` sentinel.
 
 Why: a returning tab should receive only what it missed, not the whole room.
 
-But `_oplog` is compacted (see `oplogRetention`), so a cursor can fall below the
-oldest retained `seq`. When it does, `replaySince` returns `null` and the server
-falls back to a full snapshot — which would be wrong to apply as a plain delta: it
-would re-insert every row the client already holds (TanStack throws
-`DuplicateKeySyncError`) and leave rows deleted while the client was away as
-ghosts. So a fallback snapshot carries `reset: true`, and the client `truncate()`s
-the collection before applying it — the clear and the reload commit atomically in
-one begin/commit window. A delta never sets `reset`; a re-snapshot always does.
+Compaction (see `oplogRetention`) bounds how far back a delta can reach. A cursor
+older than the retained floor cannot be served as a delta — the rows in the gap are
+gone from the oplog — so the server serves a *re-snapshot* instead: `replaySince`
+returns `null` and `onConnect` sends `snapshot()`.
+
+A delta and a re-snapshot are different kinds of message, and the wire says which:
+a delta **appends** to the client's state; a re-snapshot **replaces** it. The
+re-snapshot carries `reset: true`, and the client clears the collection
+(`truncate()`) before applying the rows, both inside one begin/commit window so the
+clear and the reload land atomically. `ready` marks the end of either kind.
+
+Why the distinction is load-bearing: a re-snapshot describes the whole room, so
+applying it as an append would double every row the client still holds and strand
+rows deleted while it was away. Replacement is what keeps the client's copy and the
+authority's identical across a gap, without the client needing to reason about what
+it missed. So the contract is total: a delta never resets; a re-snapshot always
+does.
 
 ## 9. Broadcast inline, after commit, before responding
 
