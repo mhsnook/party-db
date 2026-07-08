@@ -199,6 +199,12 @@ older than the retained floor cannot be served as a delta — the rows in the ga
 gone from the oplog — so the server serves a *re-snapshot* instead: `replaySince`
 returns `null` and `onConnect` sends `snapshot()`.
 
+Retention defaults to 10,000 rows so a room's oplog can't grow unbounded; set
+`oplogRetention = 0` for the old keep-everything behavior. Each `POST /write` is
+likewise bounded by `maxWriteBytes` (1 MiB) and `maxWriteOps` (1,000) — both
+class-field overridable, both answered with a 413 `WriteReject`. Per-identity
+rate limiting is deliberately not here: that belongs in your `authorize` seam (§10).
+
 A delta and a re-snapshot are different kinds of message, and the wire says which:
 a delta **appends** to the client's state; a re-snapshot **replaces** it, sending a
 `reset: true` causing the client collection to `truncate()` before marking `ready`.
