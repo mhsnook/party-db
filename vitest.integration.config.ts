@@ -19,6 +19,7 @@ export default defineConfig({
         durableObjects: {
           Main: { className: 'Main', useSQLite: true },
           Guarded: { className: 'Guarded', useSQLite: true },
+          Faulty: { className: 'Faulty', useSQLite: true },
         },
       },
     }),

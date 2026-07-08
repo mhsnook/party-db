@@ -3,7 +3,14 @@
 // full HTTP + WebSocket path, partyserver routing, DO storage and all.
 
 import { routePartykitRequest } from 'partyserver'
-import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthContext } from '../../src/server/index.ts'
+import {
+  PartyDbServer,
+  definePartyCollection,
+  authHooks,
+  bearer,
+  type AuthContext,
+  type PartyCollection,
+} from '../../src/server/index.ts'
 import { z } from 'zod'
 
 // `done` and `rev` are optional on the wire but defaulted in the table, so the
@@ -16,8 +23,11 @@ const todoSchema = z.object({
   rev: z.number().optional(),
 })
 
+const todos = definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })
+
 export class Main extends PartyDbServer {
-  collections = [definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })]
+  // typed as the base's PartyCollection<any>[] so Faulty can widen the list
+  collections: PartyCollection<any>[] = [todos]
   oplogRetention = 50
 
   // the app owns its table; we only CRUD over it.
@@ -32,6 +42,14 @@ export class Main extends PartyDbServer {
     )
     return super.onStart()
   }
+}
+
+// A party whose `untabled` collection declares a schema but no CREATE TABLE — a
+// write to it fails inside the adapter (no such table), the reliably-internal
+// fault for the 500 path. Kept separate from `Main` so Main's snapshot shape
+// stays stable; keeps `todos` so the same DO can prove it still serves after a 500.
+export class Faulty extends Main {
+  collections = [todos, definePartyCollection({ name: 'untabled', key: 'id', schema: z.object({ id: z.string() }) })]
 }
 
 export const SECRET = 's3cret'

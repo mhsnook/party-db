@@ -14,7 +14,7 @@ update your row when done.
 | 003 | Snapshot reset: wire `truncate` for fallback snapshots | P1 | M | 001 | DONE |
 | 004 | Serialize `onConnect` against concurrent writes | P2 | M | 001, 003 | DONE |
 | 005 | Cap `POST /write` size + default oplog retention | P1 | S | **003 (hard)** | DONE |
-| 006 | 409 only for constraint verdicts; internals → generic 500 | P1 | S | 002 | TODO |
+| 006 | 409 only for constraint verdicts; internals → generic 500 | P1 | S | 002 | DONE |
 | 007 | Client test gaps (persist rejections, tokens, blob parity) + socket parse guard | P2 | M | — | TODO |
 | 008 | Publish readiness: pin peers, manifest hygiene, release workflow | P1 | M | — | TODO |
 | 009 | README accuracy for first publish | P1 | S | — | TODO |
