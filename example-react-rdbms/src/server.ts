@@ -3,8 +3,9 @@ import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthConte
 import { todoSchema, type Todo } from './schema.ts'
 import { migrate } from './migrations/index.ts'
 
-// The password. Real apps verify a session/JWT here; a shared string keeps the
-// demo to one moving part. It's printed on the page on purpose.
+// The password. Real apps verify a session/JWT here and compare with a
+// constant-time check — and never echo the expected credential in a response;
+// a shared string keeps the demo to one moving part. It's printed on the page on purpose.
 const PASSWORD = 's3cret'
 
 // 🆕 vs the schemaless example, TWO things change here:
@@ -30,7 +31,7 @@ export class Main extends PartyDbServer {
 //     want to gate per-room.
 const authorize = (req: Request, { kind }: AuthContext) => {
   if (kind === 'connect') return true // reads are open to everyone
-  return bearer(req) === PASSWORD ? true : { ok: false, status: 401, error: `enter "${PASSWORD}" to write` }
+  return bearer(req) === PASSWORD ? true : { ok: false, status: 401, error: 'a write token is required' }
 }
 
 export default {

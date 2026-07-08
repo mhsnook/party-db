@@ -244,6 +244,7 @@ import { authHooks, bearer, type Authorize } from 'party-db/server'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
 
 const JWKS = createRemoteJWKSet(new URL(jwksUrl)) // WorkOS's public keys; jose caches them
+// jwksUrl comes from env, resolved inside fetch (bindings don't exist at module scope) — see cookbook 03
 
 const authorize: Authorize = async (req, { room }) => {
   const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
