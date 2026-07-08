@@ -97,7 +97,7 @@ inside one transaction over the whole POST); a future D1/Postgres target is anot
 adapter behind the same interface.
 
 Why not one shared `applyBatch` on both sides: the server also mints `seq` and
-wraps the *entire* multi-channel POST in a single transaction (§11) — a coarser
+wraps the *entire* multi-channel POST in a single transaction (§12) — a coarser
 boundary than a per-batch begin/commit. Forcing both through one function would
 fight the server's atomicity, not help it. The shared thing is the contract, not
 the loop.
@@ -203,7 +203,65 @@ inline after the commit and before sending the HTTP response.
 Why: deferring it (e.g. `waitUntil`) would let a concurrent `/write` broadcast a
 later `seq` first; inline keeps broadcast order == seq order.
 
-## 10. Schemas are shared by import
+## 10. Auth: one check at the lobby, gating both doors
+
+Auth is a single `authorize(req, ctx)` the room owner supplies, run at partyserver's
+*lobby* (`onBeforeConnect` / `onBeforeRequest`, wired by `authHooks`) — in the Worker,
+before the request reaches the Durable Object. It gates both doors into a room: the
+socket open (`kind: 'connect'`, a read) and the POST (`kind: 'write'`). A rejected
+connect is a plain 401 before the WebSocket upgrade; a rejected write is a
+`WriteReject` the client rolls back like any other POST failure. Neither wakes the DO.
+
+`authorize` returns a bare boolean, or `{ ok, status?, error? }` to choose the HTTP
+status and a reason the client sees. `ctx` carries the resolved `{ kind, party, room }`,
+so one check can branch per party or per room. A browser can't set headers on a WS
+upgrade, so a connect token rides in `?token=` while the POST uses
+`Authorization: Bearer`; `partyTransport({ token })` sends both and re-reads a function
+token on every (re)connect.
+
+Because the seam takes the raw `Request` and returns a verdict, *what* the auth is is
+entirely yours. Verifying an external provider's JWT — here WorkOS AuthKit — is the
+whole integration:
+
+```ts
+import { routePartykitRequest } from 'partyserver'
+import { authHooks, bearer, type Authorize } from 'party-db/server'
+import { jwtVerify, createRemoteJWKSet } from 'jose'
+
+const JWKS = createRemoteJWKSet(new URL(jwksUrl)) // WorkOS's public keys; jose caches them
+
+const authorize: Authorize = async (req, { room }) => {
+  const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
+  if (!token) return { ok: false, status: 401 }
+  try {
+    const { payload } = await jwtVerify(token, JWKS) // local signature check, no per-request round-trip
+    // the room IS the org id: you're in iff your token says you're in this org
+    return payload.org_id === room ? true : { ok: false, status: 403, error: 'not your board' }
+  } catch {
+    return { ok: false, status: 401 } // bad or expired token
+  }
+}
+
+export default {
+  fetch: (req: Request, env: unknown) =>
+    routePartykitRequest(req, env as never, authHooks(authorize)).then(
+      (r) => r ?? new Response('not found', { status: 404 }),
+    ),
+}
+```
+
+Public-read/private-write is the same seam with a simpler body — `if (kind === 'connect')
+return true`, then gate the write. Worked recipes for both are in
+[`cookbooks`](./cookbooks/) (recipes 3–4).
+
+Why the lobby, not the DO: it's the idiomatic Cloudflare/PartyKit place for *stateless*
+credential auth. Running in the Worker means a reject costs nothing on the storage side
+(no DO wake) and both doors share one check. Authorization that needs per-room DO
+*state* is a separate, in-object concern; this seam is for verify-a-token / compare-a-
+claim. The library validates nothing about your auth — it hands you the `Request` and
+believes your verdict.
+
+## 11. Schemas are shared by import
 
 Define the Zod/StandardSchema once and import it on both client and server. There
 is no `/schemas` API, no version handshake, and no untyped/dynamic mode.
@@ -212,7 +270,7 @@ Why: a typed app already ships the TanStack DB client; withholding a few schemas
 to save bytes is false economy. (A schema version-hash for drift detection is a
 possible *later* addition — noted in `unspecified.md`.)
 
-## 11. `persist` is the only binding; cross-collection atomicity is TanStack's
+## 12. `persist` is the only binding; cross-collection atomicity is TanStack's
 
 The one thing party-db adds beyond TanStack DB is `persist`: a `mutationFn` that
 groups a transaction's `mutations` by channel into one `/write` POST and awaits
@@ -228,7 +286,7 @@ Verified on `@tanstack/db@0.6.10`: an explicit transaction bypasses the
 collection handlers and delivers all mutations to the `mutationFn` in one call —
 so there is no double-write.
 
-## 12. The authority is SQLite, not TanStack DB
+## 13. The authority is SQLite, not TanStack DB
 
 On the server the sink is `ctx.storage.sql` driven by a small generic
 `WriteEvent`→SQL adapter. TanStack DB — including its 0.6 DO SQLite persistence
