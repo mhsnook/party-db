@@ -7,19 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      '@standard-schema/spec':
-        specifier: '*'
-        version: 1.1.0
-      '@tanstack/db':
-        specifier: '*'
-        version: 0.6.10(typescript@5.9.3)
-      partyserver:
-        specifier: '*'
-        version: 0.5.8(@cloudflare/workers-types@4.20260624.1)
-      partysocket:
-        specifier: '*'
-        version: 1.3.0
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 0.16.20
@@ -27,6 +14,18 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^4
         version: 4.20260624.1
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
+      '@tanstack/db':
+        specifier: ^0.6.10
+        version: 0.6.10(typescript@5.9.3)
+      partyserver:
+        specifier: ^0.5.8
+        version: 0.5.8(@cloudflare/workers-types@4.20260624.1)
+      partysocket:
+        specifier: ^1.3.0
+        version: 1.3.0
       typescript:
         specifier: ^5.7
         version: 5.9.3
