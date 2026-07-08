@@ -73,11 +73,21 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // a fresh client gets a full snapshot. Both arrive as ordinary batches. We fall
   // back to a snapshot when `since` is absent, not a valid cursor, or older than
   // what the oplog still retains (replaySince → null) — never a gappy delta.
+  //
+  // The read-and-send runs through the SAME queue as writes: the adapter awaits in
+  // here yield the event loop, so without serialization a concurrent POST could
+  // commit and broadcast between the snapshot READ and its SEND — the freshly
+  // accepted socket (already in `broadcast`) would then see a newer seq before the
+  // older snapshot (e.g. an update for a row it hasn't loaded). Serializing makes
+  // initial delivery atomic w.r.t. writes; the send loop is synchronous ws.send
+  // enqueues (docs/architecture.md §9), so we don't hold the queue on network I/O.
   async onConnect(conn: Connection, ctx: ConnectionContext) {
-    const cursor = cursorParam(new URL(ctx.request.url).searchParams.get('since'))
-    const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
-    const batches = delta ?? (await this.adapter.snapshot())
-    for (const b of batches) this.send(conn, b)
+    await this.serialize(async () => {
+      const cursor = cursorParam(new URL(ctx.request.url).searchParams.get('since'))
+      const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
+      const batches = delta ?? (await this.adapter.snapshot())
+      for (const b of batches) this.send(conn, b)
+    })
   }
 
   // controlled mode writes come over HTTP, not the (hibernating) socket. The
