@@ -148,11 +148,9 @@ export class SqliteAdapter implements PersistenceAdapter {
           )
         : // a no-op update (only the key present): just read the current row back.
           this.engine.exec(`SELECT * FROM "${table}" WHERE "${plan.key}" = ?`, encode(row[plan.key]))
-      // if the row didn't exist (UPDATE/SELECT matched nothing), fall back to the
-      // sent value — the DB simply applied a no-op. This MUST read a possibly-empty
-      // cursor via toArray(): the real DO cursor's one() THROWS on zero rows (only
-      // the test shim tolerated it), which would turn a benign ghost-update into a
-      // 409 that rolls back the client's whole transaction.
+      // update-of-a-missing-row is a no-op that echoes the sent value. Read the
+      // result via toArray() because it can be empty, and the DO cursor's one()
+      // throws on zero rows (only toArray() tolerates it).
       const resolved = result.toArray()[0]
       return {
         type: 'update',
@@ -201,8 +199,8 @@ export class SqliteAdapter implements PersistenceAdapter {
           plan.kind === 'structured'
             ? this.engine.exec(`SELECT * FROM "${plan.name}"`).toArray().map((r) => decodeRow(r, plan.kinds))
             : this.engine.exec(`SELECT data FROM "${plan.name}"`).toArray().map((r) => JSON.parse(r.data as string))
-        // `reset`: a snapshot is a full replacement of the channel, so the client
-        // truncates before applying it (see applyBatch). `ready`: backlog fully sent.
+        // `reset`: a snapshot replaces the channel (client truncates first);
+        // `ready`: the backlog is fully sent. See docs/architecture.md §8.
         out.push({ channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true, reset: true })
       }
       return out
