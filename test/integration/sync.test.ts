@@ -1,32 +1,12 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { SELF } from 'cloudflare:test'
-import type { WriteAck, WriteReject, SequencedBatch } from '../../src/protocol.ts'
-import { insert, partyUrl, roomHeader } from './helpers.ts'
+import type { WriteAck, WriteReject } from '../../src/protocol.ts'
+import { connect, insert, partyUrl, post, roomHeader } from './helpers.ts'
 
 // Drive the real worker over HTTP + WS. Each test uses a distinct room so its
-// Durable Object starts empty.
+// Durable Object starts empty. `connect`/`post` live in ./helpers.ts.
 const url = (room: string, since?: number) =>
   partyUrl('main', room, since === undefined ? {} : { since: String(since) })
-
-async function post(room: string, body: unknown): Promise<Response> {
-  return SELF.fetch(url(room), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...roomHeader(room) },
-    body: JSON.stringify(body),
-  })
-}
-
-// Open a WebSocket to a room and collect every batch it receives.
-async function connect(room: string, since?: number) {
-  const res = await SELF.fetch(url(room, since), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
-  expect(res.status).toBe(101)
-  const ws = res.webSocket!
-  ws.accept()
-  const batches: SequencedBatch[] = []
-  ws.addEventListener('message', (e) => batches.push(JSON.parse(e.data as string)))
-  const waitFor = (n: number) => vi.waitFor(() => expect(batches.length).toBeGreaterThanOrEqual(n))
-  return { ws, batches, waitFor }
-}
 
 describe('round-trip: insert → ack → broadcast → resolved row', () => {
   it('acks with the resolved row and fans it out to connected + fresh clients', async () => {

@@ -48,7 +48,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.client.json && tsc -p tsconfig.build.server.json",
     "prepack": "pnpm build",
-    "typecheck": "tsc -p tsconfig.client.json && tsc -p tsconfig.server.json",
+    "typecheck": "tsc -p tsconfig.client.json && tsc -p tsconfig.server.json && tsc -p tsconfig.integration.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run -c vitest.integration.config.ts",
