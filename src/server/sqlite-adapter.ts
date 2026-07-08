@@ -148,9 +148,12 @@ export class SqliteAdapter implements PersistenceAdapter {
           )
         : // a no-op update (only the key present): just read the current row back.
           this.engine.exec(`SELECT * FROM "${table}" WHERE "${plan.key}" = ?`, encode(row[plan.key]))
-      // if the row didn't exist (UPDATE matched nothing), fall back to the sent
-      // value rather than crash — the DB simply applied a no-op.
-      const resolved = result.one()
+      // if the row didn't exist (UPDATE/SELECT matched nothing), fall back to the
+      // sent value — the DB simply applied a no-op. This MUST read a possibly-empty
+      // cursor via toArray(): the real DO cursor's one() THROWS on zero rows (only
+      // the test shim tolerated it), which would turn a benign ghost-update into a
+      // 409 that rolls back the client's whole transaction.
+      const resolved = result.toArray()[0]
       return {
         type: 'update',
         value: resolved ? decodeRow(resolved, plan.kinds) : row,
