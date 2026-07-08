@@ -1,7 +1,10 @@
 # unspecified.md — open questions
 
-What is *not* settled. Settled decisions live in [`architecture.md`](./architecture.md).
-Append, don't prune; promote an item to `architecture.md` once it's decided.
+Genuinely *open* questions about the current DO mode — things we haven't decided
+yet. Keep it to that. When something ships it moves out: settled mechanics to
+[`architecture.md`](./architecture.md), the rest into the code that implements it.
+Fully-designed *future modes* (other persistence targets) belong in their own plan
+doc once that milestone starts; until then a short design note lives at the bottom.
 
 ## Open enhancements (would build on the current DO mode)
 
@@ -48,14 +51,6 @@ Append, don't prune; promote an item to `architecture.md` once it's decided.
       missed and asks only for that. (Server still has to be able to *answer* "what
       changed in this slice since N", which is the move-in/move-out work above; the
       client side of it is just bookkeeping.)
-- **Auth.** Bearer/session on both the stream open and the POST. scenetest-cloud's
-  model already gives each room a bearer; mirror that.
-- **Ordering scope.** `seq` is global per room (one `_oplog`). Fine today. Revisit
-  only if collections need a cross-collection *total order* guarantee beyond the
-  single-POST atomicity we already have.
-- **Write to a channel with no local collection loaded.** The one thing a `write()`
-  wrapper would add that `createTransaction({ mutationFn: persist })` can't (optimism
-  needs a loaded collection). Separable niche helper if ever wanted; not core.
 
 ## Deferred (intentionally not now)
 
@@ -71,7 +66,10 @@ Append, don't prune; promote an item to `architecture.md` once it's decided.
 
 ## Documented but NOT built (other modes)
 
-Kept as designs so the protocol stays honest about where it could go.
+Designs for *other persistence targets*, not open questions about the current one.
+These should graduate into their own plan doc (e.g. a Postgres plan) once the SQLite
+milestone lands and that work starts; parked here until then so the protocol stays
+honest about where it could go.
 
 - **Trusting relay.** WS-only, no ack, clients trust each other's logic/versions and
   mint UUIDs. The server just orders + fans out. Permissive pass-through.
