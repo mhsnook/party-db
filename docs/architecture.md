@@ -356,7 +356,8 @@ serializable read-slicing sketched in
 a non-realtime `queryCollection` fallback for tables we can't tail, and — once two
 or three databases coexist — a `db` that composes tables from different places, or
 conventions for running two side by side (one realtime + global, one not), each
-collection picking its transport. Lots to design; not yet.
+collection picking its transport. The plan for all of this is
+[`postgres-todo.md`](./postgres-todo.md).
 
 **v3 (horizon, not planned) — generate everything.** Point at your database, mark
 tables public / per-user / per-team, and codegen a fully-typed `db` of typed

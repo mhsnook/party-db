@@ -294,11 +294,8 @@ here (not pushed into the parked v2 WAL/RPC/RLS/slicing story at the top).
       - gate by `room` name — e.g. rooms named `private-*` require a token;
       - and the check can be **async and call out** — verify a JWT, hit an auth
         API, or look up membership in an *external* database.
-- [ ] **In-object (stateful) auth — in scope but deferred due to YAGNI.**
-      Authorization that depends on the room's *own* DO state — membership/roles
-      stored in the room, per-row RLS, rate limits/ban lists — can't be done at the
-      lobby (it runs before the DO, with no `ctx.storage`). It needs a *second*
-      seam: an in-object hook (e.g. `authorizeInObject`) consulted in
-      `onConnect`/`onRequest` with `this.ctx.storage` access, which *does* wake the
-      DO (a different perf/security profile from the lobby gate). Distinct from v2's
-      RLS conventions. Not building it until something actually needs it.
+- [x] **In-object (stateful) auth — moved to the Postgres milestone.** The
+      second auth seam (an `authorizeInObject` hook with `ctx.storage` access,
+      for membership/roles/rate-limits that live in the room's own state) now
+      lives in [`postgres-todo.md`](./postgres-todo.md) §6, alongside the
+      per-user read/write rules that build the identity machinery it wants.
