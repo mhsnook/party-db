@@ -201,7 +201,9 @@ export class SqliteAdapter implements PersistenceAdapter {
           plan.kind === 'structured'
             ? this.engine.exec(`SELECT * FROM "${plan.name}"`).toArray().map((r) => decodeRow(r, plan.kinds))
             : this.engine.exec(`SELECT data FROM "${plan.name}"`).toArray().map((r) => JSON.parse(r.data as string))
-        out.push({ channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true })
+        // `reset`: a snapshot is a full replacement of the channel, so the client
+        // truncates before applying it (see applyBatch). `ready`: backlog fully sent.
+        out.push({ channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true, reset: true })
       }
       return out
     })
