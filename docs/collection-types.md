@@ -58,7 +58,7 @@ and a strong signal that the shape is right.
 DOs* — it persists a collection's **materialized state** (one table per
 collection, upsert-by-`getKey`) to `ctx.storage`. It does no transport, fan-out,
 sequencing, or write-up endpoint. We do **not** use it on the server: see
-[`architecture.md`](./architecture.md) §12 — a TanStack collection is a *client
+[`architecture.md`](./architecture.md) §13 — a TanStack collection is a *client
 cache*, never the constraint/`RETURNING` authority, so even its DO-SQLite adapter
 can't be our server sink. (It remains a fine fit only for the trivial
 collection==table, no-constraint, blob-upsert case — which is the current shape
