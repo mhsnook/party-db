@@ -200,17 +200,8 @@ gone from the oplog — so the server serves a *re-snapshot* instead: `replaySin
 returns `null` and `onConnect` sends `snapshot()`.
 
 A delta and a re-snapshot are different kinds of message, and the wire says which:
-a delta **appends** to the client's state; a re-snapshot **replaces** it. The
-re-snapshot carries `reset: true`, and the client clears the collection
-(`truncate()`) before applying the rows, both inside one begin/commit window so the
-clear and the reload land atomically. `ready` marks the end of either kind.
-
-Why the distinction is load-bearing: a re-snapshot describes the whole room, so
-applying it as an append would double every row the client still holds and strand
-rows deleted while it was away. Replacement is what keeps the client's copy and the
-authority's identical across a gap, without the client needing to reason about what
-it missed. So the contract is total: a delta never resets; a re-snapshot always
-does.
+a delta **appends** to the client's state; a re-snapshot **replaces** it, sending a
+`reset: true` causing the client collection to `truncate()` before marking `ready`.
 
 ## 9. Broadcast inline, after commit, before responding
 
