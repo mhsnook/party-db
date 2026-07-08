@@ -35,8 +35,7 @@ export type SequencedBatch<T extends object = Record<string, unknown>> = WriteBa
   // sentinel: this channel's backlog has been fully replayed to you.
   ready?: boolean
   // this batch replaces the channel rather than appending to it: the consumer
-  // clears its state before applying (see docs/architecture.md §8). Optional and
-  // ignored by consumers that don't implement it, so it's backward-compatible.
+  // clears its state before applying (see docs/architecture.md §8).
   reset?: boolean
 }
 
