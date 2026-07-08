@@ -3,17 +3,10 @@ import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthConte
 import { todoSchema, type Todo } from './schema.ts'
 import { migrate } from './migrations/index.ts'
 
-// The password. Real apps verify a session/JWT here and compare with a
-// constant-time check — and never echo the expected credential in a response;
-// a shared string keeps the demo to one moving part. It's printed on the page on purpose.
+// Demo password, printed on the page on purpose; real apps verify a session/JWT and compare constant-time, never echoing it.
 const PASSWORD = 's3cret'
 
-// 🆕 vs the schemaless example, TWO things change here:
-//
-// (1) We share the zod schema with the server, so writes CRUD into the REAL
-//     columns of a table WE own — not a generic blob. The server never DDLs your
-//     tables; you bring them, so the schema lives in ./migrations and we apply it
-//     on start — server.ts stays the PartyDB, not the database setup.
+// 🆕 (1) share the zod schema so writes CRUD real columns of a table you own; you bring it, so it lives in ./migrations, applied on start.
 export class Main extends PartyDbServer {
   collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
 
@@ -23,21 +16,16 @@ export class Main extends PartyDbServer {
   }
 }
 
-// (2) One `authorize` check, gating at partyserver's lobby (before the request
-//     reaches the DO). The `kind` lets the SAME check make reads open and writes
-//     password-protected — so anyone can watch the list, but editing it needs the
-//     token. A rejected write is a 401, which the client turns into the unlock
-//     prompt (see App.tsx). `ctx` also carries the resolved { party, room } if you
-//     want to gate per-room.
+// 🆕 (2) one lobby check: `kind` makes reads open and writes password-protected (a rejected write is the 401 App.tsx turns into an unlock prompt).
 const authorize = (req: Request, { kind }: AuthContext) => {
   if (kind === 'connect') return true // reads are open to everyone
   return bearer(req) === PASSWORD ? true : { ok: false, status: 401, error: 'a write token is required' }
 }
 
 export default {
+  // 🆕 the hooks are the third arg to routePartykitRequest (the schemaless example passes nothing)
   async fetch(req: Request, env: unknown): Promise<Response> {
-    // 🆕 the hooks are the third arg to routePartykitRequest (the schemaless
-    // example passes nothing here).
-    return (await routePartykitRequest(req, env as never, authHooks(authorize))) ?? new Response('not found', { status: 404 })
+    const response = await routePartykitRequest(req, env as never, authHooks(authorize))
+    return response ?? new Response('not found', { status: 404 })
   },
 }

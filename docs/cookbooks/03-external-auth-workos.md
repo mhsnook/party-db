@@ -18,15 +18,11 @@ export class Main extends PartyDbServer {
   collections = [definePartyCollection({ name: 'cards', key: 'id', schema: cardSchema })]
 }
 
-// WorkOS AuthKit hands users a signed JWT; we verify it against WorkOS's public keys.
-// `env` bindings only exist inside a handler, so we build the client on the first
-// request and reuse the closure — jose keeps its JWKS cache alive with it, so there's
-// still no network round-trip per request.
-let authorize: Authorize | undefined
-
+// verify the WorkOS JWT, then require its org to match the room
 const makeAuthorize = (env: Env): Authorize => {
   const workos = new WorkOS(env.WORKOS_API_KEY)
   const JWKS = createRemoteJWKSet(new URL(workos.userManagement.getJwksUrl(env.WORKOS_CLIENT_ID)))
+
   return async (req, { room }) => {
     const token = bearer(req) ?? new URL(req.url).searchParams.get('token') // header on writes, ?token= on connect
     if (!token) return { ok: false, status: 401 }
@@ -34,16 +30,21 @@ const makeAuthorize = (env: Env): Authorize => {
       const { payload } = await jwtVerify(token, JWKS)
       return payload.org_id === room ? true : { ok: false, status: 403, error: 'not your board' }
     } catch {
-      return { ok: false, status: 401 } // bad or expired token
+      return { ok: false, status: 401 }
     }
   }
 }
 
+// built lazily inside fetch (env bindings don't exist at module scope), then reused
+let authorize: Authorize | undefined
+
 export default {
-  fetch: (req: Request, env: Env) =>
-    routePartykitRequest(req, env as never, authHooks((authorize ??= makeAuthorize(env)))).then(
-      (r) => r ?? new Response('not found', { status: 404 }),
-    ),
+  async fetch(req: Request, env: Env): Promise<Response> {
+    authorize ??= makeAuthorize(env)
+
+    const response = await routePartykitRequest(req, env as never, authHooks(authorize))
+    return response ?? new Response('not found', { status: 404 })
+  },
 }
 ```
 

@@ -259,10 +259,10 @@ const authorize: Authorize = async (req, { room }) => {
 }
 
 export default {
-  fetch: (req: Request, env: unknown) =>
-    routePartykitRequest(req, env as never, authHooks(authorize)).then(
-      (r) => r ?? new Response('not found', { status: 404 }),
-    ),
+  async fetch(req: Request, env: unknown): Promise<Response> {
+    const response = await routePartykitRequest(req, env as never, authHooks(authorize))
+    return response ?? new Response('not found', { status: 404 })
+  },
 }
 ```
 
