@@ -208,6 +208,18 @@ A delta and a re-snapshot are different kinds of message, and the wire says whic
 a delta **appends** to the client's state; a re-snapshot **replaces** it, sending a
 `reset: true` causing the client collection to `truncate()` before marking `ready`.
 
+Prior art: TanStack DB's own SQLite persistence family
+(`@tanstack/db-sqlite-persistence-core`, behind `browser-db-sqlite-persistence`
+et al.) converged on the same design for its client-side cache — an `applied_tx`
+log of resolved-value replay JSON keyed by a monotonic `seq`, pruned with a floor
+below which `pullSince` answers "full reload required." Same log shape, same
+cursor semantics, same fallback. We don't *use* it — it's a client cache journal,
+not an authority log (§13): it owns `(key, JSON)` blob tables where our rows must
+live in your real columns, and its driver assumes interactive transactions. But
+the convergence is good evidence the shape is right, and its extra move — bail to
+a re-snapshot when the delta itself is *large*, not just when it's gone — is worth
+adopting someday.
+
 ## 9. Broadcast inline, after commit, before responding
 
 `ws.send()` enqueues to the outbound buffer without awaiting receipt, so
