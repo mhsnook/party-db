@@ -5,11 +5,13 @@
 import { routePartykitRequest } from 'partyserver'
 import {
   PartyDbServer,
+  D1Adapter,
   definePartyCollection,
   authHooks,
   bearer,
   type AuthContext,
   type PartyCollection,
+  type PersistenceAdapter,
 } from '../../src/server/index.ts'
 import { z } from 'zod'
 
@@ -50,6 +52,28 @@ export class Main extends PartyDbServer {
 // stays stable; keeps `todos` so the same DO can prove it still serves after a 500.
 export class Faulty extends Main {
   collections = [todos, definePartyCollection({ name: 'untabled', key: 'id', schema: z.object({ id: z.string() }) })]
+}
+
+// The same room, but persisting into D1 (data + _oplog both live in `env.DB`)
+// instead of the DO's own SQLite — the second v1 target. `createAdapter()` is the
+// only override; the transport (queue, socket, broadcast) is invariant. Small
+// oplogRetention so the stale-cursor reset path is reachable, mirroring `Main`.
+export class D1Room extends PartyDbServer {
+  collections: PartyCollection<any>[] = [todos]
+  oplogRetention = 50
+
+  protected createAdapter(): PersistenceAdapter {
+    return new D1Adapter(this.env.DB, this.collections, { oplogRetention: this.oplogRetention })
+  }
+
+  // the app owns its table — here it lives in D1, and D1 DDL is async, so await it
+  // before super.onStart() (which runs the adapter's init()).
+  async onStart() {
+    await this.env.DB.exec(
+      `CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, rev INTEGER NOT NULL DEFAULT 1)`,
+    )
+    return super.onStart()
+  }
 }
 
 export const SECRET = 's3cret'

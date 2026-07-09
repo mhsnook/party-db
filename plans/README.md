@@ -23,7 +23,7 @@ update your row when done.
 | 011 | Typed `db` (per-collection types, "typed end to end") | P2 | M | — | TODO |
 | 012 | DX baseline: `check` script, CLAUDE.md, Biome lint gate | P2 | M | best after 001–008 | TODO |
 | 013 | DESIGN: server-side validation gate (Zod error-sooner + insert/update schemas) | P2 | M | 011 (type threading) | TODO |
-| 014 | D1 adapter — second v1 persistence target (one `batch()` commits data + oplog + seq; `?since` preserved) | P1 | M | 001–004, 006 (**003, 004 hard**) | TODO |
+| 014 | D1 adapter — second v1 persistence target (one `batch()` commits data + oplog + seq; `?since` preserved) | P1 | M | 001–004, 006 (**003, 004 hard**) | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
