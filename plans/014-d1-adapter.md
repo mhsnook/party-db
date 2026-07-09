@@ -156,7 +156,7 @@ none; that's the v2 Postgres/WAL story). A D1 database written by several rooms 
 ## Git workflow
 
 - Branch: `advisor/014-d1-adapter`
-- Commit style: `feat(server): D1 adapter — data in D1, oplog in the DO`
+- Commit style: `feat(server): D1 adapter — one batch() mints data + seq, no oplog`
 - Do NOT push or open a PR unless the operator instructed it.
 
 ## Steps
