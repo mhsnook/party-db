@@ -144,13 +144,9 @@ the loop.
 
 ## 5. The server persists into structured tables that reflect your schema
 
-Your relational schema is a stakeholder in this whole thing; you may have a ton
-of other parts of your app and ecosystem that rely on its current structure,
-format, performance profile, infrastructure options, and the assurances it
-provides. A PartyDB replicates that shape and content to its consumers, without
-requiring the data take any particular shape.
-
-Why: your database is your app's global API, with masters beyond this library. So
+Your relational schema is a stakeholder: other parts of your app and ecosystem
+rely on its structure, types, performance profile, and the assurances it provides
+(§1 rung 2 is where those other consumers start reading it). So
 the server completes a write the way a web application does — a genuine
 transactional commit the database's own constraints can accept or reject — and
 hands back the **resolved** row the database actually wrote (defaults, generated
@@ -211,12 +207,10 @@ later.
 Why: we never invent a separate counter, and we only ever rely on `seq`
 *equality* (settlement) and *order* (backlog) — never arithmetic.
 
-**The `_oplog` lives beside your data — in the same database, wherever that is.**
-Embedded mode keeps it in the DO's SQLite next to your tables; D1 mode keeps it
-in your D1; a Postgres authority would keep its equivalent there. It is one
-table we own, auto-created, and it is the *only* footprint we leave in your
-database — your own tables are never created, migrated, or altered. Why
-co-located rather than tucked away inside the DO: the log indexes the data, so
+**The `_oplog` lives beside your data — in the same database, wherever that rung
+puts it (§1).** It is one table we own, auto-created, and the *only* footprint we
+leave in your database — your own tables are never created, migrated, or altered.
+Why co-located rather than tucked away inside the DO: the log indexes the data, so
 they must commit atomically and can never be allowed to diverge — a log the
 data's own transaction can't reach is a log that can tear (a commit the log
 missed) or outlive a wipe the data didn't have (a `seq` that regresses under
