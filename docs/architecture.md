@@ -146,9 +146,8 @@ real source of truth, even when something upstream pretended to be.
 `RETURNING` for the resolved row, your constraints judge, and a `{name,key,schema}`
 interface shared by import. The schema-agnostic blob fallback (§5a) remains for
 collections that ship no schema. We do **not** create or migrate your tables — you
-bring them. Remaining edges: the server-side Zod error-sooner gate
-([`plans/013`](../plans/013-design-server-validation.md)) and the serial-PK
-overlay-swap smoothing ([`unspecified.md`](./unspecified.md)).
+bring them. Remaining edges: the server-side Zod error-sooner gate and the
+serial-PK overlay-swap smoothing (both in [`unspecified.md`](./unspecified.md)).
 
 ### 5a. Uncontrolled mode — v0 (the shipped baseline)
 
@@ -336,10 +335,9 @@ repo's active work).** The
 server persists into structured tables, lets the database validate
 (constraints/FKs), and returns the full ack → echo of the *resolved* row — still
 zero config. (A server-side Zod *error-sooner* gate is designed but not yet
-shipped — [`plans/013`](../plans/013-design-server-validation.md); the database
-is the only gate today.) Transactions live in your
-TanStack DB transactions: we represent them in order and apply them in order, each
-row Zod-checked, then committed to the database. You still reason about write order
+shipped; the database is the only gate today.) Transactions live in your
+TanStack DB transactions: we represent them in order, apply them in order, and
+commit them to the database. You still reason about write order
 — but only once, and it never forces you into RPCs where ordered CRUD would do,
 into request waterfalls, or into loosening referential integrity: the write
 transaction applies *inside the database*, where it always belonged, not at a
@@ -358,8 +356,8 @@ fine — the DO orders them). What v1 *can't* see, on either target, is a change
 never came through `/write`: a cronjob, another service, or a trigger's side-effects
 on rows our statements didn't return. So avoid side-effecting triggers in v1, or
 accept they won't sync live — until v2. **Status:** the embedded target is landed;
-the D1 adapter is the remaining v1 deliverable, planned in
-[`plans/014-d1-adapter.md`](../plans/014-d1-adapter.md).
+the D1 adapter — data in D1, while the `_oplog` and `seq`-minting stay in the DO,
+the room's serialization authority — is the remaining v1 deliverable.
 
 **v2 — all DB ops, via the WAL.** The real shift: instead of covering only what
 comes through `/write`, we tail Postgres's logical replication and fan out *every*
