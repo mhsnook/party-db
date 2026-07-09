@@ -208,6 +208,18 @@ A delta and a re-snapshot are different kinds of message, and the wire says whic
 a delta **appends** to the client's state; a re-snapshot **replaces** it, sending a
 `reset: true` causing the client collection to `truncate()` before marking `ready`.
 
+Prior art: TanStack DB's own SQLite persistence family
+(`@tanstack/db-sqlite-persistence-core`, behind `browser-db-sqlite-persistence`
+et al.) converged on the same design for its client-side cache — an `applied_tx`
+log of resolved-value replay JSON keyed by a monotonic `seq`, pruned with a floor
+below which `pullSince` answers "full reload required." Same log shape, same
+cursor semantics, same fallback. We don't *use* it — it's a client cache journal,
+not an authority log (§13): it owns `(key, JSON)` blob tables where our rows must
+live in your real columns, and its driver assumes interactive transactions. But
+the convergence is good evidence the shape is right, and its extra move — bail to
+a re-snapshot when the delta itself is *large*, not just when it's gone — is worth
+adopting someday.
+
 ## 9. Broadcast inline, after commit, before responding
 
 `ws.send()` enqueues to the outbound buffer without awaiting receipt, so
@@ -356,9 +368,11 @@ fine — the DO orders them). What v1 *can't* see, on either target, is a change
 never came through `/write`: a cronjob, another service, or a trigger's side-effects
 on rows our statements didn't return. So avoid side-effecting triggers in v1, or
 accept they won't sync live — until v2. **Status:** the embedded target is landed;
-the D1 adapter is the remaining v1 deliverable. Its shape: no oplog — data and
-`seq` commit together in one atomic `batch()` (the DO stays the room's
-serializer), and reconnect on D1 is a fresh reset snapshot, not a `?since` delta.
+the D1 adapter is the remaining v1 deliverable. Its shape: the whole POST — CRUD,
+`_oplog` append, compaction — is one atomic `batch()`, with the resolved-op JSON
+assembled by SQLite itself (so nothing needs a second write), `seq` from the
+oplog's `RETURNING`, and `?since` deltas identical to embedded. The DO stays the
+room's serializer and holds no adapter state of its own.
 
 **v2 — all DB ops, via the WAL.** The real shift: instead of covering only what
 comes through `/write`, we tail Postgres's logical replication and fan out *every*
