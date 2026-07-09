@@ -15,7 +15,8 @@
 import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter } from './persistence.ts'
-import { assertIdent, columnsOf, decodeRow, encode, type ColumnKind, type ColumnSpec } from './columns.ts'
+import { decodeRow } from './columns.ts'
+import { blobStmt, buildPlans, resolveStructured, structuredStmt, type Plan } from './statements.ts'
 
 // The narrow slice of a SQLite handle the adapter needs. In the DO it's
 // `ctx.storage.sql` + `ctx.storage.transactionSync`; in tests it's a node:sqlite
@@ -29,16 +30,6 @@ export interface SqlEngine {
   transaction<T>(fn: () => T): T
 }
 
-type StructuredPlan = {
-  kind: 'structured'
-  name: string
-  key: string
-  cols: ColumnSpec[]
-  kinds: Map<string, ColumnKind>
-}
-type BlobPlan = { kind: 'blob'; name: string; key: string }
-type Plan = StructuredPlan | BlobPlan
-
 export type SqliteAdapterOptions = {
   // keep at most this many _oplog rows; older entries are compacted away after
   // each write. Undefined / 0 → unbounded (the _oplog grows forever, v0 behavior).
@@ -48,7 +39,7 @@ export type SqliteAdapterOptions = {
 }
 
 export class SqliteAdapter implements PersistenceAdapter {
-  private plans = new Map<string, Plan>()
+  private plans: Map<string, Plan>
   private retention: number
 
   constructor(
@@ -57,19 +48,9 @@ export class SqliteAdapter implements PersistenceAdapter {
     opts: SqliteAdapterOptions = {},
   ) {
     this.retention = opts.oplogRetention && opts.oplogRetention > 0 ? Math.floor(opts.oplogRetention) : 0
-    for (const c of collections) {
-      const name = assertIdent(c.name)
-      const key = assertIdent(c.key)
-      const cols = columnsOf(c.schema)
-      // a schema we can read → structured CRUD against your table; otherwise the
-      // schema-agnostic blob store.
-      this.plans.set(
-        name,
-        cols
-          ? { kind: 'structured', name, key, cols, kinds: new Map(cols.map((c) => [c.name, c.kind])) }
-          : { kind: 'blob', name, key },
-      )
-    }
+    // a schema we can read → structured CRUD against your table; otherwise the
+    // schema-agnostic blob store (shared with the D1 adapter's plan builder).
+    this.plans = buildPlans(collections)
   }
 
   init() {
@@ -108,14 +89,14 @@ export class SqliteAdapter implements PersistenceAdapter {
   }
 
   // Apply one batch's ops to its table, write the resolved ops to the oplog, and
-  // return the sequenced batch. Caller owns the surrounding transaction.
+  // return the sequenced batch. Caller owns the surrounding transaction. The SQL
+  // comes from the shared builders; the embedded adapter decodes the RETURNING row
+  // in JS (its interactive transaction lets it), so it never needs the SQL-side
+  // JSON builder the D1 adapter uses.
   private applyOne(batch: WriteBatch): SequencedBatch {
     const plan = this.plans.get(batch.channel)
     if (!plan) throw new Error(`unknown channel: ${batch.channel}`)
-    const resolved =
-      plan.kind === 'structured'
-        ? batch.ops.map((op) => this.applyStructured(plan, op))
-        : batch.ops.map((op) => this.applyBlob(plan, op))
+    const resolved = batch.ops.map((op) => this.applyOp(plan, op))
     const seq = Number(
       this.engine
         .exec(`INSERT INTO _oplog (channel, ops) VALUES (?, ?) RETURNING seq`, batch.channel, JSON.stringify(resolved))
@@ -124,65 +105,18 @@ export class SqliteAdapter implements PersistenceAdapter {
     return { channel: batch.channel, ops: resolved, seq }
   }
 
-  // CRUD against your real columns. `insert`/`update`/`delete` are distinct
-  // statements (not a blanket upsert) so the database's own constraints get to
-  // accept or reject — a PK collision on insert SHOULD fail, and does.
-  private applyStructured(plan: StructuredPlan, op: WriteEvent): WriteEvent {
-    const row = op.value as Record<string, unknown>
-    const table = plan.name
-
-    if (op.type === 'delete') {
-      this.engine.exec(`DELETE FROM "${table}" WHERE "${plan.key}" = ?`, encode(row[plan.key]))
-      return { type: 'delete', value: row }
+  // Run one op's shared CRUD statement and resolve it. Structured ops decode the
+  // returned row (read via toArray(), which tolerates the empty result an
+  // update-of-a-missing-row / delete yields); blob ops echo the sent value.
+  private applyOp(plan: Plan, op: WriteEvent): WriteEvent {
+    if (plan.kind === 'blob') {
+      const { sql, binds } = blobStmt(plan, op)
+      this.engine.exec(sql, ...binds)
+      return op
     }
-
-    if (op.type === 'update') {
-      // SET only the columns the client actually sent (from the allowlist, not
-      // the payload keys), keyed by the PK. Untouched columns keep their value.
-      const set = plan.cols.filter((c) => c.name !== plan.key && row[c.name] !== undefined)
-      const result = set.length
-        ? this.engine.exec(
-            `UPDATE "${table}" SET ${set.map((c) => `"${c.name}" = ?`).join(', ')} WHERE "${plan.key}" = ? RETURNING *`,
-            ...set.map((c) => encode(row[c.name])),
-            encode(row[plan.key]),
-          )
-        : // a no-op update (only the key present): just read the current row back.
-          this.engine.exec(`SELECT * FROM "${table}" WHERE "${plan.key}" = ?`, encode(row[plan.key]))
-      // update-of-a-missing-row is a no-op that echoes the sent value. Read the
-      // result via toArray() because it can be empty, and the DO cursor's one()
-      // throws on zero rows (only toArray() tolerates it).
-      const resolved = result.toArray()[0]
-      return {
-        type: 'update',
-        value: resolved ? decodeRow(resolved, plan.kinds) : row,
-        previousValue: op.previousValue,
-      }
-    }
-
-    // insert: name only the columns present in the payload, so columns the client
-    // omitted fall to the DB's defaults / serials — and RETURNING hands those back.
-    const cols = plan.cols.filter((c) => row[c.name] !== undefined)
-    const result = this.engine.exec(
-      `INSERT INTO "${table}" (${cols.map((c) => `"${c.name}"`).join(', ')}) VALUES (${cols.map(() => '?').join(', ')}) RETURNING *`,
-      ...cols.map((c) => encode(row[c.name])),
-    )
-    return { type: 'insert', value: decodeRow(result.one(), plan.kinds) }
-  }
-
-  // v0 blob store: one JSON row per PK. The resolved row equals the sent row.
-  private applyBlob(plan: BlobPlan, op: WriteEvent): WriteEvent {
-    const row = op.value as Record<string, unknown>
-    const key = String(row[plan.key])
-    if (op.type === 'delete') {
-      this.engine.exec(`DELETE FROM "${plan.name}" WHERE k = ?`, key)
-    } else {
-      this.engine.exec(
-        `INSERT INTO "${plan.name}" (k, data) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET data = excluded.data`,
-        key,
-        JSON.stringify(row),
-      )
-    }
-    return op
+    const { sql, binds } = structuredStmt(plan, op)
+    const rows = this.engine.exec(sql, ...binds).toArray()
+    return resolveStructured(plan, op, rows)
   }
 
   async snapshot(): Promise<SequencedBatch[]> {

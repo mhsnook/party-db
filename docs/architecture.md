@@ -382,12 +382,20 @@ broadcast section so concurrent POSTs don't interleave (10 people editing at onc
 fine — the DO orders them). What v1 *can't* see, on either target, is a change that
 never came through `/write`: a cronjob, another service, or a trigger's side-effects
 on rows our statements didn't return. So avoid side-effecting triggers in v1, or
-accept they won't sync live — until v2. **Status:** the embedded target is landed;
-the D1 adapter is the remaining v1 deliverable. Its shape: the whole POST — CRUD,
-`_oplog` append, compaction — is one atomic `batch()`, with the resolved-op JSON
-assembled by SQLite itself (so nothing needs a second write), `seq` from the
-oplog's `RETURNING`, and `?since` deltas identical to embedded. The DO stays the
-room's serializer and holds no adapter state of its own.
+accept they won't sync live — until v2. **Status:** both v1 targets are landed —
+embedded DO-SQLite *and* D1. The D1 shape: the whole POST — CRUD, `_oplog` append,
+compaction — commits as one atomic `batch()`, with the resolved-op JSON assembled
+by SQLite itself (so nothing needs a second write), `seq` from the oplog's
+`RETURNING`, and `?since` deltas identical to embedded. The DO stays the room's
+serializer and holds no adapter state of its own. Three documented D1 trade-offs:
+it serves **one room per D1 database** (rooms don't see each other's writes — the
+fan-out is the room's own `/write` path, and D1 has no change feed; cross-room
+sharing is the v2 Postgres/WAL story); it is **structured-only** (a schema-less
+collection is a configuration error at `init()` — uncontrolled/blob mode stays
+embedded, since the modes are a ratchet); and, as with any remote database, a POST
+that D1 commits just before the DO dies leaves a committed-but-unacked row that a
+retry of the same insert will 409 on — every other client still converges via
+oplog replay on reconnect.
 
 **v2 — all DB ops, via the WAL.** The real shift: instead of covering only what
 comes through `/write`, we tail Postgres's logical replication and fan out *every*

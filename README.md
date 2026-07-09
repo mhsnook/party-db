@@ -49,12 +49,13 @@ another machine entirely!
  - Milestone 0: **Transparent mode:** clients hold collection schemas but the server passes write
    messages through transparently; no auth
  - Milestone 1: **RDBMS mode:** server and client share collection schemas and the server keeps
-   the authoritative and historical copy of the database in SQLite. Includes
+   the authoritative and historical copy of the database in SQLite — embedded in the
+   Durable Object **or** in D1. Includes
 	auth, global seq, transactions, snapshot+backfill.
 
 **Future**
 
-- Milestone 2: **Postgres mode:** everything above, but working on postgres, (and also D1).
+- Milestone 2: **Postgres mode:** everything above, but working on postgres.
   Plus: RPCs, RLS (protecting writes), global WAL, table-sharing config, user-protected tables.
 - Milestone 3: **Not just a party anymore:** query slicing, RLS-in-JS -- most apps
   don't work as parties, you need to filter content by more than just public-or-userID.

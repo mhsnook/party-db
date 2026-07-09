@@ -20,7 +20,12 @@ export default defineConfig({
           Main: { className: 'Main', useSQLite: true },
           Guarded: { className: 'Guarded', useSQLite: true },
           Faulty: { className: 'Faulty', useSQLite: true },
+          // persists into D1 (env.DB) rather than its own SQLite; still a real DO.
+          D1Room: { className: 'D1Room', useSQLite: true },
         },
+        // a local D1 database bound as `env.DB` — the target the D1Adapter persists
+        // into (data + _oplog both live here). The value is miniflare's database id.
+        d1Databases: { DB: 'party-db-d1-test' },
       },
     }),
   ],
