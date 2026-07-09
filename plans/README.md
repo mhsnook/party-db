@@ -23,7 +23,7 @@ update your row when done.
 | 011 | Typed `db` (per-collection types, "typed end to end") | P2 | M | — | TODO |
 | 012 | DX baseline: `check` script, CLAUDE.md, Biome lint gate | P2 | M | best after 001–008 | TODO |
 | 013 | DESIGN: server-side validation gate (Zod error-sooner + insert/update schemas) | P2 | M | 011 (type threading) | TODO |
-| 014 | D1 adapter — second v1 persistence target (one `batch()` mints data + seq; reconnect = reset snapshot) | P1 | M | 001–004, 006 (**003, 004 hard**) | TODO |
+| 014 | D1 adapter — second v1 persistence target (one `batch()` commits data + oplog + seq; `?since` preserved) | P1 | M | 001–004, 006 (**003, 004 hard**) | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
@@ -46,8 +46,8 @@ REJECTED (with one-line rationale — finding fixed independently or approach ab
   002–006 + 008–010 are DONE.
 - **014 comes after the correctness core**: it consumes 001's harness, 002's
   result-cursor discipline, and 006's error split; **003 and 004 are hard
-  dependencies** — on D1 the `reset` snapshot is the *only* reconnect path (no
-  oplog, no `?since` delta), and snapshot consistency assumes connects are
+  dependencies** — the `reset` snapshot is the stale-cursor fallback on D1
+  exactly as on embedded, and snapshot consistency assumes connects are
   serialized with writes, which D1's network round-trips make a real race
   rather than a microtask one.
 
