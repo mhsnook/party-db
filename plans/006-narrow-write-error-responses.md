@@ -27,7 +27,7 @@
 The write handler wraps the entire `adapter.write` call in one catch that returns
 `e.message` verbatim to the client as a 409. The decision docs bless reporting the
 *database's constraint verdict* faithfully ("which constraint, which row" —
-`docs/sqlite-do-todo.md`, constraint-error reporting item). But the un-narrowed
+the v1 constraint-error-reporting decision, `docs/architecture.md` §5). But the un-narrowed
 catch also echoes **non-constraint internals** — `no such table: todos`,
 `no such column`, adapter bugs — to any writer, leaking schema details, and labels
 genuine 500-class faults as 409 "your write was rejected" verdicts that make the

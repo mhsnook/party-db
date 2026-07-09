@@ -58,8 +58,12 @@ doc once that milestone starts; until then a short design note lives at the bott
   need it until much later — including any conflict that could *undo* an acked write.
 - **Surfacing the "acked-but-not-settled" phase distinctly** in the UI (a side map
   keyed by the minted id). The overlay collapses phases 2+3 today; fine.
-- **Serial / db-assigned PKs.** Would need resolved-row reconciliation; prefer client
-  UUIDs and sidestep it.
+- **Serial-PK settlement smoothing.** Serial / db-assigned PKs *work* (a column the
+  client omits falls to the DB, and the resolved row carries the assigned key back),
+  but the optimistic→resolved swap is keyed by `key` — and a serial PK *changes* key
+  on commit, so the swap can flicker. Smoothing means carrying a temp-key →
+  resolved-key remap through settlement. Client-minted UUIDs stay the zero-friction
+  default, so this waits for someone to actually hit it.
 - **Schema version-hash handshake** for drift detection. Cheap to add later; not needed
   while client and server import the same schema.
 - **Offline write queues**, and **partial/column-level diffs** (we ship whole `value`s).

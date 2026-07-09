@@ -1,7 +1,7 @@
 # Postgres support — the v2 plan
 
-v1 finished the SQLite/Durable Object story ([`sqlite-do-todo.md`](./sqlite-do-todo.md)):
-the DO is the authority, writes commit into structured tables, and realtime covers
+v1 is the SQLite/Durable Object story ([`architecture.md`](./architecture.md),
+Roadmap): the DO is the authority, writes commit into structured tables, and realtime covers
 exactly the ops that come through `/write`, captured via `RETURNING`. What v1
 cannot see — on either the embedded or D1 target — is a change that never came
 through `/write`: a cronjob, another service writing the same database, or a
@@ -40,13 +40,13 @@ is; these seams were left ready on purpose:
 - **`Cursor` is already `number | string`** (architecture §6) so `seq` can be a
   Postgres **LSN**. We only ever rely on equality and order, never arithmetic —
   both hold for LSNs.
-- **`SeqTracker` takes an injectable comparator** (sqlite todo §4): "a v2
-  Postgres LSN is 'pass a comparator,' nothing else."
+- **`SeqTracker` takes an injectable comparator** (`src/client/seq-tracker.ts`):
+  a v2 Postgres LSN is "pass a comparator," nothing else.
 - **`PersistenceAdapter` is async** with `init`/`write`/`snapshot`/`replaySince`,
   and `onRequest` already serializes its write → seq → broadcast section behind
   a promise queue (built for D1, reused here).
 - **Reconnect delta via `?since`** and the oplog retention/floor-fallback logic
-  (sqlite todo §3) — the DO keeps an oplog of *decoded stream events* keyed by
+  (`SqliteAdapter.replaySince`) — the DO keeps an oplog of *decoded stream events* keyed by
   LSN, so `?since=<lsn>` replays the gap and a too-old cursor falls back to a
   fresh snapshot, same as today.
 - **Lobby auth** (architecture §10) still gates both doors statelessly. v2 adds
@@ -104,7 +104,7 @@ payload, not less:
 ### 1. `PostgresAdapter` — the write path — **P0** ❌
 
 Same contract as `SqliteAdapter`, new target. The DB-is-the-authority rules from
-v1 (sqlite todo §1) apply verbatim:
+v1 (architecture §5) apply verbatim:
 
 - [ ] **CRUD against typed columns** — distinct `INSERT`/`UPDATE`/`DELETE`, whole
       POST in one transaction, `RETURNING *` for the preview rows. Injection-safe
@@ -247,7 +247,7 @@ as defense-in-depth is a P2 note below.)
       convention) per transaction. Deferred until someone needs it — the simple
       rule is the product; RLS compatibility is insurance.
 
-### 6. In-object (stateful) auth — **P1, moved here from the SQLite todo** ❌
+### 6. In-object (stateful) auth — **P1** ❌
 
 Authorization that depends on the room's *own* DO state — membership/roles
 stored in the room, per-row rules beyond the §5 owner column, rate limits/ban
@@ -257,7 +257,7 @@ lists — can't be done at the lobby (it runs before the DO, with no
 `this.ctx.storage` access, which *does* wake the DO (a different perf/security
 profile from the lobby gate).
 
-Moved into the Postgres milestone because §5 builds the machinery it wants —
+It sits in the Postgres milestone because §5 builds the machinery it wants —
 per-request identity resolution and per-socket identity attachments — and
 because owner-rules will surface the first real "role, not owner" demands. Still
 gated on an actual need; the seam design shouldn't run ahead of a use case.

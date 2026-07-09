@@ -28,9 +28,8 @@ transaction; `oplogRetention` defaults to unbounded, so `_oplog` grows one row p
 batch forever unless a subclass opts in. Any writer — and in the documented
 public-write configurations, *anyone* — can drive unbounded DO memory per request
 and unbounded per-room SQLite growth up to the Durable Object storage ceiling.
-Neither bound is a settled tradeoff in the decision docs (the robustness checklist
-in `docs/sqlite-do-todo.md` covers `since`, body-is-array, and unknown-channel, not
-volume). Generous defaults cost legitimate users nothing and remove the trivial
+Neither bound is a settled tradeoff in the decision docs (the v1 robustness work
+covered `since`, body-is-array, and unknown-channel — not volume). Generous defaults cost legitimate users nothing and remove the trivial
 abuse path before first publish.
 
 **Why the dependency on plan 003 is hard:** shipping a default retention makes the
