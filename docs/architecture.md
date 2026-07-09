@@ -146,9 +146,8 @@ real source of truth, even when something upstream pretended to be.
 `RETURNING` for the resolved row, your constraints judge, and a `{name,key,schema}`
 interface shared by import. The schema-agnostic blob fallback (§5a) remains for
 collections that ship no schema. We do **not** create or migrate your tables — you
-bring them. Remaining edges (server-side Zod error-sooner gate, serial-PK overlay
-swap, the miniflare integration test) are tracked in
-[`sqlite-do-todo.md`](./sqlite-do-todo.md).
+bring them. Remaining edges: the server-side Zod error-sooner gate and the
+serial-PK overlay-swap smoothing (both in [`unspecified.md`](./unspecified.md)).
 
 ### 5a. Uncontrolled mode — v0 (the shipped baseline)
 
@@ -333,11 +332,12 @@ collection store.
 
 **v1 — controlled by your RDBMS (DO-controlled SQLite — embedded *or* D1; this
 repo's active work).** The
-server persists into structured tables, validates each row against its Zod schema
-server-side, lets the database validate (constraints/FKs), and returns the full
-ack → echo of the *resolved* row — still zero config. Transactions live in your
-TanStack DB transactions: we represent them in order and apply them in order, each
-row Zod-checked, then committed to the database. You still reason about write order
+server persists into structured tables, lets the database validate
+(constraints/FKs), and returns the full ack → echo of the *resolved* row — still
+zero config. (A server-side Zod *error-sooner* gate is designed but not yet
+shipped; the database is the only gate today.) Transactions live in your
+TanStack DB transactions: we represent them in order, apply them in order, and
+commit them to the database. You still reason about write order
 — but only once, and it never forces you into RPCs where ordered CRUD would do,
 into request waterfalls, or into loosening referential integrity: the write
 transaction applies *inside the database*, where it always belonged, not at a
@@ -355,7 +355,10 @@ broadcast section so concurrent POSTs don't interleave (10 people editing at onc
 fine — the DO orders them). What v1 *can't* see, on either target, is a change that
 never came through `/write`: a cronjob, another service, or a trigger's side-effects
 on rows our statements didn't return. So avoid side-effecting triggers in v1, or
-accept they won't sync live — until v2.
+accept they won't sync live — until v2. **Status:** the embedded target is landed;
+the D1 adapter is the remaining v1 deliverable. Its shape: no oplog — data and
+`seq` commit together in one atomic `batch()` (the DO stays the room's
+serializer), and reconnect on D1 is a fresh reset snapshot, not a `?since` delta.
 
 **v2 — all DB ops, via the WAL.** The real shift: instead of covering only what
 comes through `/write`, we tail Postgres's logical replication and fan out *every*
@@ -372,7 +375,8 @@ serializable read-slicing sketched in
 a non-realtime `queryCollection` fallback for tables we can't tail, and — once two
 or three databases coexist — a `db` that composes tables from different places, or
 conventions for running two side by side (one realtime + global, one not), each
-collection picking its transport. Lots to design; not yet.
+collection picking its transport. The plan for all of this is
+[`postgres-todo.md`](./postgres-todo.md).
 
 **v3 (horizon, not planned) — generate everything.** Point at your database, mark
 tables public / per-user / per-team, and codegen a fully-typed `db` of typed

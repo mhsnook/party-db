@@ -6,7 +6,7 @@
 > When done, update the status row in `plans/README.md` — unless a reviewer
 > dispatched you and told you they maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat 3779114..HEAD -- src/schema.ts src/server docs/unspecified.md docs/cookbooks/02-server-validation.md docs/sqlite-do-todo.md`
+> **Drift check (run first)**: `git diff --stat 3779114..HEAD -- src/schema.ts src/server docs/unspecified.md docs/cookbooks/02-server-validation.md`
 > If the validation gate has been built since planning (grep `~validate` /
 > `safeParse` in `src/server/`), this plan is stale — mark it so in the index.
 
@@ -21,9 +21,10 @@
 
 ## Why this matters
 
-This is the maintainer's own last unchecked P0: `docs/sqlite-do-todo.md` says
-"Zod is not run server-side yet — noted below as the one remaining error-sooner
-gate", and `docs/architecture.md` §5 lists it among the remaining edges. The
+This is the maintainer's own last unchecked v1 edge: nothing Zod runs
+server-side today — the database is the only gate — and `docs/architecture.md`
+§5 lists the server-side error-sooner gate among the remaining edges (pointing
+at this plan). The
 design intent is settled (Zod is an *error-sooner* gate, never the correctness
 authority — the database is); what's unresolved is the API: a full-row `schema`
 wrongly rejects legal **update patches** (the adapter deliberately applies partial
@@ -174,5 +175,5 @@ design's own done-test.
 - The request-context refinement (`writeSchema(ctx)`, `auth` getter) is the
   designed-for next step — its seam must be visible in the design doc.
 - When this ships, update cookbook 02 (flip 🚧 → ✅ for static-schema enforcement)
-  and `docs/sqlite-do-todo.md`'s "Zod is not run server-side yet" line — list both
-  in the design doc's rollout section so they aren't forgotten.
+  and `docs/architecture.md` §5's remaining-edges note — list both in the design
+  doc's rollout section so they aren't forgotten.
