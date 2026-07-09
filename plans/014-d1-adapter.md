@@ -111,8 +111,16 @@ maintenance notes; (c) optionally, age-based pruning alongside rows-based.
 
 ## The design (recorded here, premises confirmed in Step 1)
 
-Everything lives in D1 — user tables, blob tables, **and the `_oplog`** — and
-the whole POST is still ONE `batch()`. The trick that makes the oplog append
+Everything lives in D1 — the user's tables **and the `_oplog`** — and the
+whole POST is still ONE `batch()`. The `_oplog` is the **only** table the
+library creates in the user's D1 (auto-created by `init()`, never touching
+their tables): the log lives beside the data it indexes, wherever that data
+is, so the two commit atomically and can never diverge (the §6 decision in
+`docs/architecture.md`). The D1 adapter is **structured-only**: the modes are
+a ratchet (uncontrolled → DO-SQLite → D1 → Postgres), and uncontrolled/blob
+mode stays an embedded-DO story — a collection without a readable schema on a
+D1 room is a configuration error at `init()`, not a blob table in someone's
+production database. The trick that makes the oplog append
 buildable up front: instead of computing the resolved-ops JSON in JS between
 statements (the embedded adapter's interleave), the oplog INSERT assembles it
 *in SQL*, reading back the rows the earlier statements in the same batch just
@@ -153,11 +161,15 @@ INSERT INTO _oplog (channel, ops) VALUES (?, json_array(
   no persistent state of its own for this adapter.
 
 Rejected alternatives, for the record: a DO-side mirror of the oplog (second,
-non-atomic write per POST — a torn-log edge bought for nothing once the
-same-batch append exists); dropping the oplog and `?since` entirely (works,
-but degrades every reconnect to a full snapshot — rejected by the maintainer);
-and adopting the TanStack persistence package (wrong side of the authority
-line, see Prior art).
+non-atomic write per POST — a torn-log edge, and a log that can be wiped
+independently of the data, regressing `seq` under live cursors without epoch
+machinery); dropping the oplog and `?since` entirely (works, but degrades
+every reconnect to a full snapshot — rejected by the maintainer); adopting the
+TanStack persistence package (wrong side of the authority line, see Prior
+art); and **deriving the log from shaped user tables** (require a write-stamp
+column on every table plus a tombstone side table) — strictly more intrusion
+into the user's schema for a weaker, state-based replay; even TanStack's
+persistence, which owns its tables outright, keeps an explicit log anyway.
 
 The remaining inherent edge (any remote database has it, v2 Postgres
 included): D1 commits and the DO dies before the ack — the writer rolled back
@@ -199,6 +211,9 @@ feed (D1 has none; that's the v2 Postgres/WAL story).
   needed, STOP and report.
 - The client — nothing changes on the wire.
 - Cross-room D1 sharing, D1 read replicas, any change-feed emulation.
+- Blob/uncontrolled mode on D1 — the modes are a ratchet; uncontrolled stays
+  embedded-only (a schema-less collection on a D1 room is an init-time error,
+  covered in Step 3, not a feature to build).
 - The delta-size threshold knob (maintenance note, not this plan).
 - Hyperdrive/external Postgres — that's `docs/postgres-todo.md`.
 
@@ -253,8 +268,10 @@ oplog `ops` strings parse to deep-equal values.
 `src/server/d1-adapter.ts`, constructor
 `(d1: D1Database, collections, opts: { oplogRetention? })`:
 
-- `init()`: create `_oplog`, the blob tables, and nothing else, via `d1.exec`
-  (we own those; structured tables stay the user's, we never DDL them).
+- `init()`: create `_oplog` — nothing else — via `d1.exec` (the one table we
+  own; structured tables stay the user's, we never DDL them). A collection
+  whose schema yields no column plan (would-be blob mode) throws a clear
+  configuration error here: uncontrolled mode is embedded-only.
 - `write(batches)`: build the full statement list — per channel-batch its CRUD
   statements then its oplog INSERT (Step 2's builders), then the compaction
   DELETE (same `retention` logic as embedded) — ONE `d1.batch(all)`; map each
@@ -314,7 +331,8 @@ few times; the async adapter is where interleaving flakes would surface).
 - `docs/architecture.md`: flip the Roadmap v1 status line (embedded **and** D1
   landed); one short sentence on the D1 trade-offs where the roadmap already
   discusses them, naming the documented limitations: one room per D1 database,
-  and the committed-but-unacked retry edge.
+  structured collections only (uncontrolled mode stays embedded), and the
+  committed-but-unacked retry edge.
 - `README.md`: milestone line only.
 
 **Verify**: read back; keep the decision-record voice.
@@ -365,6 +383,12 @@ Steps 1, 2 (parity), 3 and 5 are the test plan. Full gate:
   past some backlog size a reset snapshot is cheaper than replaying the delta.
   Applies to the embedded adapter too; add as one `replaySince` guard + knob
   when someone hits a slow reconnect, not before.
+- Deferred latency optimization: a **DO-side read-through cache** of recent
+  oplog entries. The DO computes the resolved ops on every write anyway, so it
+  can serve hot `?since` replays from memory/local storage and fall through to
+  D1 on miss — cache loss is harmless because D1 stays the truth. Add only if
+  reconnect latency actually shows up; it must never become a second source of
+  record.
 - The statement builders (CRUD + the resolved-op JSON expression) are the
   pieces the v2 Postgres adapter revisits — Postgres gets its resolved rows
   from the WAL instead, but the CRUD dialect seam should stay free of
