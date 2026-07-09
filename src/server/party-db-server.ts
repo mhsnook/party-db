@@ -28,8 +28,15 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   collections: PartyCollection<any>[] = []
   // keep at most this many _oplog rows per room (older entries are compacted away
   // after each write); a client whose `since` predates the retained window gets a
-  // fresh snapshot. Undefined → unbounded. Override in your subclass to tune it.
-  oplogRetention?: number
+  // fresh reset snapshot (see docs/architecture.md §8). Override in your subclass;
+  // set 0 for unbounded (the pre-1.0 behavior).
+  oplogRetention = 10_000
+  // reject a POST /write whose body exceeds this many bytes (413). Bounds DO
+  // memory per request. Override to tune; 0 disables the check.
+  maxWriteBytes = 1_048_576 // 1 MiB
+  // reject a POST /write carrying more than this many ops across all batches
+  // (413). Override to tune; 0 disables the check.
+  maxWriteOps = 1_000
 
   private adapter!: PersistenceAdapter
   private channels = new Set<string>()
@@ -70,14 +77,21 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   }
 
   // a reconnecting client passes ?since=<lastSeq> and gets only what it missed;
-  // a fresh client gets a full snapshot. Both arrive as ordinary batches. We fall
-  // back to a snapshot when `since` is absent, not a valid cursor, or older than
-  // what the oplog still retains (replaySince → null) — never a gappy delta.
+  // a fresh client gets a full snapshot. We fall back to a snapshot when `since` is
+  // absent, not a valid cursor, or older than the oplog still retains (replaySince
+  // → null) — never a gappy delta (docs/architecture.md §8).
+  //
+  // Runs through the same queue as writes so the snapshot read and its send are
+  // atomic w.r.t. writes — otherwise a concurrent commit could broadcast a newer
+  // seq to this socket before its snapshot lands. The send loop is synchronous
+  // ws.send enqueues, so the queue is never held on network I/O.
   async onConnect(conn: Connection, ctx: ConnectionContext) {
-    const cursor = cursorParam(new URL(ctx.request.url).searchParams.get('since'))
-    const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
-    const batches = delta ?? (await this.adapter.snapshot())
-    for (const b of batches) this.send(conn, b)
+    await this.serialize(async () => {
+      const cursor = cursorParam(new URL(ctx.request.url).searchParams.get('since'))
+      const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
+      const batches = delta ?? (await this.adapter.snapshot())
+      for (const b of batches) this.send(conn, b)
+    })
   }
 
   // controlled mode writes come over HTTP, not the (hibernating) socket. The
@@ -86,9 +100,20 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   async onRequest(req: Request): Promise<Response> {
     if (req.method !== 'POST') return new Response('not found', { status: 404 })
 
+    // bound DO memory per request BEFORE buffering the body: trust content-length
+    // when the client sends one, and re-check the actual text for those that don't.
+    const declared = Number(req.headers.get('content-length'))
+    if (this.maxWriteBytes > 0 && declared > this.maxWriteBytes) {
+      return Response.json({ error: `write too large (max ${this.maxWriteBytes} bytes)` } satisfies WriteReject, { status: 413 })
+    }
+    const text = await req.text()
+    if (this.maxWriteBytes > 0 && text.length > this.maxWriteBytes) {
+      return Response.json({ error: `write too large (max ${this.maxWriteBytes} bytes)` } satisfies WriteReject, { status: 413 })
+    }
+
     let body: WriteBatch[]
     try {
-      body = (await req.json()) as WriteBatch[]
+      body = JSON.parse(text) as WriteBatch[]
     } catch {
       return Response.json({ error: 'invalid JSON body' } satisfies WriteReject, { status: 400 })
     }
@@ -101,6 +126,15 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
           status: 400,
         })
       }
+      if (!Array.isArray(batch.ops)) {
+        return Response.json({ error: `ops must be an array (channel: ${batch.channel})`, channel: batch.channel } satisfies WriteReject, {
+          status: 400,
+        })
+      }
+    }
+    const opCount = body.reduce((n, b) => n + (b?.ops?.length ?? 0), 0)
+    if (this.maxWriteOps > 0 && opCount > this.maxWriteOps) {
+      return Response.json({ error: `write carries too many ops (max ${this.maxWriteOps})` } satisfies WriteReject, { status: 413 })
     }
 
     return this.serialize(async () => {
@@ -108,10 +142,16 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       try {
         sequenced = await this.adapter.write(body)
       } catch (e) {
-        // the database rejected the commit (a constraint, a missing table, …).
-        // Hand the verdict back so the client can roll back and report it, not a
-        // bare 500.
-        return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
+        // a constraint rejection is the database's verdict on the DATA — hand it
+        // back faithfully (409) so the client can roll back and report it. Anything
+        // else (missing table, adapter bug) is an internal fault: log the detail
+        // server-side and keep the response generic, or we'd echo schema internals
+        // to any writer and mislabel 500-class faults as data rejections.
+        if (isConstraintError(e)) {
+          return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
+        }
+        console.error('party-db write failed:', e)
+        return Response.json({ error: 'internal error applying write' } satisfies WriteReject, { status: 500 })
       }
 
       // broadcast only after the commit succeeds; inline before responding keeps
@@ -138,6 +178,12 @@ function cursorParam(raw: string | null): number | null {
 
 function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+// SQLite phrases every constraint rejection with this substring; anything else
+// coming out of the adapter is an internal fault, not a data verdict.
+function isConstraintError(e: unknown): boolean {
+  return /constraint failed/i.test(messageOf(e))
 }
 
 // best-effort: pull the offending constraint out of a SQLite error message like

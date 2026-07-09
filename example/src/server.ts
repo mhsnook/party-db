@@ -3,9 +3,7 @@ import { PartyDbServer, definePartyCollection } from '../../src/server/index.ts'
 import { todoSchema, type Todo } from './schema.ts'
 import { migrate } from './migrations/index.ts'
 
-// One room class. Declaring the collections — sharing the SAME schema the client
-// uses — is the whole server. The table itself is your app's, so it lives in
-// ./migrations (party-db never DDLs your tables); we just apply them on start.
+// Declaring the collections (same schema the client uses) is the whole server; your table lives in ./migrations, applied on start.
 export class Main extends PartyDbServer {
   collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
 

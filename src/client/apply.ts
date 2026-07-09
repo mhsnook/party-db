@@ -18,13 +18,21 @@ export type ChannelSink = {
   write: (op: WriteEvent) => void
   commit: () => void
   markReady: () => void
+  // clear the collection before applying. TanStack DB's own sync param; called
+  // only for `reset` batches, and only inside a begin/commit window.
+  truncate: () => void
 }
 
-// Apply one ordered batch to one channel's sink. begin/commit bracket the batch
-// so a multi-op batch (add a post AND tag it) lands atomically.
+// Apply one ordered batch to one channel's sink. begin/commit bracket the batch so
+// a multi-op batch (add a post AND tag it) lands atomically. A `reset` batch
+// replaces rather than appends: it truncates first, in the same window, so the
+// clear and the reload land in one commit (docs/architecture.md §8).
 export function applyBatch(sink: ChannelSink, batch: SequencedBatch) {
-  if (batch.ops.length) {
+  // a zero-op reset still opens the window — an emptied room must clear too;
+  // a non-reset empty batch stays a no-op.
+  if (batch.reset || batch.ops.length) {
     sink.begin()
+    if (batch.reset) sink.truncate()
     for (const op of batch.ops) sink.write(op)
     sink.commit()
   }

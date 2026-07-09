@@ -194,6 +194,21 @@ full snapshot followed by a `ready` sentinel.
 
 Why: a returning tab should receive only what it missed, not the whole room.
 
+Compaction (see `oplogRetention`) bounds how far back a delta can reach. A cursor
+older than the retained floor cannot be served as a delta — the rows in the gap are
+gone from the oplog — so the server serves a *re-snapshot* instead: `replaySince`
+returns `null` and `onConnect` sends `snapshot()`.
+
+Retention defaults to 10,000 rows so a room's oplog can't grow unbounded; set
+`oplogRetention = 0` for the old keep-everything behavior. Each `POST /write` is
+likewise bounded by `maxWriteBytes` (1 MiB) and `maxWriteOps` (1,000) — both
+class-field overridable, both answered with a 413 `WriteReject`. Per-identity
+rate limiting is deliberately not here: that belongs in your `authorize` seam (§10).
+
+A delta and a re-snapshot are different kinds of message, and the wire says which:
+a delta **appends** to the client's state; a re-snapshot **replaces** it, sending a
+`reset: true` causing the client collection to `truncate()` before marking `ready`.
+
 ## 9. Broadcast inline, after commit, before responding
 
 `ws.send()` enqueues to the outbound buffer without awaiting receipt, so
@@ -229,6 +244,7 @@ import { authHooks, bearer, type Authorize } from 'party-db/server'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
 
 const JWKS = createRemoteJWKSet(new URL(jwksUrl)) // WorkOS's public keys; jose caches them
+// jwksUrl comes from env, resolved inside fetch (bindings don't exist at module scope) — see cookbook 03
 
 const authorize: Authorize = async (req, { room }) => {
   const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
@@ -243,10 +259,10 @@ const authorize: Authorize = async (req, { room }) => {
 }
 
 export default {
-  fetch: (req: Request, env: unknown) =>
-    routePartykitRequest(req, env as never, authHooks(authorize)).then(
-      (r) => r ?? new Response('not found', { status: 404 }),
-    ),
+  async fetch(req: Request, env: unknown): Promise<Response> {
+    const response = await routePartykitRequest(req, env as never, authHooks(authorize))
+    return response ?? new Response('not found', { status: 404 })
+  },
 }
 ```
 

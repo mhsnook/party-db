@@ -1,8 +1,7 @@
 import { routePartykitRequest } from 'partyserver'
 import { PartyDbServer } from '../../src/server/index.ts'
 
-// Export class Main just like you would with any durable objects
-// server setup. PartyDbServer is a thin wrapper on PartyServer.
+// Export class Main like any Durable Object server; PartyDbServer is a thin wrapper on PartyServer.
 export class Main extends PartyDbServer {
   collections = [{ name: 'todos', key: 'id' }]
 }

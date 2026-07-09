@@ -14,6 +14,7 @@ function recorder() {
     },
     commit: () => void calls.push('commit'),
     markReady: () => void calls.push('markReady'),
+    truncate: () => void calls.push('truncate'),
   }
   return { sink, calls, writes }
 }
@@ -59,5 +60,31 @@ describe('applyBatch', () => {
     const { sink, calls } = recorder()
     applyBatch(sink, batch([{ type: 'insert', value: { id: 'a' } }]))
     expect(calls).not.toContain('markReady')
+  })
+
+  it('truncates before applying a reset batch, inside the begin/commit window', () => {
+    const { sink, calls, writes } = recorder()
+    const ops: WriteEvent[] = [
+      { type: 'insert', value: { id: 'a' } },
+      { type: 'insert', value: { id: 'b' } },
+    ]
+    applyBatch(sink, batch(ops, { reset: true, ready: true }))
+    // clear happens after begin and before any write, all in one commit window
+    expect(calls).toEqual(['begin', 'truncate', 'write', 'write', 'commit', 'markReady'])
+    expect(writes).toEqual(ops)
+  })
+
+  it('truncates even when a reset batch carries zero ops (the ghost-row cure)', () => {
+    const { sink, calls } = recorder()
+    applyBatch(sink, batch([], { reset: true, ready: true }))
+    // an emptied room must still clear the client's prior rows
+    expect(calls).toEqual(['begin', 'truncate', 'commit', 'markReady'])
+  })
+
+  it('never truncates a non-reset batch (regression guard)', () => {
+    const { sink, calls } = recorder()
+    applyBatch(sink, batch([{ type: 'insert', value: { id: 'a' } }], { ready: true }))
+    expect(calls).not.toContain('truncate')
+    expect(calls).toEqual(['begin', 'write', 'commit', 'markReady'])
   })
 })

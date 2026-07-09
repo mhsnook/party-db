@@ -1,6 +1,6 @@
 # PartyDB — Tanstack DB meets PartyKit
 
-> v0.0.0, incubating. Cookbooks: [`docs/cookbooks`](./docs/cookbooks/) · Design:
+> incubating. Cookbooks: [`docs/cookbooks`](./docs/cookbooks/) · Design:
 > [`architecture.md`](./docs/architecture.md) · active plans:
 > [`plans/`](./plans/) · open questions:
 > [`unspecified.md`](./docs/unspecified.md).
@@ -64,7 +64,7 @@ another machine entirely!
 
 **Examples:**
 
-- [React + SQLite](./example-react-RDBMS/README.md) (RDBMS mode, etc. from Milestone 1)
+- [React + SQLite](./example-react-rdbms/README.md) (RDBMS mode, etc. from Milestone 1)
 - [React](./example-react/README.md) (`App.tsx` + `server.ts`,
 `useLiveQuery`, zero-config writes, Milestone 0)
  - [vanilla JS](./example/README.md)
@@ -108,6 +108,11 @@ export class Main extends PartyDbServer {
     { name: 'todos', key: 'id', schema: todoSchema },
     { name: 'lists', key: 'id', schema: listSchema },
   ]
+  // your tables, your DDL — party-db only CRUDs over them:
+  onStart() {
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS todos (...)`) // and lists
+    return super.onStart()
+  }
 }
 
 export default {
@@ -161,8 +166,10 @@ await tx.isPersisted.promise // both land in one POST, or neither does
 | `src/client/seq-tracker.ts` | pure settlement: per-channel high-water mark, waiters, timeout |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
+| `src/client/errors.ts` | `WriteError` / `TransportError` — classified write failures |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write`, behind a `PersistenceAdapter` |
+| `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |
 | `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1) |
 | `src/server/sqlite-adapter.ts` | `SqliteAdapter` — structured CRUD + `RETURNING`; blob fallback |
 | `src/server/columns.ts` | schema → injection-safe column allowlist + value codec |

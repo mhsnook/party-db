@@ -10,13 +10,14 @@ import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthConte
 import { routePartykitRequest } from 'partyserver'
 import { todoSchema, type Todo } from './schema.ts'
 
-const PASSWORD = 's3cret' // a real app checks a session/JWT here
+// Shared string keeps the recipe to one moving part; a real app verifies a session/JWT (recipe 3), compares constant-time, and never echoes the credential.
+const PASSWORD = 's3cret'
 
 const authorize = (req: Request, { kind }: AuthContext) => {
   // ✅ reads are open to everyone
   if (kind === 'connect') return true
   // ✅ only writes are password-protected
-  return bearer(req) === PASSWORD ? true : { ok: false, status: 401, error: `enter "${PASSWORD}" to write` }
+  return bearer(req) === PASSWORD ? true : { ok: false, status: 401, error: 'a write token is required' }
 }
 
 export class Main extends PartyDbServer {
@@ -24,14 +25,11 @@ export class Main extends PartyDbServer {
 }
 
 export default {
-  fetch: (req: Request, env: unknown) =>
-    // authHooks runs authorize at the lobby, before the request reaches the Durable
-    // Object — a rejected read never upgrades the socket, a rejected write never wakes the DO.
-    routePartykitRequest(
-		req,
-		env,
-		authHooks(authorize)).then((r) => r ?? new Response('not found', { status: 404 })
-	),
+  // authHooks runs authorize at the lobby, before the request reaches the DO
+  async fetch(req: Request, env: unknown): Promise<Response> {
+    const response = await routePartykitRequest(req, env, authHooks(authorize))
+    return response ?? new Response('not found', { status: 404 })
+  },
 }
 ```
 
