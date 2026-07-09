@@ -172,6 +172,21 @@ later.
 Why: we never invent a separate counter, and we only ever rely on `seq`
 *equality* (settlement) and *order* (backlog) — never arithmetic.
 
+**The `_oplog` lives beside your data — in the same database, wherever that is.**
+Embedded mode keeps it in the DO's SQLite next to your tables; D1 mode keeps it
+in your D1; a Postgres authority would keep its equivalent there. It is one
+table we own, auto-created, and it is the *only* footprint we leave in your
+database — your own tables are never created, migrated, or altered. Why
+co-located rather than tucked away inside the DO: the log indexes the data, so
+they must commit atomically and can never be allowed to diverge — a log the
+data's own transaction can't reach is a log that can tear (a commit the log
+missed) or outlive a wipe the data didn't have (a `seq` that regresses under
+live cursors). Keeping log and data in one transactional store makes both
+failure modes impossible rather than handled. We also considered asking you to
+shape your tables so the log could be *derived* (a write-stamp column on every
+table, plus tombstones for deletes) — strictly more intrusion into your schema
+for a weaker replay, so the side table wins.
+
 ## 7. Optimistic → ack → settlement, flicker-free
 
 A write moves through three phases: optimistic apply (instant), **ack** (the
