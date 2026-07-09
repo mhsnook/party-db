@@ -1,4 +1,4 @@
-# Plan 014: D1 adapter — the second v1 persistence target
+# Plan 014: D1 adapter — the second v1 persistence target (no oplog)
 
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
@@ -15,13 +15,13 @@
 ## Status
 
 - **Priority**: P1
-- **Effort**: L
+- **Effort**: M
 - **Risk**: MED (new storage target; one real design decision inside)
 - **Depends on**: plans/001 (harness), 002 (result-cursor discipline — D1's
-  result API is a third dialect), 003+005 (reset marker + retention default —
-  the reconnect paths D1's latency stresses), **004 (hard** — the connect-race
-  window becomes a real network round-trip on D1), 006 (error split; see
-  maintenance notes on classification)
+  result API is a third dialect), **003 (hard** — the `reset` snapshot IS the
+  reconnect path on D1), **004 (hard** — the connect-race window becomes a real
+  network round-trip on D1, and snapshot consistency depends on connects being
+  serialized with writes), 006 (error split; see maintenance notes)
 - **Category**: feature
 - **Planned at**: commit `7fea950`, 2026-07-09
 
@@ -81,37 +81,46 @@ queue, and capture is via `RETURNING`. What's missing is the adapter itself.
 
 ## The design decision (recorded here, confirmed in Step 1)
 
-Two shapes were considered for where the `_oplog` lives:
+Where does ordering live, given D1's only atomic unit is `batch()`? Note first
+what is NOT in question: the DO is the room server in every mode — it owns the
+socket, `/write`, the broadcast, and the serialize queue, so it is the
+serialization *authority* regardless (§1, §9). The question is only what it
+persists. Three shapes:
 
-- **Option A — everything in D1.** The oplog rows must then be written in a
-  *second* `batch()` (their JSON depends on the first batch's `RETURNING`
-  results), so data-commit and oplog-append are no longer atomic — a crash
-  between them leaves committed rows no delta will ever replay. It also makes
-  every `replaySince` (every reconnect) a network round-trip. Rejected.
-- **Option B — data in D1, oplog in the DO (chosen).** User tables (and the
-  blob tables we own) live in D1; `_oplog` and seq-minting stay in the DO's
-  embedded SQLite. The write path, inside the server's existing `serialize`
-  queue: build all statements across all batches → one `d1.batch()` (the whole
-  POST stays all-or-nothing, constraints judge, §5) → decode `RETURNING` rows
-  to resolved ops → append per-batch oplog entries locally (synchronous) →
-  return sequenced batches. `seq` remains the authority's commit-log position
-  (§6) minted by the single serialization authority (the DO); `replaySince`
-  stays local and fast; `snapshot()` reads the watermark locally and the tables
-  from D1, and is consistent because connects are serialized with writes
-  (plan 004 — this is why it's a hard dependency).
+- **Mirror an `_oplog` in the DO's embedded SQLite** (data in D1, replay log
+  local). Rejected as overkill: the second log exists only to serve `?since`
+  deltas, and it buys them with a second, non-atomic write per POST — a crash
+  between the D1 commit and the local append leaves committed rows no delta
+  will ever replay. A correctness edge purchased for an optimization.
+- **Keep the `_oplog` in D1.** Same non-atomicity (the resolved-ops JSON
+  depends on the first batch's `RETURNING` results, so it's a *second*
+  `batch()`), plus every reconnect delta and every seq mint becomes a network
+  round-trip. Rejected.
+- **No oplog at all (chosen).** The whole POST is ONE `d1.batch()`: the CRUD
+  statements plus one `UPDATE _seq SET n = n + 1 RETURNING n` per
+  channel-batch (`_seq` is a one-row counter table we own, like the blob
+  tables). `seq` is therefore minted *inside the same atomic commit as the
+  data* — nothing can tear, ever. `replaySince()` simply returns `null`, and
+  the server's existing fallback (§8's `reset` snapshot, plan 003) does the
+  rest: on D1, every reconnect gets a fresh reset snapshot instead of a delta.
+  Monotonicity across concurrent POSTs is the serialize queue's existing
+  guarantee; monotonicity across DO restarts is the counter row's.
 
-  The accepted edge: a crash *between* the D1 commit and the local oplog
-  append means committed rows that never fan out or replay (they do appear in
-  fresh/reset snapshots, which read D1). The POST never acked, so the writer's
-  optimistic state rolled back — but a retry of the same insert will 409 on
-  the already-committed PK. Document this as a known v0.1 limitation (Step 6);
-  the WAL story (docs/postgres-todo.md) is the real fix for
-  authority-log-vs-data divergence, not more machinery here.
+The documented v0.1 limitation this buys: **no `?since` delta on D1** —
+reconnects re-send the room. Correct at any room size, cheap at v0.1 room
+sizes, and a delta log can return later as a pure optimization if reconnect
+traffic ever bites. (`oplogRetention` is meaningless on this adapter — its doc
+comment should say so.)
 
-  Scope constraint, also documented: **one room per D1 database** (or strictly
-  disjoint per-room row partitions). Rooms don't see each other's writes — the
-  fan-out source is the room's own oplog, not a D1 change feed (D1 has none;
-  that's the v2 Postgres/WAL story). A D1 database written by several rooms or
+The remaining inherent edge (any remote database has it, v2 Postgres
+included): D1 commits and the DO dies before the ack — the writer rolled back
+a row that exists, and retrying the same insert 409s on its own PK. Document
+it (Step 6); every *other* client self-heals via snapshot.
+
+Scope constraint, also documented: **one room per D1 database** (or strictly
+disjoint per-room row partitions). Rooms don't see each other's writes — the
+fan-out source is the room's own `/write` path, not a D1 change feed (D1 has
+none; that's the v2 Postgres/WAL story). A D1 database written by several rooms or
   by anything that isn't this room's `/write` will serve stale-looking rooms.
 
 ## Commands you will need
@@ -160,8 +169,10 @@ write a small `test/integration/d1-semantics.test.ts` against the **raw
 binding** (no adapter yet): `batch()` of two inserts where the second violates
 a PK → assert the first did NOT commit (atomicity) and the thrown message
 contains `constraint failed`; a `batch()` of `INSERT … RETURNING *` statements
-→ assert each `D1Result.results` carries that statement's resolved row.
-Record the bound-parameter / batch-size limits you find in the pool's D1.
+→ assert each `D1Result.results` carries that statement's resolved row; an
+`UPDATE … RETURNING` counter statement inside a `batch()` → assert the
+incremented value comes back (the seq-minting premise). Record the
+bound-parameter / batch-size limits you find in the pool's D1.
 
 **Verify**: the semantics tests pass and confirm the design's premises. If any
 premise fails, that's a STOP condition (listed below).
@@ -178,29 +189,27 @@ existing adapter tests are the proof of no behavior change).
 
 ### Step 3: Implement `D1Adapter`
 
-`src/server/d1-adapter.ts`, constructor
-`(d1: D1Database, local: SqlEngine, collections, opts)` — `local` is the DO's
-embedded engine for the oplog (same `SqlEngine` seam, so the oplog logic stays
-unit-testable against `node:sqlite`):
+`src/server/d1-adapter.ts`, constructor `(d1: D1Database, collections)` — no
+local engine, no oplog, no retention knob:
 
-- `init()`: `_oplog` table via `local`; blob tables via `d1.exec` (we own
-  those; structured tables stay the user's, we never DDL them).
-- `write(batches)`: build every statement via the Step-2 builders; one
-  `d1.batch(all)`; map each statement's `D1Result` back to its op and decode
-  resolved rows (update-of-missing falls back to the sent value — read result
-  arrays, never a `.one()`-style single-row assumption; plan 002's rule);
-  then, per batch, append the resolved-ops JSON to the local `_oplog`
-  (+ `compact()`), exactly as `SqliteAdapter.applyOne` does today — consider
-  extracting that small oplog append/compact/replay unit into a shared helper
-  rather than duplicating it (implementer's choice; keep it boring).
-- `snapshot()`: watermark from the local oplog, rows from D1
-  (`SELECT * FROM "<table>"` per structured plan; blob tables likewise),
-  `ready: true` + the plan-003 `reset` marker, same shape as the SQLite path.
-- `replaySince()`: local, unchanged semantics (null past the floor).
+- `init()`: create the one-row `_seq` counter and the blob tables via
+  `d1.exec` (we own those; structured tables stay the user's, we never DDL
+  them).
+- `write(batches)`: build every CRUD statement via the Step-2 builders, plus a
+  `_seq` increment per channel-batch; ONE `d1.batch(all)`; map each
+  statement's `D1Result` back to its op and decode resolved rows
+  (update-of-missing falls back to the sent value — read result arrays, never
+  a `.one()`-style single-row assumption; plan 002's rule); each batch's `seq`
+  is its counter statement's returned value.
+- `snapshot()`: the counter + every table from D1, `ready: true` **and**
+  `reset: true`, same shape as the SQLite fallback path. Consistent because
+  connects are serialized with writes (plan 004).
+- `replaySince()`: `return null` — the server's existing fallback sends a
+  fresh reset snapshot (that path is real and tested since plans 001/003).
 
-**Verify**: `pnpm typecheck` → exit 0. Unit-test what's unit-testable (the
-result-mapping given faked `D1Result[]`s; the oplog helper against the node
-shim) in `test/` — the real engine is covered by Step 5.
+**Verify**: `pnpm typecheck` → exit 0. Unit-test the result-mapping (statement
+list construction; seq extraction; resolved-row decode) against faked
+`D1Result[]`s in `test/` — the real engine is covered by Step 5.
 
 ### Step 4: Wire the fixture
 
@@ -221,9 +230,11 @@ the `D1Room` party:
 1. Round-trip: insert → 200 ack with the **resolved** row (D1 defaults
    applied) → broadcast → fresh client's snapshot has it.
 2. Atomicity: a two-batch POST where the second batch violates a constraint →
-   409, and **neither** batch's rows exist in D1 or the oplog.
-3. Reconnect delta (`?since` mid-stream) and stale-cursor reset snapshot
-   (retention fallback) — the plan-001/003 cases, on D1.
+   409, neither batch's rows exist in D1, **and the `_seq` counter did not
+   advance** (the mint rolled back with the data — the design's core claim).
+3. Reconnect: any `?since` (mid-stream or ancient) → a `reset: true` snapshot,
+   never a delta; after a delete happened while the client was away, the
+   snapshot contains no ghost row.
 4. Broadcast order == seq order under concurrent POSTs (the serialize queue's
    guarantee, now with real awaits in the middle).
 5. Update-of-missing-row → 200 no-op with the sent value (plan 002 parity).
@@ -235,8 +246,9 @@ few times; the async adapter is where interleaving flakes would surface).
 
 - `docs/architecture.md`: flip the Roadmap v1 status line (embedded **and** D1
   landed); one short sentence on the D1 trade-offs where the roadmap already
-  discusses them, naming the two documented limitations: the
-  crash-between-commit-and-oplog edge, and one-room-per-database scope.
+  discusses them, naming the documented limitations: no `?since` delta
+  (reconnect = reset snapshot), one room per D1 database, and the
+  committed-but-unacked retry edge.
 - `README.md`: milestone line only.
 
 **Verify**: read back; keep the decision-record voice.
@@ -250,18 +262,19 @@ integration lane). Full gate:
 ## Done criteria
 
 - [ ] `D1Adapter` implements `PersistenceAdapter`; swap-in is a `createAdapter()` override, server untouched
+- [ ] ONE `d1.batch()` per POST carries CRUD + seq mint; no second write anywhere in the ack path (visible in the diff)
 - [ ] `SqliteAdapter` and `D1Adapter` share one statement-builder module; unit suite passed the refactor unmodified
-- [ ] D1 integration suite covers: resolved-row round-trip, whole-POST atomicity, delta + reset reconnect, order under concurrency, update-of-missing
-- [ ] The two documented limitations are in `docs/architecture.md` (crash edge, one-room-per-database)
+- [ ] D1 integration suite covers: resolved-row round-trip, whole-POST atomicity incl. the counter, reset-snapshot reconnect, order under concurrency, update-of-missing
+- [ ] The documented limitations are in `docs/architecture.md` (no delta reconnect, one-room-per-database, unacked-commit retry edge)
 - [ ] All suites green; only in-scope files modified; `plans/README.md` updated
 
 ## STOP conditions
 
 - Step 1 disproves a premise: `batch()` is not atomic, or its results don't
-  carry `RETURNING` rows per statement, or constraint failures lack a
-  `constraint failed` substring (then error classification must move into the
-  adapter contract first — see maintenance notes), or the pool can't bind D1
-  alongside the DO classes.
+  carry `RETURNING` rows per statement (CRUD *or* the counter UPDATE), or
+  constraint failures lack a `constraint failed` substring (then error
+  classification must move into the adapter contract first — see maintenance
+  notes), or the pool can't bind D1 alongside the DO classes.
 - The statement-builder extraction (Step 2) cannot be made behavior-identical
   (any existing adapter test needs its assertion changed).
 - Plan 004 has not landed (check `plans/README.md`) — do not proceed; the
@@ -277,11 +290,11 @@ integration lane). Full gate:
   phrasing. If D1's phrasing differs even slightly, do what 006's maintenance
   note anticipated: move classification into the `PersistenceAdapter` contract
   (each adapter knows its engine) rather than growing the regex.
-- The chosen shape — authority log local to the serialization authority, data
-  in a remote database — is deliberately the same split `docs/postgres-todo.md`
-  builds on (DO-held oplog keyed by LSN, data in Postgres). The Postgres
-  adapter should reuse the oplog helper and the statement builders' dialect
-  seam; keep both free of SQLite-isms where cheap.
+- If reconnect-cost complaints arrive, the delta log returns as a pure
+  optimization — and at that point v2's WAL-fed oplog (`docs/postgres-todo.md`)
+  is the model to copy, not a bespoke D1 mirror. Don't pre-build it.
+- The statement builders are the piece the v2 Postgres adapter reuses — keep
+  them free of SQLite-isms where cheap.
 - Snapshot chunking (one WS frame per table) was deferred at audit time
-  ("revisit when D1 lands") — D1 has now landed when this plan is done;
-  re-evaluate against real room sizes before closing the loop on it.
+  ("revisit when D1 lands") — it matters *more* now that every D1 reconnect is
+  a snapshot; re-evaluate against real room sizes before closing the loop.
