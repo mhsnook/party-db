@@ -68,24 +68,12 @@ your app can reach:
 3. **Postgres (v2).** Structured tables *plus* a change-feed (WAL), so even writes
    that never came through us fan out (Roadmap).
 
-Two things vary between modes, and it helps to see them as separate axes that happen
-to move together:
-
-- **Representation** — opaque blob vs. structured columns — is chosen **per
-  collection**, automatically, by whether that collection ships a readable schema
-  (`columnsOf` → `null` ⇒ blob). On the embedded adapter the two are mixable in one
-  room.
-- **Storage target** — where the authority lives (DO SQLite / D1 / Postgres) — is
-  chosen **per server**, by the `createAdapter()` override (§4). One adapter serves
-  every collection in a room; mixing targets means separate room classes.
-
-One rule binds the two axes: **blob is mode 0, embedded-only.** The moment you move
-to a shared, remote target every collection must be structured — a schemaless
-collection on a D1 (or Postgres) room is a configuration error at `init()`, not a
-supported mode. The reason: mode 0's blob table is one *we* `CREATE` and own; in the
-DO's private, throwaway SQLite that's invisible, but in your real D1/Postgres it
-would mean the library DDL-ing an opaque table into a database other parts of your
-app read — the one combination we refuse.
+**The one constraint: blob is mode 0, embedded-only.** A schemaless collection is
+only supported on the embedded DO — on a shared, remote target (D1 or Postgres)
+every collection must ship a schema, and a schemaless one is a configuration error
+at `init()`. Mode 0's blob table is one *we* create and own, which is harmless in
+the DO's private SQLite but would put an opaque, library-owned table inside the real
+D1/Postgres your other services read.
 
 **What does NOT change between modes: everything else in this document.** The wire
 format (§2), `seq` and the `_oplog` (§6), optimistic→ack→settlement (§7), reconnect
@@ -210,16 +198,9 @@ Why: we never invent a separate counter, and we only ever rely on `seq`
 
 **The `_oplog` lives beside your data — in the same database, wherever that mode
 puts it (§1).** It is one table we own, auto-created, and the *only* footprint we
-leave in your database — your own tables are never created, migrated, or altered.
-Why co-located rather than tucked away inside the DO: the log indexes the data, so
-they must commit atomically and can never be allowed to diverge — a log the
-data's own transaction can't reach is a log that can tear (a commit the log
-missed) or outlive a wipe the data didn't have (a `seq` that regresses under
-live cursors). Keeping log and data in one transactional store makes both
-failure modes impossible rather than handled. We also considered asking you to
-shape your tables so the log could be *derived* (a write-stamp column on every
-table, plus tombstones for deletes) — strictly more intrusion into your schema
-for a weaker replay, so the side table wins.
+leave in your database — your own tables are never created, migrated, or altered. It
+commits in the same transaction as your data, so the log and the rows it indexes
+stay in lockstep.
 
 ## 7. Optimistic → ack → settlement, flicker-free
 
