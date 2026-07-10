@@ -7,7 +7,7 @@ the WorkOS org ID, so the board is shared to only that org's members. ✅
 
 ```ts
 import { routePartykitRequest } from 'partyserver'
-import { PartyDbServer, definePartyCollection, authHooks, bearer, type Authorize } from 'party-db/server'
+import { PartyDbServer, definePartyCollection, authHooks, getTokenFromRequest, type Authorize } from 'party-db/server'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
 import { WorkOS } from '@workos-inc/node'
 import { cardSchema } from './schema.ts'
@@ -24,7 +24,7 @@ const makeAuthorize = (env: Env): Authorize => {
   const JWKS = createRemoteJWKSet(new URL(workos.userManagement.getJwksUrl(env.WORKOS_CLIENT_ID)))
 
   return async (req, { room }) => {
-    const token = bearer(req) ?? new URL(req.url).searchParams.get('token') // header on writes, ?token= on connect
+    const token = getTokenFromRequest(req) // Bearer header on writes, ?token= on connect
     if (!token) return { ok: false, status: 401 }
     try {
       const { payload } = await jwtVerify(token, JWKS)
