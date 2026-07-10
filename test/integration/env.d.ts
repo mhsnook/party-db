@@ -6,5 +6,8 @@
 declare namespace Cloudflare {
   interface Env {
     DB: D1Database
+    // The Postgres connection string for the connectivity spike (plan 015).
+    // An empty string means "no PG running" — the pg-connect suite skips.
+    PG_URL: string
   }
 }
