@@ -28,6 +28,17 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 [`architecture.md`](./architecture.md) as they land; genuinely open questions
 that outlive this doc go back to [`unspecified.md`](./unspecified.md).
 
+**Sequencing note — two rungs.** Postgres lands in two releasable rungs, and
+this doc's sections split across them. **Rung 1** (plans 015–016): the §1
+write path with *v1 semantics* — CRUD + `RETURNING`, `_oplog` beside the data,
+`?since` deltas — same contract as embedded/D1, on the database your company
+already runs; out-of-band writers stay invisible, as in every v1 mode.
+**Rung 2** (the rest of this doc): the WAL becomes the stream — §2's tail,
+§3's preview/echo settlement — upgrading the same adapter's delivery
+guarantees rather than replacing it. §5's per-user rules have meanwhile been
+superseded by a simpler, database-agnostic surface: cookbooks 05/06 and plan
+017, which run on SQLite/D1 today and carry to Postgres unchanged.
+
 ---
 
 ## What carries over unchanged
