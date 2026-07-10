@@ -50,23 +50,26 @@ the way — you write ordered optimistic ops on the client, and if they apply th
 they're POSTed and applied in one DB transaction, no ORM and no middle-tier
 round-trips.
 
-## 1. The persistence ratchet: uncontrolled → DO-SQLite → D1 → Postgres
+## 1. Four persistence modes: uncontrolled → DO-SQLite → D1 → Postgres
 
-There is one ladder of persistence modes, and it only turns one way. Each rung up
-hands the *database* more control over your data — and moves that data somewhere
-more consumers can reach:
+There are four persistence modes, in a fixed order of increasing control — each one
+hands the *database* more say over your data, and puts that data somewhere more of
+your app can reach:
 
 0. **Uncontrolled (blob).** The server stores rows as opaque `(k, data)` JSON keyed
    by PK and validates nothing (§5a). Zero config; no real schema underneath.
 1. **DO-embedded SQLite.** Structured CRUD against your real, typed columns, your
    constraints judging every write — but private to the Durable Object.
-2. **D1.** The same structured tables, now in a database your *other* consumers can
-   read. "Your database is the global API" stops being a slogan.
+2. **D1.** The same structured tables, now in a standalone database the rest of your
+   app can read directly — other services, jobs, dashboards, not just party-db
+   clients. This is the first mode whose tables sit *alongside* a more traditional
+   app architecture rather than hidden inside the room (so long as the per-room /
+   per-team privacy model fits your use case).
 3. **Postgres (v2).** Structured tables *plus* a change-feed (WAL), so even writes
    that never came through us fan out (Roadmap).
 
-Two things vary as you climb, and it's worth seeing them as separate axes that
-happen to move together:
+Two things vary between modes, and it helps to see them as separate axes that happen
+to move together:
 
 - **Representation** — opaque blob vs. structured columns — is chosen **per
   collection**, automatically, by whether that collection ships a readable schema
@@ -76,33 +79,31 @@ happen to move together:
   chosen **per server**, by the `createAdapter()` override (§4). One adapter serves
   every collection in a room; mixing targets means separate room classes.
 
-The ratchet is the rule that these can't move independently the wrong way: **blob is
-rung 0, embedded-only.** The moment you move to a shared, remote target every
-collection must be structured — a schemaless collection on a D1 (or Postgres) room
-is a configuration error at `init()`, not a supported mode. The reason is the whole
-thesis: rung 0's blob table is one *we* `CREATE` and own; in the DO's private,
-throwaway SQLite that's invisible, but in your real D1/Postgres it would mean the
-library DDL-ing an opaque table into the database whose entire value is that other
-consumers read your *structured* rows. That off-diagonal cell is the one the ratchet
-forbids.
+One rule binds the two axes: **blob is mode 0, embedded-only.** The moment you move
+to a shared, remote target every collection must be structured — a schemaless
+collection on a D1 (or Postgres) room is a configuration error at `init()`, not a
+supported mode. The reason: mode 0's blob table is one *we* `CREATE` and own; in the
+DO's private, throwaway SQLite that's invisible, but in your real D1/Postgres it
+would mean the library DDL-ing an opaque table into a database other parts of your
+app read — the one combination we refuse.
 
-**What does NOT change as you climb: everything else in this document.** The wire
+**What does NOT change between modes: everything else in this document.** The wire
 format (§2), `seq` and the `_oplog` (§6), optimistic→ack→settlement (§7), reconnect
-deltas (§8), auth (§10) — all rung-invariant. A client cannot tell which rung its
-room is on: the batches, the `seq`s, the reconnect protocol are identical. So
-climbing the ratchet is a **server-only migration** — swap the adapter, or give a
-collection a schema and a real table — with no client change. (Corollary, genuinely
-useful as an on-ramp though not a destination: a collection can start uncontrolled
-and become structured later, invisibly to every client.)
+deltas (§8), auth (§10) are all mode-invariant. A client cannot tell which mode its
+room is in: the batches, the `seq`s, the reconnect protocol are identical. So moving
+between modes is a **server-only migration** — swap the adapter, or give a
+collection a schema and a real table — with no client change. (Corollary, a useful
+on-ramp though not a destination: a collection can start uncontrolled and become
+structured later, invisibly to every client.)
 
-**Where v1 starts: rung 1.** Our first real target is a Durable Object that is both
+**Where v1 starts: mode 1.** Our first real target is a Durable Object that is both
 the authority and the SQLite persistence behind an otherwise-transparent
 partyserver, owning the WebSocket (down) and `POST /write` (up) for its room. Why a
 DO: it is single-threaded and has transactional SQLite, which hands us total
 ordering and durability for free. Other shapes (a trusting relay, PostgREST/SSE,
 Supabase Realtime) are designs only, in `unspecified.md`. Keeping the library
-tightly focused on extending PartyKit, our deployment target is theirs. Rung 2 (D1)
-is landed; rung 3 (Postgres) is the v2 story.
+tightly focused on extending PartyKit, our deployment target is theirs. Mode 2 (D1)
+is landed; mode 3 (Postgres) is the v2 story.
 
 ## 2. The wire format is TanStack DB's `write()` argument
 
@@ -146,7 +147,7 @@ the loop.
 
 Your relational schema is a stakeholder: other parts of your app and ecosystem
 rely on its structure, types, performance profile, and the assurances it provides
-(§1 rung 2 is where those other consumers start reading it). So
+(§1 mode 2 is where the rest of your app starts reading it directly). So
 the server completes a write the way a web application does — a genuine
 transactional commit the database's own constraints can accept or reject — and
 hands back the **resolved** row the database actually wrote (defaults, generated
@@ -185,9 +186,9 @@ collections that ship no schema. We do **not** create or migrate your tables —
 bring them. Remaining edges: the server-side Zod error-sooner gate and the
 serial-PK overlay-swap smoothing (both in [`unspecified.md`](./unspecified.md)).
 
-### 5a. Uncontrolled mode — rung 0 (the shipped baseline)
+### 5a. Uncontrolled mode — mode 0 (the shipped baseline)
 
-Rung 0 of the ratchet (§1), and what shipped first. A collection opts out of
+Mode 0 (§1), and what shipped first. A collection opts out of
 structure by shipping no readable schema: the server stores its rows as opaque
 `(k TEXT PRIMARY KEY, data TEXT)` blobs keyed by PK (alongside the
 `_oplog(seq INTEGER PRIMARY KEY AUTOINCREMENT, channel, ops)`) and validates
@@ -207,7 +208,7 @@ later.
 Why: we never invent a separate counter, and we only ever rely on `seq`
 *equality* (settlement) and *order* (backlog) — never arithmetic.
 
-**The `_oplog` lives beside your data — in the same database, wherever that rung
+**The `_oplog` lives beside your data — in the same database, wherever that mode
 puts it (§1).** It is one table we own, auto-created, and the *only* footprint we
 leave in your database — your own tables are never created, migrated, or altered.
 Why co-located rather than tucked away inside the DO: the log indexes the data, so
@@ -382,13 +383,13 @@ the apply contract (§4), not the apply code — the sinks differ.
 
 ## Roadmap
 
-**v0 — uncontrolled sync (shipped, done).** Rung 0 of the ratchet (§1): the client
+**v0 — uncontrolled sync (shipped, done).** Mode 0 (§1): the client
 mints UUIDs, the server stores rows as opaque blobs (§5a) and validates nothing, and
 writes fan out to every subscriber over the same controlled transport as every
-higher rung. The *data* is uncontrolled — no real database underneath — but it's a
+higher mode. The *data* is uncontrolled — no real database underneath — but it's a
 real thing: a zero-config realtime collection store.
 
-**v1 — controlled by your RDBMS (rungs 1–2 of the ratchet, §1: DO-embedded SQLite
+**v1 — controlled by your RDBMS (modes 1–2, §1: DO-embedded SQLite
 *and* D1; both landed).** The server persists into structured tables, lets the
 database validate
 (constraints/FKs), and returns the full ack → echo of the *resolved* row — still
@@ -404,7 +405,7 @@ middle layer.
 **v1 realtime covers the ops that come through us** — the collection ops the
 `/write` handler commits. We capture their effect via **`RETURNING`**: on commit the
 database hands back the *resolved* rows (defaults, serials, same-row trigger edits)
-and those fan out. This holds on both rung-1 and rung-2 targets (§1); D1, being a
+and those fan out. This holds on both mode-1 and mode-2 targets (§1); D1, being a
 farther-away box, just makes persistence async — the atomic POST moves from
 `transactionSync` to D1's `batch()`, and the DO serializes its write → `seq` →
 broadcast section so concurrent POSTs don't interleave (10 people editing at once is
@@ -420,7 +421,7 @@ serializer and holds no adapter state of its own. Three documented D1 trade-offs
 it serves **one room per D1 database** (rooms don't see each other's writes — the
 fan-out is the room's own `/write` path, and D1 has no change feed; cross-room
 sharing is the v2 Postgres/WAL story); it is **structured-only** (a schema-less
-collection is a configuration error at `init()` — blob/uncontrolled mode is rung 0,
+collection is a configuration error at `init()` — blob/uncontrolled is mode 0,
 embedded-only, §1); and, as with any remote database, a POST
 that D1 commits just before the DO dies leaves a committed-but-unacked row that a
 retry of the same insert will 409 on — every other client still converges via
