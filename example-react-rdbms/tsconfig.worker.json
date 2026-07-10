@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["src/server.ts", "src/schema.ts"]
+  "include": ["src/server.ts", "src/schema.ts", "src/env.d.ts"]
 }

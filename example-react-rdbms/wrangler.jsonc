@@ -7,5 +7,14 @@
   "durable_objects": {
     "bindings": [{ "name": "Main", "class_name": "Main" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Main"] }]
+  // the DO still needs its own SQLite storage (partyserver uses it for the
+  // hibernatable WebSocket bookkeeping); the room's DATA just goes to D1 below.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Main"] }],
+  // the D1 database the room persists into — the `todos` table and party-db's
+  // `_oplog` both live here. `wrangler dev` simulates it locally (the id below is a
+  // placeholder); to DEPLOY, run `wrangler d1 create party-db-example-rdbms` and
+  // paste the returned database_id here. One room per D1 database (see README).
+  "d1_databases": [
+    { "binding": "DB", "database_name": "party-db-example-rdbms", "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID" }
+  ]
 }

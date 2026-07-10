@@ -1,5 +1,13 @@
 import { routePartykitRequest } from 'partyserver'
-import { PartyDbServer, definePartyCollection, authHooks, bearer, type AuthContext } from '../../src/server/index.ts'
+import {
+  PartyDbServer,
+  D1Adapter,
+  definePartyCollection,
+  authHooks,
+  bearer,
+  type AuthContext,
+  type PersistenceAdapter,
+} from '../../src/server/index.ts'
 import { todoSchema, type Todo } from './schema.ts'
 import { migrate } from './migrations/index.ts'
 
@@ -10,13 +18,24 @@ const PASSWORD = 's3cret'
 export class Main extends PartyDbServer {
   collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
 
-  onStart() {
-    migrate(this.ctx.storage.sql)
+  // 🆕 (2) persist into D1 (env.DB) instead of the DO's own SQLite. The `todos`
+  // table AND party-db's `_oplog` both live in your D1, where other services and
+  // jobs can read them — the DO stays the room server, it just holds no data of its
+  // own. Delete this one method to fall back to the DO's embedded SQLite; nothing
+  // else — client, schema, auth — changes.
+  protected createAdapter(): PersistenceAdapter {
+    return new D1Adapter(this.env.DB, this.collections, { oplogRetention: this.oplogRetention })
+  }
+
+  // bring your own DB — here it's D1. D1 DDL is async, so await it before
+  // super.onStart() (which runs the adapter's init()).
+  async onStart() {
+    await migrate(this.env.DB)
     return super.onStart()
   }
 }
 
-// 🆕 (2) one lobby check: `kind` makes reads open and writes password-protected (a rejected write is the 401 App.tsx turns into an unlock prompt).
+// 🆕 (3) one lobby check: `kind` makes reads open and writes password-protected (a rejected write is the 401 App.tsx turns into an unlock prompt).
 const authorize = (req: Request, { kind }: AuthContext) => {
   if (kind === 'connect') return true // reads are open to everyone
   return bearer(req) === PASSWORD ? true : { ok: false, status: 401, error: 'a write token is required' }

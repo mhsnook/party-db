@@ -65,7 +65,7 @@ another machine entirely!
 
 **Examples:**
 
-- [React + SQLite](./example-react-rdbms/README.md) (RDBMS mode, etc. from Milestone 1)
+- [React + D1](./example-react-rdbms/README.md) (RDBMS mode on D1 + auth, from Milestone 1)
 - [React](./example-react/README.md) (`App.tsx` + `server.ts`,
 `useLiveQuery`, zero-config writes, Milestone 0)
  - [vanilla JS](./example/README.md)
