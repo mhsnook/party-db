@@ -76,3 +76,13 @@ export function bearer(req: Request): string | null {
   const m = /^Bearer\s+(.+)$/i.exec(req.headers.get('authorization') ?? '')
   return m ? m[1] : null
 }
+
+// party-db's whole token convention in one call. Our client always puts the
+// credential in the same two places: an `Authorization: Bearer <token>` header on
+// the POST /write, and a `?token=<token>` query param on the WS connect (a browser
+// can't set headers on a WS upgrade). This reads whichever is present, so an app's
+// `auth`/`authorize` just verifies a token string and never re-derives where it
+// lives. The token VALUE is the app's (a JWT, a session id); the PLACEMENT is ours.
+export function getTokenFromRequest(req: Request): string | null {
+  return bearer(req) ?? new URL(req.url).searchParams.get('token')
+}
