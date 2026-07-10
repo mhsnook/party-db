@@ -1,6 +1,6 @@
 export { PartyDbServer } from './party-db-server.ts'
 export { definePartyCollection, type PartyCollection } from '../schema.ts'
-export { authHooks, bearer, type AuthContext, type AuthDecision, type AuthKind, type Authorize } from './auth.ts'
+export { authHooks, bearer, getTokenFromRequest, type AuthContext, type AuthDecision, type AuthKind, type Authorize } from './auth.ts'
 export type { PersistenceAdapter } from './persistence.ts'
 export { SqliteAdapter, type SqlEngine, type SqlResult } from './sqlite-adapter.ts'
 export { D1Adapter, type D1AdapterOptions } from './d1-adapter.ts'
