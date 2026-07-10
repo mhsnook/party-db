@@ -18,19 +18,23 @@ const PASSWORD = 's3cret'
 export class Main extends PartyDbServer {
   collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
 
-  // 🆕 (2) persist into D1 (env.DB) instead of the DO's own SQLite. The `todos`
-  // table AND party-db's `_oplog` both live in your D1, where other services and
-  // jobs can read them — the DO stays the room server, it just holds no data of its
-  // own. Delete this one method to fall back to the DO's embedded SQLite; nothing
-  // else — client, schema, auth — changes.
+  // 🆕 (2) the storage target is a runtime switch, flipped in wrangler.jsonc, not
+  // in code: if a D1 binding is configured (`env.DB`), persist the `todos` table AND
+  // party-db's `_oplog` into D1, where other services and jobs can read them;
+  // otherwise fall back to the DO's own embedded SQLite (`super.createAdapter()`).
+  // The DO stays the room server either way — same client, schema, auth, and wire.
   protected createAdapter(): PersistenceAdapter {
-    return new D1Adapter(this.env.DB, this.collections, { oplogRetention: this.oplogRetention })
+    return this.env.DB
+      ? new D1Adapter(this.env.DB, this.collections, { oplogRetention: this.oplogRetention })
+      : super.createAdapter()
   }
 
-  // bring your own DB — here it's D1. D1 DDL is async, so await it before
-  // super.onStart() (which runs the adapter's init()).
+  // bring your own DB — run the migration against whichever engine is active. The
+  // D1 runner uses prepare().run(), not D1's exec(): exec() splits on newlines, and
+  // our DDL is multi-line.
   async onStart() {
-    await migrate(this.env.DB)
+    const db = this.env.DB
+    await migrate(db ? (sql) => db.prepare(sql).run() : (sql) => this.ctx.storage.sql.exec(sql))
     return super.onStart()
   }
 }
