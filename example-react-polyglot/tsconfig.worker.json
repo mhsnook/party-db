@@ -1,0 +1,18 @@
+{
+  // the worker half (server.ts + the modules it imports). Targets the Cloudflare
+  // Workers runtime, so it uses @cloudflare/workers-types and no DOM lib — the
+  // mirror of the repo's tsconfig.server.json.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["src/server.ts", "src/collections.ts", "src/migrations"]
+}
