@@ -9,14 +9,15 @@
 
 import createTodos from './001_create_todos.ts'
 
-// the DO's SqlStorage (ctx.storage.sql), typed structurally so this module needs
-// no workers-types.
+// D1 (env.DB), typed structurally so this module needs no workers-types. We run DDL
+// via prepare().run() rather than D1's exec(), because exec splits its input on
+// newlines and our migrations are multi-line.
 export interface Migrator {
-  exec(query: string): unknown
+  prepare(query: string): { run(): Promise<unknown> }
 }
 
 export const migrations: string[] = [createTodos]
 
-export function migrate(sql: Migrator): void {
-  for (const stmt of migrations) sql.exec(stmt)
+export async function migrate(db: Migrator): Promise<void> {
+  for (const stmt of migrations) await db.prepare(stmt).run()
 }
