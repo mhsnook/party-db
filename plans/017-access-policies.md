@@ -47,7 +47,34 @@ contract**:
 
 The type surface for cookbook 5 is already in `src/schema.ts`
 (`AccessPolicy`, `Access`, `ownerColumn` — typecheck-only, unenforced). This
-plan is the enforcement, plus cookbook 6's widening.
+plan is the enforcement, plus cookbook 6's widening, plus **one
+maintainer-requested extension to the cookbook-5 surface** (2026-07-10):
+ownership generalized from "the uid" to **JWT claims** — see "Ownership:
+claims, AND, and OR" below. Since the cookbooks are the spec, Stage A's docs
+step extends cookbook 5 with the org/team example to keep spec and code in
+lockstep.
+
+## Ownership: claims, AND, and OR (the design line)
+
+- **Claims, not just uid.** `auth` may return a string (sugar for
+  `{ uid: string }`) or a flat claims record from the verified JWT —
+  `{ uid, org }`. `ownerColumn: 'user_id'` keeps meaning "matches `uid`";
+  the general form maps columns to claims: `ownerColumns: { org_id: 'org' }`
+  for a team/org-scoped table — still the string tier, no expressions.
+- **Multiple registered columns are AND (tenancy) — safe as config.**
+  `ownerColumns: { user_id: 'uid', org_id: 'org' }`: insert stamps each
+  column from its claim (absent → stamped; present-but-mismatched → 403);
+  `'owner'` update/delete/read requires the stored row to match **all** of
+  them (a row in your org owned by a colleague is still not yours). AND is
+  the only combination semantic offered in the string tier.
+- **OR is visibility, and it's Stage B's expression form — by design.**
+  "`from_id` *or* `to_id` names me" is a read rule:
+  `read: (row, v) => or(eq(row.from_id, v.uid), eq(row.to_id, v.uid))`.
+  Offering OR in a column map would mean inventing combination syntax — a
+  worse expression language than the one Stage B already ships. The DM-table
+  decomposition to document: writes `ownerColumn: 'from_id'` (send only as
+  yourself, stamped), reads the OR expression — both tiers composing on one
+  collection.
 
 ## Current state
 
@@ -128,11 +155,13 @@ plan is the enforcement, plus cookbook 6's widening.
 
 ### Step A1: Identity — `auth` on the class, pinned per socket
 
-`auth?: (req: Request) => string | null | Promise<string | null>`. Resolve at
-connect (before the serialized snapshot) and pin to the connection
-(attachment: `{ uid }` — small, hibernation-safe); resolve per `POST /write`
-fresh (writes must not trust a stale pin). No `auth` configured → every
-policy behaves as today (back-compat: all-public defaults).
+`auth?: (req: Request) => string | Claims | null | Promise<…>` where
+`Claims = Record<string, string>` and a bare string normalizes to
+`{ uid: string }`. Resolve at connect (before the serialized snapshot) and
+pin the normalized claims to the connection (attachment — small, flat,
+hibernation-safe); resolve per `POST /write` fresh (writes must not trust a
+stale pin). No `auth` configured → every policy behaves as today
+(back-compat: all-public defaults).
 
 ### Step A2: The write gate
 
@@ -141,10 +170,14 @@ resolve the effective policy per op (`op.type` → verb; collection's resolved
 `access`), then:
 
 - `public` → pass; `authed` → require uid (else 401); `none` → 403 always.
-- `owner` → requires `ownerColumn` (config error at `onStart` if missing).
-  - insert: stamp `ownerColumn` from uid when absent; 403 on mismatch when
-    present; 401 when no uid.
-  - update/delete: verify against the **stored** row. Decision (make it,
+- `owner` → requires `ownerColumn` or `ownerColumns` (config error at
+  `onStart` if neither; `ownerColumn: 'c'` normalizes to
+  `ownerColumns: { c: 'uid' }`; columns validated against the schema
+  allowlist, claims are free-form keys).
+  - insert: stamp **each** registered column from its claim when absent; 403
+    on any mismatch; 401 when the needed claim is missing.
+  - update/delete: verify **all** registered columns against the **stored**
+    row (AND — tenancy semantics; see the design line above). Decision (make it,
     record it): (a) an adapter `getRow(channel, key)` read inside the
     serialized section — simple, race-free under the write queue, one extra
     read on D1/PG; or (b) push `AND "owner" = ?` into the UPDATE/DELETE WHERE —
@@ -159,9 +192,10 @@ Zod gate design).
 
 ### Step A3: Read gates — snapshot, backlog
 
-- `snapshot()` filtering: `read: 'owner'` → `WHERE "owner" = ?` for the
-  socket's uid (no uid → empty batch, still `ready`); `authed` → all-or-empty
-  by uid presence; `none` → skip the channel. Plumbing decision: pass a
+- `snapshot()` filtering: `read: 'owner'` → `WHERE` every registered owner
+  column equals its claim (ANDed; a missing claim → empty batch, still
+  `ready`); `authed` → all-or-empty by uid presence; `none` → skip the
+  channel. Plumbing decision: pass a
   per-connection filter into the adapter vs. filter in the server. Owner
   equality is expressible as a `(channel → WHERE fragment + binds)` map the
   adapter applies — keep it that narrow; Stage B's compiler will feed the same
@@ -182,16 +216,21 @@ Still synchronous, still inside the serialized section.
 
 - Unit: policy resolution matrix (shorthands, deny-by-default, `write`
   shorthand rejected until Stage B? — no: `write` shorthand is cookbook 6;
-  keep A to the four verbs), stamping, 401/403 mapping.
+  keep A to the four verbs), single- and multi-claim stamping, the AND
+  matrix (org matches / user doesn't → 403; both match → pass), 401/403
+  mapping.
 - Integration (polyglot-shaped fixture: public catalog + owner collections,
   two users + anon): anon reads public only; owner rows reach only their
   owner's sockets (fan-out + snapshot + delta all three asserted); forged
   `user_id` → 403; anon owned-write → 401; `update`/`delete` of another's row
   → 403 and nothing broadcast; auto-stamp round-trips.
-- Docs: cookbook 5 🚧 → shipped; polyglot README note; architecture gains the
-  access-policy decision (the four policies, deny-by-default, enforcement at
-  the four choke points, and the "roughshod RLS, not a security kernel"
-  honesty from the cookbooks).
+- Docs: cookbook 5 🚧 → shipped **and extended** with the claims section — an
+  org/team-scoped collection (`ownerColumns: { org_id: 'org' }`), the tenancy
+  AND example, and a forward pointer that OR-shaped visibility (from/to) is
+  recipe 6's expression form; polyglot README note; architecture gains the
+  access-policy decision (the four policies, deny-by-default, claims + the
+  AND/OR design line, enforcement at the four choke points, and the
+  "roughshod RLS, not a security kernel" honesty from the cookbooks).
 
 **Stage A verify**: full gate green; Stage A is releasable alone.
 
@@ -260,6 +299,7 @@ pnpm test:integration` green after each stage independently.
 ## Done criteria
 
 - [ ] Stage A: cookbook 5 runs against the polyglot example with enforcement on — all four choke points tested; public-read collections keep the single-serialization fast path
+- [ ] Stage A: claims generalization landed — org-scoped `ownerColumns`, multi-column AND + stamping tested, cookbook 5 extended to match; the DM decomposition (write `ownerColumn` + read OR expression) documented for Stage B
 - [ ] Stage B: cookbook 6's friends flow runs end-to-end; SQL/JS lowering parity proven; move-out delivers synthetic deletes; revocation = reset snapshot
 - [ ] No-`auth` servers behave byte-identically to today (back-compat suite untouched)
 - [ ] Client apply is upsert-tolerant; both cookbooks flipped from 🚧; architecture records the decisions (no plan links)
