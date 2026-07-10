@@ -1,18 +1,17 @@
-// Node-lane Postgres smoke tests (plan 015). Not exhaustive — chosen to answer
-// the questions plan 016's adapter must NOT guess at:
+// Node-lane Postgres smoke tests: the driver behaviours a Postgres adapter must
+// build on, pinned as assertions so a driver upgrade that changes any of them
+// fails loudly. Driven against the raw `pg` client, no adapter involved.
 //
-//   - the constraint-violation error shape from `pg`: SQLSTATE in `.code`, and the
-//     violated constraint's *name* on the error (`.constraint`). This replaces the
-//     sqlite message-regex approach in plan 006's isConstraintError entirely.
-//   - the JS types the driver hands back per column kind `columns.ts` knows about:
+//   - constraint-violation error shape from `pg`: SQLSTATE in `.code`, and the
+//     violated constraint's *name* on the error (`.constraint`). Classification
+//     keys on the SQLSTATE, not a message regex.
+//   - the JS types the driver hands back per column kind (see src/server/columns.ts):
 //     boolean (native bool, not 0/1), json/jsonb (driver parses for you),
 //     serial/integer (number), and bigint (comes back as a *string* — the one that
 //     bites).
 //
-// Each recorded fact is an assertion here so a driver upgrade that changes it
-// fails loudly. Driven against the raw `pg` client, no adapter involved (that's
-// plan 016). Skips cleanly when PG_URL is unset so `pnpm test` and contributors
-// without docker never fail for want of a Postgres.
+// Skips cleanly when PG_URL is unset so `pnpm test` and contributors without
+// docker never fail for want of a Postgres.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import pg from 'pg'
@@ -23,7 +22,7 @@ const PG_URL = process.env.PG_URL
 // cross-contaminating between suites/retries.
 const TABLE = 'party_db_smoke'
 
-describe.skipIf(!PG_URL)('Postgres node lane (plan 015 spike)', () => {
+describe.skipIf(!PG_URL)('Postgres node lane', () => {
   let client: pg.Client
 
   beforeAll(async () => {
@@ -31,8 +30,8 @@ describe.skipIf(!PG_URL)('Postgres node lane (plan 015 spike)', () => {
     await client.connect()
     await client.query(`DROP TABLE IF EXISTS ${TABLE}`)
     // the column kinds columns.ts distinguishes (scalar / boolean / json), plus a
-    // serial PK and a bigint, plus a UNIQUE and a CHECK to trip the two constraint
-    // classes 016 cares about.
+    // serial PK and a bigint, plus a UNIQUE and a CHECK to trip both constraint
+    // classes.
     await client.query(`CREATE TABLE ${TABLE} (
       id serial PRIMARY KEY,
       big bigint,
@@ -76,8 +75,8 @@ describe.skipIf(!PG_URL)('Postgres node lane (plan 015 spike)', () => {
     expect(row.doc).toEqual({ b: 2 })
     expect(typeof row.payload).toBe('object')
     // bigint → JS *string*. The fact that bites: a bigint column does NOT come
-    // back as a JS number/bigint. 016 must treat these as strings (or configure a
-    // type parser) rather than assume numeric.
+    // back as a JS number/bigint. Callers must treat these as strings (or configure
+    // a type parser) rather than assume numeric.
     expect(typeof row.big).toBe('string')
     expect(row.big).toBe('9007199254740993')
   })
@@ -92,10 +91,10 @@ describe.skipIf(!PG_URL)('Postgres node lane (plan 015 spike)', () => {
       err = e
     }
     expect(err).toBeTruthy()
-    // 016 classifies on SQLSTATE, not a message regex.
+    // classify on SQLSTATE, not a message regex.
     expect(err.code).toBe('23505')
     // and the constraint NAME is present (pg exposes it as `.constraint`) — this is
-    // what lets 016 map a violation back to the collection/column that caused it.
+    // what lets a caller map a violation back to the collection/column that caused it.
     expect(err.constraint).toBe(`${TABLE}_name_uq`)
   })
 
