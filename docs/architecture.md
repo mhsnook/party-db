@@ -65,8 +65,14 @@ your app can reach:
    clients. This is the first mode whose tables sit *alongside* a more traditional
    app architecture rather than hidden inside the room (so long as the per-room /
    per-team privacy model fits your use case).
-3. **Postgres (v2).** Structured tables *plus* a change-feed (WAL), so even writes
-   that never came through us fan out (Roadmap).
+3. **Postgres.** The same structured tables in the database your whole company
+   already runs. Its **write-path rung has landed** — `/write` commits into your PG
+   tables with v1 semantics identical to modes 1–2 (resolved rows, the `_oplog`
+   beside your data, `?since` deltas). Its *defining* second rung, a change-feed
+   (WAL) so even writes that never came through us fan out, is still the v2 story
+   (Roadmap). Until it lands, the one caveat every v1 mode carries applies here too:
+   a write that bypasses `/write` — a cron job, another service, a trigger's
+   side-effects beyond `RETURNING` — does not sync live.
 
 **The one constraint: blob is mode 0, embedded-only.** A schemaless collection is
 only supported on the embedded DO — on a shared, remote target (D1 or Postgres)
@@ -90,8 +96,9 @@ partyserver, owning the WebSocket (down) and `POST /write` (up) for its room. Wh
 DO: it is single-threaded and has transactional SQLite, which hands us total
 ordering and durability for free. Other shapes (a trusting relay, PostgREST/SSE,
 Supabase Realtime) are designs only, in `unspecified.md`. Keeping the library
-tightly focused on extending PartyKit, our deployment target is theirs. Mode 2 (D1)
-is landed; mode 3 (Postgres) is the v2 story.
+tightly focused on extending PartyKit, our deployment target is theirs. Modes 1–2
+(embedded, D1) are landed; mode 3's **write path** is landed too, and its WAL
+change-feed — the reason to reach for Postgres — is the v2 story.
 
 ## 2. The wire format is TanStack DB's `write()` argument
 
@@ -393,20 +400,27 @@ broadcast section so concurrent POSTs don't interleave (10 people editing at onc
 fine — the DO orders them). What v1 *can't* see, on either target, is a change that
 never came through `/write`: a cronjob, another service, or a trigger's side-effects
 on rows our statements didn't return. So avoid side-effecting triggers in v1, or
-accept they won't sync live — until v2. **Status:** both v1 targets are landed —
-embedded DO-SQLite *and* D1. The D1 shape: the whole POST — CRUD, `_oplog` append,
+accept they won't sync live — until v2. **Status:** all three v1 targets are landed —
+embedded DO-SQLite, D1, *and* Postgres's write path. The D1 shape: the whole POST —
+CRUD, `_oplog` append,
 compaction — commits as one atomic `batch()`, with the resolved-op JSON assembled
 by SQLite itself (so nothing needs a second write), `seq` from the oplog's
 `RETURNING`, and `?since` deltas identical to embedded. The DO stays the room's
-serializer and holds no adapter state of its own. Three documented D1 trade-offs:
-it serves **one room per D1 database** (rooms don't see each other's writes — the
-fan-out is the room's own `/write` path, and D1 has no change feed; cross-room
-sharing is the v2 Postgres/WAL story); it is **structured-only** (a schema-less
-collection is a configuration error at `init()` — blob/uncontrolled is mode 0,
-embedded-only, §1); and, as with any remote database, a POST
-that D1 commits just before the DO dies leaves a committed-but-unacked row that a
-retry of the same insert will 409 on — every other client still converges via
-oplog replay on reconnect.
+serializer and holds no adapter state of its own. Postgres is the *smaller* port,
+not the larger: with real interactive transactions the shape is the embedded
+adapter's — apply, decode the `RETURNING` row in JS, append the log, all inside one
+`BEGIN…COMMIT` — so the only new parts are the dialect (`$n` placeholders, native
+bool/`jsonb` codec, `BIGSERIAL` seq) and a single lazily-connected client from the
+DO; constraint rejection classifies on the structured SQLSTATE + constraint name
+the driver reports, not a message regex. Three documented trade-offs shared by the
+remote targets (D1 and Postgres): each serves **one room per database** (rooms don't
+see each other's writes — the fan-out is the room's own `/write` path, and neither
+target's v1 rung tails a change feed; cross-room sharing is the v2 Postgres/WAL
+story); both are **structured-only** (a schema-less collection is a configuration
+error at `init()` — blob/uncontrolled is mode 0, embedded-only, §1); and, as with
+any remote database, a POST that commits just before the DO dies leaves a
+committed-but-unacked row that a retry of the same insert will 409 on — every other
+client still converges via oplog replay on reconnect.
 
 **v2 — all DB ops, via the WAL.** The real shift: instead of covering only what
 comes through `/write`, we tail Postgres's logical replication and fan out *every*

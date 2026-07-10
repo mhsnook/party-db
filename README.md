@@ -44,7 +44,8 @@ app with modern/realtime UX) will write `coll.insert()` in one place, and read
 `const { data } = useLiveQuery(...)` in another place — another component or
 another machine entirely!
 
-**As of today** we support the first two modes, transparent and RDBMS.
+**As of today** we support the first two modes plus the Postgres write path:
+transparent, RDBMS, and Postgres CRUD.
 
  - Milestone 0: **Transparent mode:** clients hold collection schemas but the server passes write
    messages through transparently; no auth
@@ -52,11 +53,16 @@ another machine entirely!
    the authoritative and historical copy of the database in SQLite — embedded in the
    Durable Object **or** in D1. Includes
 	auth, global seq, transactions, snapshot+backfill.
+ - Milestone 2a: **Postgres write path (shipped):** the same RDBMS mode, now against a
+   real Postgres — CRUD + `RETURNING`, the `_oplog` beside your data, `?since` deltas,
+   SQLSTATE constraint errors, identical wire contract. What's *not* yet live: writes
+   that bypass `/write` (cron, other services, trigger side-effects) — those need the WAL.
 
 **Future**
 
-- Milestone 2: **Postgres mode:** everything above, but working on postgres.
-  Plus: RPCs, RLS (protecting writes), global WAL, table-sharing config, user-protected tables.
+- Milestone 2b: **Postgres, all DB ops:** everything above, plus the global WAL as the
+  stream (out-of-band writes fan out live), RPCs, RLS (protecting writes),
+  table-sharing config, user-protected tables.
 - Milestone 3: **Not just a party anymore:** query slicing, RLS-in-JS -- most apps
   don't work as parties, you need to filter content by more than just public-or-userID.
 - Far Future: **Codegen mode:** build the entire system from a DB string or schemas, live
@@ -198,9 +204,12 @@ pnpm test:pg && pnpm test:integration
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write`, behind a `PersistenceAdapter` |
 | `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |
-| `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1) |
+| `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1 ↔ Postgres) |
 | `src/server/sqlite-adapter.ts` | `SqliteAdapter` — structured CRUD + `RETURNING`; blob fallback |
-| `src/server/columns.ts` | schema → injection-safe column allowlist + value codec |
+| `src/server/d1-adapter.ts` | `D1Adapter` — the same, in your D1 (one atomic `batch()`) |
+| `src/server/pg-adapter.ts` | `PgAdapter` — the same, in your Postgres (one `BEGIN…COMMIT`) |
+| `src/server/statements.ts` | shared SQL builders; `toPg` renders `?` → `$n` for Postgres |
+| `src/server/columns.ts` | schema → injection-safe column allowlist + value codec (SQLite + PG) |
 
 Settled decisions and their rationale live in [`architecture.md`](./docs/architecture.md);
 open questions and not-yet-built modes in [`unspecified.md`](./docs/unspecified.md).

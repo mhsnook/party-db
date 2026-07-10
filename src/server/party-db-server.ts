@@ -147,6 +147,12 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
         // else (missing table, adapter bug) is an internal fault: log the detail
         // server-side and keep the response generic, or we'd echo schema internals
         // to any writer and mislabel 500-class faults as data rejections.
+        //
+        // The adapter classifies first if it can (Postgres reads SQLSTATE +
+        // constraint name off the error); adapters without their own classifier
+        // (embedded + D1) fall through to the SQLite-message regex, unchanged.
+        const rejection = this.adapter.classifyError?.(e)
+        if (rejection) return Response.json(rejection satisfies WriteReject, { status: 409 })
         if (isConstraintError(e)) {
           return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
         }

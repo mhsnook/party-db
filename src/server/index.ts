@@ -4,3 +4,4 @@ export { authHooks, bearer, getTokenFromRequest, type AuthContext, type AuthDeci
 export type { PersistenceAdapter } from './persistence.ts'
 export { SqliteAdapter, type SqlEngine, type SqlResult } from './sqlite-adapter.ts'
 export { D1Adapter, type D1AdapterOptions } from './d1-adapter.ts'
+export { PgAdapter, type PgAdapterOptions, type PgClient, type PgConnect } from './pg-adapter.ts'

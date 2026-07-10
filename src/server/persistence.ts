@@ -9,7 +9,7 @@
 // serializes its write → seq → broadcast section (see PartyDbServer) to keep the
 // ordering total even when the apply itself awaits.
 
-import type { SequencedBatch, WriteBatch } from '../protocol.ts'
+import type { SequencedBatch, WriteBatch, WriteReject } from '../protocol.ts'
 
 export interface PersistenceAdapter {
   // ensure our own infrastructure exists (the _oplog; the blob tables we own for
@@ -31,4 +31,12 @@ export interface PersistenceAdapter {
   // away), so the caller must send a fresh snapshot instead of a gappy delta. An
   // empty array is a complete delta (the client missed nothing).
   replaySince(since: number): Promise<SequencedBatch[] | null>
+
+  // Optional: turn a `write()` failure into the client-facing rejection (→ 409),
+  // or return `null` to let the server treat it as an internal fault (→ 500). Each
+  // engine knows how it phrases a constraint violation — Postgres has a structured
+  // SQLSTATE + constraint name, strictly better than a message regex — so
+  // classification belongs with the dialect. Adapters that omit this fall back to
+  // the server's built-in SQLite-message classifier (embedded + D1).
+  classifyError?(e: unknown): WriteReject | null
 }

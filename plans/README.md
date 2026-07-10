@@ -26,7 +26,7 @@ update your row when done.
 | 013 | DESIGN: server-side validation gate (Zod error-sooner + insert/update schemas) | P2 | M | 011 (type threading) | TODO |
 | 014 | D1 adapter — second v1 persistence target (one `batch()` commits data + oplog + seq; `?since` preserved) | P1 | M | 001–004, 006 (**003, 004 hard**) | DONE |
 | 015 | Postgres harness — real PG in CI (`wal_level=logical`) + workerd connectivity spike | P1 | M | — | DONE |
-| 016 | PostgresAdapter — mode 3 first rung (v1 semantics, oplog beside the data, SQLSTATE classification) | P1 | L | **015 (hard)** | TODO |
+| 016 | PostgresAdapter — mode 3 first rung (v1 semantics, oplog beside the data, SQLSTATE classification) | P1 | L | **015 (hard)** | DONE |
 | 017 | Access policies — RLS in the JS layer (A: cookbook 5 string policies · B: cookbook 6 expression rules) | P1 | L | — (coordinate 011, 016) | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
