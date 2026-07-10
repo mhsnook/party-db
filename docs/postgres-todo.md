@@ -101,33 +101,45 @@ payload, not less:
 > Then the write path (§1), then the tail (§2), then settlement over the two
 > (§3). RPC (§4) and per-user rules (§5) build on that core loop.
 
-### 0. Tooling: a real Postgres in tests — **P0** ❌
+### 0. Tooling: a real Postgres in tests — **P0** ✅ (plan 015)
 
-- [ ] **Integration harness against real Postgres** (docker / testcontainers in
-      CI). PGlite is not enough: we need `wal_level=logical`, replication slots,
-      and `pgoutput` with `messages=true`. Unit-test the WAL *decoder* against
-      recorded/fixture message streams so most tests don't need a live tail.
-- [ ] **Pick the driver + connection story from a DO.** A DO can open raw TCP
-      (`connect()`); Hyperdrive is the idiomatic pooler for query traffic. The
-      *replication* connection is a different beast (long-lived, `START_REPLICATION`
-      protocol) — see the deployment question in §7.
+- [x] **Integration harness against real Postgres** (docker in CI, plus a local
+      one-liner). `postgres:17-alpine` runs with `wal_level=logical` from day one,
+      so the replication slots / `pgoutput` the WAL rung needs change no
+      infrastructure. Two lanes: node-side (`pnpm test:pg`) for fast driver checks,
+      workerd-side for the real DO→PG path; both skip cleanly without a PG. The WAL
+      *decoder* still wants fixture-stream unit tests when §2 starts.
+- [x] **Driver + connection story from a DO.** `pg` (node-postgres) connects from a
+      DO over `cloudflare:sockets` (via `nodejs_compat`) cleanly; postgres.js also
+      connects but leaks an unhandled rejection on teardown. Hyperdrive is the
+      idiomatic pooler for production query traffic. The *replication* connection
+      is still a different beast (long-lived, `START_REPLICATION`) — see §7.
 
-### 1. `PostgresAdapter` — the write path — **P0** ❌
+### 1. `PostgresAdapter` — the write path — **P0** 🟡 (v1 write path landed, plan 016)
 
-Same contract as `SqliteAdapter`, new target. The DB-is-the-authority rules from
-v1 (architecture §5) apply verbatim:
+Same contract as `SqliteAdapter`, new target — landed as `PgAdapter`
+(`src/server/pg-adapter.ts`). The DB-is-the-authority rules from v1 (architecture
+§5) apply verbatim. The v1 rung is done; the two WAL-coupled items below stay open
+for rung 2.
 
-- [ ] **CRUD against typed columns** — distinct `INSERT`/`UPDATE`/`DELETE`, whole
-      POST in one transaction, `RETURNING *` for the preview rows. Injection-safe
-      by construction: values bound with placeholders, identifiers only from the
-      schema allowlist (`assertIdent`/`columnsOf` carry over).
+- [x] **CRUD against typed columns** — distinct `INSERT`/`UPDATE`/`DELETE`, whole
+      POST in one `BEGIN…COMMIT`, `RETURNING *` for the resolved rows (decoded in JS
+      — interactive transactions, no in-SQL JSON like D1). Injection-safe by
+      construction: values bound as `$n` placeholders (`toPg`), identifiers only
+      from the schema allowlist (`assertIdent`/`columnsOf` carry over). The `_oplog`
+      is `BIGSERIAL`/`JSONB` beside the data; `?since` deltas + floor→reset identical
+      to the other modes. Rollback burns but does not emit a seq (gaps are normal).
 - [ ] **Emit the `wid` correlation message** (`pg_logical_emit_message`) inside
-      every `/write` transaction, so the tail can attribute the echo (§3).
-- [ ] **Constraint-error reporting** — map Postgres SQLSTATE + constraint name
-      into the existing `WriteReject` (409) shape; same faithful-verdict rule.
+      every `/write` transaction, so the tail can attribute the echo (§3). *Rung 2 —
+      the v1 rung's echo is the `RETURNING` oplog, no `wid` yet.*
+- [x] **Constraint-error reporting** — the adapter's `classifyError` maps Postgres
+      SQLSTATE class `23…` + the constraint name into the `WriteReject` (409) shape;
+      the server consults it ahead of the SQLite-message regex, which embedded/D1
+      keep. Classification now lives with the dialect, per plan 006's follow-through.
 - [ ] **Cross-target atomicity guard.** A single TanStack transaction spanning
       collections on *different* persistence targets can't be atomic — reject (or
-      at minimum warn) rather than half-commit.
+      at minimum warn) rather than half-commit. *Not rung 1 — one adapter per room
+      today.*
 - [ ] *(variant, P2)* **PostgREST as the write shell.** Where direct SQL isn't
       available (hosted Supabase without a pooler, etc.), `/write` can translate
       WriteEvents → PostgREST calls (`Prefer: return=representation`). Same

@@ -58,12 +58,18 @@ export type Statement = { sql: string; binds: unknown[] }
 // are distinct statements (not a blanket upsert) so the database's own constraints
 // get to accept or reject. insert/update use RETURNING * to hand back the resolved
 // row (defaults, serials, generated columns); delete needs no read.
-export function structuredStmt(plan: StructuredPlan, op: WriteEvent): Statement {
+//
+// `enc` is the value codec: the default SQLite `encode` (booleans → 0/1, json →
+// text). The PG adapter passes `pgEncode` instead (native booleans, json as text
+// PG casts) — the ONE dialect difference on the bind side. Identifiers and SQL
+// shape are engine-agnostic; the `?` placeholders are rewritten to `$1…$n` by
+// `toPg` for PG.
+export function structuredStmt(plan: StructuredPlan, op: WriteEvent, enc: (v: unknown) => unknown = encode): Statement {
   const row = op.value as Record<string, unknown>
   const table = plan.name
 
   if (op.type === 'delete') {
-    return { sql: `DELETE FROM "${table}" WHERE "${plan.key}" = ?`, binds: [encode(row[plan.key])] }
+    return { sql: `DELETE FROM "${table}" WHERE "${plan.key}" = ?`, binds: [enc(row[plan.key])] }
   }
 
   if (op.type === 'update') {
@@ -73,10 +79,10 @@ export function structuredStmt(plan: StructuredPlan, op: WriteEvent): Statement 
     return set.length
       ? {
           sql: `UPDATE "${table}" SET ${set.map((c) => `"${c.name}" = ?`).join(', ')} WHERE "${plan.key}" = ? RETURNING *`,
-          binds: [...set.map((c) => encode(row[c.name])), encode(row[plan.key])],
+          binds: [...set.map((c) => enc(row[c.name])), enc(row[plan.key])],
         }
       : // a no-op update (only the key present): just read the current row back.
-        { sql: `SELECT * FROM "${table}" WHERE "${plan.key}" = ?`, binds: [encode(row[plan.key])] }
+        { sql: `SELECT * FROM "${table}" WHERE "${plan.key}" = ?`, binds: [enc(row[plan.key])] }
   }
 
   // insert: name only the columns present in the payload, so columns the client
@@ -84,8 +90,17 @@ export function structuredStmt(plan: StructuredPlan, op: WriteEvent): Statement 
   const cols = plan.cols.filter((c) => row[c.name] !== undefined)
   return {
     sql: `INSERT INTO "${table}" (${cols.map((c) => `"${c.name}"`).join(', ')}) VALUES (${cols.map(() => '?').join(', ')}) RETURNING *`,
-    binds: cols.map((c) => encode(row[c.name])),
+    binds: cols.map((c) => enc(row[c.name])),
   }
+}
+
+// Rewrite a `?`-placeholder statement (what the builders emit) into Postgres'
+// `$1…$n` positional form. Our builders only ever emit `?` as a value placeholder
+// — every value is bound, never inlined, and identifiers are double-quoted — so a
+// straight left-to-right substitution is exact (no `?` hides inside a literal).
+export function toPg(sql: string): string {
+  let i = 0
+  return sql.replace(/\?/g, () => `$${++i}`)
 }
 
 // v0 blob store: one JSON row per PK. The resolved row equals the sent row.
@@ -105,14 +120,24 @@ export function blobStmt(plan: BlobPlan, op: WriteEvent): Statement {
 // row-hitting update decode the RETURNING row (defaults/serials applied); an update
 // that hit no row and a delete echo the sent value. This is the JS side of what
 // `resolvedOpJsonExpr` reproduces in SQL — the two must agree (parity test).
-export function resolveStructured(plan: StructuredPlan, op: WriteEvent, rows: Record<string, unknown>[]): WriteEvent {
+//
+// `dec` decodes a RETURNING row → its schema shape; the default is the SQLite
+// `decodeRow`. The PG adapter passes `pgDecodeRow` (native booleans, json already
+// parsed by the driver). insert/update decode the returned row; a missed update
+// and a delete echo the sent value with no decode.
+export function resolveStructured(
+  plan: StructuredPlan,
+  op: WriteEvent,
+  rows: Record<string, unknown>[],
+  dec: (row: Record<string, unknown>, kinds: Map<string, ColumnKind>) => Record<string, unknown> = decodeRow,
+): WriteEvent {
   const row = op.value as Record<string, unknown>
   if (op.type === 'delete') return { type: 'delete', value: row }
   if (op.type === 'update') {
     const resolved = rows[0]
-    return { type: 'update', value: resolved ? decodeRow(resolved, plan.kinds) : row, previousValue: op.previousValue }
+    return { type: 'update', value: resolved ? dec(resolved, plan.kinds) : row, previousValue: op.previousValue }
   }
-  return { type: 'insert', value: decodeRow(rows[0], plan.kinds) }
+  return { type: 'insert', value: dec(rows[0], plan.kinds) }
 }
 
 // The SQL mirror of `decode` for one column, as a `json_object` value expression:

@@ -108,3 +108,40 @@ export function decodeRow(
   for (const [k, v] of Object.entries(row)) out[k] = decode(v, kinds.get(k) ?? 'scalar')
   return out
 }
+
+// The Postgres value codec. Postgres has native types where SQLite has only its
+// narrow set, so this codec is thinner than the SQLite one above — the difference
+// is the whole "dialect seam" the PG adapter needs, kept beside its SQLite sibling
+// rather than forked into the adapter.
+
+// JS value → a Postgres bind. Unlike SQLite's `encode`, booleans stay NATIVE (PG
+// has a real bool type — no 0/1) and objects/arrays are JSON.stringify'd once so
+// they bind as text PG casts into json/jsonb — binding a raw JS array would
+// otherwise be read as a Postgres array, not JSON. Strings/numbers pass through;
+// undefined/null → null.
+export function pgEncode(value: unknown): unknown {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'object') return JSON.stringify(value)
+  return value
+}
+
+// A Postgres RETURNING value → its schema shape. The driver already hands back
+// native types (a real boolean, and json/jsonb pre-parsed to a JS value), so
+// unlike SQLite's `decode` there's no 0/1 or JSON text to reverse: we only
+// normalize null/undefined and coerce booleans defensively. Scalars — including a
+// bigint column, which the driver returns as a string — pass through as the driver
+// gave them.
+export function pgDecode(raw: unknown, kind: ColumnKind): unknown {
+  if (raw === null || raw === undefined) return null
+  if (kind === 'boolean') return Boolean(raw)
+  return raw
+}
+
+export function pgDecodeRow(
+  row: Record<string, unknown>,
+  kinds: Map<string, ColumnKind>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(row)) out[k] = pgDecode(v, kinds.get(k) ?? 'scalar')
+  return out
+}
