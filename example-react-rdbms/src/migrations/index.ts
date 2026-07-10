@@ -9,15 +9,14 @@
 
 import createTodos from './001_create_todos.ts'
 
-// D1 (env.DB), typed structurally so this module needs no workers-types. We run DDL
-// via prepare().run() rather than D1's exec(), because exec splits its input on
-// newlines and our migrations are multi-line.
-export interface Migrator {
-  prepare(query: string): { run(): Promise<unknown> }
-}
-
 export const migrations: string[] = [createTodos]
 
-export async function migrate(db: Migrator): Promise<void> {
-  for (const stmt of migrations) await db.prepare(stmt).run()
+// Apply the migrations against whichever engine is active — the caller passes a
+// runner that executes one statement. Embedded DO-SQLite is synchronous
+// (`ctx.storage.sql.exec`); D1 is async (`prepare(sql).run()`). We `await` the
+// result either way (awaiting a non-promise is a no-op), so one migrate() serves
+// both targets. (Note: D1's `exec()` splits on newlines, which is why the D1
+// runner uses `prepare().run()` for our multi-line DDL — see server.ts.)
+export async function migrate(run: (sql: string) => unknown | Promise<unknown>): Promise<void> {
+  for (const stmt of migrations) await run(stmt)
 }

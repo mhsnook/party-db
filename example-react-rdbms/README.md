@@ -8,8 +8,9 @@ things v1 adds wired in:
    instead of the schemaless `(key, data)` blob the other examples use. The table
    *and* party-db's `_oplog` both live in your D1 database, so other services, jobs,
    or dashboards can read the same rows directly — the Durable Object stays the room
-   server but holds no data of its own. (Persisting to the DO's own embedded SQLite
-   instead is a one-line change — see the server below.)
+   server but holds no data of its own. **D1 vs. the DO's own embedded SQLite is a
+   config switch, not a code change** — flip it in `wrangler.jsonc` (see
+   [Switching persistence](#switching-persistence)).
 2. **Auth.** Reads are open to everyone (in this example), but **writing needs a password**
    (`s3cret`). Try to add, toggle, or delete a todo and you'll get an unlock
    prompt; enter the password and the write goes through.
@@ -44,15 +45,17 @@ export class Main extends PartyDbServer {
   // share the schema so writes CRUD into REAL columns, not a blob
   collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
 
-  // persist into D1 (env.DB) instead of the DO's own SQLite. Delete this one
-  // method to fall back to embedded SQLite — nothing else changes.
+  // the storage target is a runtime switch: a D1 binding → D1, else embedded SQLite.
   createAdapter(): PersistenceAdapter {
-    return new D1Adapter(this.env.DB, this.collections, { oplogRetention: this.oplogRetention })
+    return this.env.DB
+      ? new D1Adapter(this.env.DB, this.collections, { oplogRetention: this.oplogRetention })
+      : super.createAdapter() // the DO's own embedded SQLite (the default)
   }
 
-  // bring your own DB — here it's D1, and D1 DDL is async, so await it.
+  // apply the migration against whichever engine is active (D1 DDL is async).
   async onStart() {
-    await migrate(this.env.DB)
+    const db = this.env.DB
+    await migrate(db ? (sql) => db.prepare(sql).run() : (sql) => this.ctx.storage.sql.exec(sql))
     return super.onStart()
   }
 }
@@ -71,12 +74,24 @@ export default {
 }
 ```
 
-`createAdapter()` is the whole swap: the default persists into the DO's embedded
-SQLite; returning a `D1Adapter` over the `DB` binding sends the data (and the
-`_oplog`) to D1 instead. The DO is still the room's serializer and socket — it just
-holds no persistent state of its own. **Scope note:** the fan-out source is the
-room's own `/write` path, so this is **one room per D1 database** (D1 has no change
-feed; cross-room sharing is the v2 Postgres story).
+`createAdapter()` reads `env.DB`: with the `DB` binding configured it returns a
+`D1Adapter` (data and the `_oplog` go to D1); with no binding it defers to
+`super.createAdapter()`, the DO's embedded SQLite. The DO is still the room's
+serializer and socket either way — it just holds no persistent state of its own in
+D1 mode. **Scope note:** the fan-out source is the room's own `/write` path, so D1
+mode is **one room per D1 database** (D1 has no change feed; cross-room sharing is
+the v2 Postgres story).
+
+### Switching persistence
+
+The choice is `env.DB`'s presence, so you flip it in `wrangler.jsonc` — no code
+change:
+
+- **D1** (the default here): keep the `d1_databases` binding. `wrangler dev`
+  simulates it locally; deploy needs a real database (below).
+- **Embedded DO SQLite**: comment the `d1_databases` block out. `env.DB` is then
+  `undefined`, `createAdapter()` falls to `super`, and the migration runs against
+  `ctx.storage.sql`. Nothing else — client, schema, auth, the wire — changes.
 
 The auth runs in the worker before the request reaches the Durable Object, so
 a rejected connect is refused before the WebSocket upgrade and a rejected write

@@ -7,12 +7,15 @@
   "durable_objects": {
     "bindings": [{ "name": "Main", "class_name": "Main" }]
   },
-  // the DO still needs its own SQLite storage (partyserver uses it for the
-  // hibernatable WebSocket bookkeeping); the room's DATA just goes to D1 below.
+  // the DO always keeps its own SQLite storage (partyserver uses it for the
+  // hibernatable WebSocket bookkeeping, and it's the fallback data store when no D1
+  // binding is present).
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Main"] }],
-  // the D1 database the room persists into — the `todos` table and party-db's
-  // `_oplog` both live here. `wrangler dev` simulates it locally (the id below is a
-  // placeholder); to DEPLOY, run `wrangler d1 create party-db-example-rdbms` and
+  // THE PERSISTENCE SWITCH. With this `d1_databases` block, the room persists into
+  // D1 — the `todos` table and party-db's `_oplog` both live here. Comment the whole
+  // block out and the room falls back to the DO's embedded SQLite (env.DB is then
+  // undefined; see src/server.ts). `wrangler dev` simulates D1 locally (the id below
+  // is a placeholder); to DEPLOY, run `wrangler d1 create party-db-example-rdbms` and
   // paste the returned database_id here. One room per D1 database (see README).
   "d1_databases": [
     { "binding": "DB", "database_name": "party-db-example-rdbms", "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID" }
