@@ -65,7 +65,7 @@ another machine entirely!
 
 **Examples:**
 
-- [React + D1](./example-react-rdbms/README.md) (RDBMS mode on D1 + auth, from Milestone 1)
+- [React + RDBMS](./example-react-rdbms/README.md) (structured SQLite/D1 + auth, from Milestone 1)
 - [React · Polyglot](./example-react-polyglot/README.md) (🚧 public catalog + per-user
 collections — the API-first scaffold for [cookbook 05](./docs/cookbooks/05-public-and-private-collections.md))
 - [React](./example-react/README.md) (`App.tsx` + `server.ts`,
