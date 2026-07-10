@@ -9,9 +9,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
 
-    # Reachable by both pg lanes (plan 015): the node lane reads PG_URL directly,
-    # the integration config forwards it into miniflare as the worker's PG_URL
-    # binding. Points at the disposable Postgres started below.
+    # Reachable by both pg lanes: the node lane reads PG_URL directly, the
+    # integration config forwards it into miniflare as the worker's PG_URL binding.
+    # Points at the disposable Postgres started below.
     env:
       PG_URL: postgres://postgres:postgres@localhost:5432/party_db_test
 

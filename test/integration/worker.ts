@@ -93,10 +93,9 @@ const authorize = (req: Request, { kind, party }: AuthContext) => {
 
 export default {
   async fetch(req: Request, env: unknown): Promise<Response> {
-    // Test-only endpoint (plan 015): prove a Postgres driver can open a TCP
-    // connection to a real PG from inside the workers pool — the one genuinely
-    // uncertain premise plan 016's integration lane rests on. Kept off the party
-    // routing path so it can't collide with a room name.
+    // Test-only endpoint: prove a Postgres driver can open a TCP connection to a
+    // real PG from inside the workers pool. Kept off the party routing path so it
+    // can't collide with a room name.
     const url = new URL(req.url)
     if (url.pathname === '/__pg-probe') return pgProbe((env as { PG_URL: string }).PG_URL)
     return (await routePartykitRequest(req, env as never, authHooks(authorize))) ?? new Response('not found', { status: 404 })
@@ -108,8 +107,8 @@ export default {
 // workerd matches the node lane. `pg` drives `node:net`/`node:tls`, which
 // `nodejs_compat` maps onto `cloudflare:sockets`; postgres.js also connects here
 // but its CF socket polyfill leaks an unhandled "Stream was cancelled" rejection
-// on teardown (recorded for plan 016). All work happens in this one request so
-// the socket's lifetime is bounded.
+// on teardown. All work happens in this one request so the socket's lifetime is
+// bounded.
 async function pgProbe(pgUrl: string): Promise<Response> {
   const { default: pg } = await import('pg')
   const client = new pg.Client({ connectionString: pgUrl })

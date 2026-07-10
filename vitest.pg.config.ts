@@ -6,10 +6,10 @@ import { defineConfig } from 'vitest/config'
 // pays for it and contributors without a PG keep getting green runs: every suite
 // here `describe.skipIf`s on an unset `PG_URL`.
 //
-// These are the fast node-side driver checks that answer plan 016's open
-// questions (constraint error shape, per-column-kind type round-trips). The
-// workerd-side DO→PG connectivity spike lives in the integration suite instead
-// (test/integration/pg-connect.test.ts), where a real miniflare worker runs.
+// These are the fast node-side driver checks (constraint error shape,
+// per-column-kind type round-trips). The workerd-side DO→PG connectivity check
+// lives in the integration suite instead (test/integration/pg-connect.test.ts),
+// where a real miniflare worker runs.
 export default defineConfig({
   test: {
     include: ['test/pg/**/*.test.ts'],

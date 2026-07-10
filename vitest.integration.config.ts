@@ -27,8 +27,8 @@ export default defineConfig({
         // into (data + _oplog both live here). The value is miniflare's database id.
         d1Databases: { DB: 'party-db-d1-test' },
         // The Postgres connection string, forwarded from the CI/local env into the
-        // worker so the pg-connectivity spike (plan 015) can reach a real PG over
-        // TCP. Unset when no PG is running — that suite skips on the empty string.
+        // worker so the pg-connect test can reach a real PG over TCP. Unset when no
+        // PG is running — that suite skips on the empty string.
         bindings: { PG_URL: process.env.PG_URL ?? '' },
       },
     }),
