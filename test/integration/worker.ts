@@ -93,6 +93,39 @@ const authorize = (req: Request, { kind, party }: AuthContext) => {
 
 export default {
   async fetch(req: Request, env: unknown): Promise<Response> {
+    // Test-only endpoint (plan 015): prove a Postgres driver can open a TCP
+    // connection to a real PG from inside the workers pool — the one genuinely
+    // uncertain premise plan 016's integration lane rests on. Kept off the party
+    // routing path so it can't collide with a room name.
+    const url = new URL(req.url)
+    if (url.pathname === '/__pg-probe') return pgProbe((env as { PG_URL: string }).PG_URL)
     return (await routePartykitRequest(req, env as never, authHooks(authorize))) ?? new Response('not found', { status: 404 })
   },
+}
+
+// Connect with node-postgres (`pg`), run `SELECT 1` and one parameterized
+// `INSERT … RETURNING`, and report the resolved JS types so the test can assert
+// workerd matches the node lane. `pg` drives `node:net`/`node:tls`, which
+// `nodejs_compat` maps onto `cloudflare:sockets`; postgres.js also connects here
+// but its CF socket polyfill leaks an unhandled "Stream was cancelled" rejection
+// on teardown (recorded for plan 016). All work happens in this one request so
+// the socket's lifetime is bounded.
+async function pgProbe(pgUrl: string): Promise<Response> {
+  const { default: pg } = await import('pg')
+  const client = new pg.Client({ connectionString: pgUrl })
+  try {
+    await client.connect()
+    const one = await client.query('SELECT 1 AS n')
+    // a throwaway per-connection temp table keeps the probe self-contained and
+    // avoids cross-test contamination on the shared PG.
+    await client.query('CREATE TEMP TABLE pg_probe (id serial PRIMARY KEY, flag boolean NOT NULL, big bigint)')
+    const ins = await client.query('INSERT INTO pg_probe (flag, big) VALUES ($1, $2) RETURNING *', [true, '9007199254740993'])
+    const row = ins.rows[0]
+    const types = Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v]))
+    return Response.json({ ok: true, select1: one.rows[0].n, row, types })
+  } catch (e) {
+    return Response.json({ ok: false, error: String((e as Error)?.message ?? e), name: (e as Error)?.name }, { status: 500 })
+  } finally {
+    await client.end()
+  }
 }

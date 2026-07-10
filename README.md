@@ -159,6 +159,31 @@ tx.mutate(() => {
 await tx.isPersisted.promise // both land in one POST, or neither does
 ```
 
+## Testing
+
+| Command | Runs |
+| --- | --- |
+| `pnpm test` | fast node unit suite — no external services |
+| `pnpm test:integration` | the real DO/WebSocket path inside workerd (miniflare) |
+| `pnpm test:pg` | Postgres driver checks (node + workerd lanes) — needs a Postgres |
+
+The `pnpm test:pg` lane (and the `pg-connect` integration test) talk to a **real
+Postgres** over `PG_URL`. Without it they **skip**, so a plain `pnpm test` /
+`pnpm test:integration` never fails for want of Docker. To run them locally, start
+the same pinned Postgres CI uses and point `PG_URL` at it:
+
+```sh
+docker run --rm -d --name party-db-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=party_db_test \
+  -p 5432:5432 postgres:17-alpine -c wal_level=logical
+
+export PG_URL=postgres://postgres:postgres@localhost:5432/party_db_test
+pnpm test:pg && pnpm test:integration
+```
+
+`wal_level=logical` is set from day one — it costs nothing and the v2 WAL story
+([`postgres-todo.md`](./docs/postgres-todo.md)) needs it.
+
 ## Files
 
 | File | Role |

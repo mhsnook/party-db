@@ -8,8 +8,36 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    # Reachable by both pg lanes (plan 015): the node lane reads PG_URL directly,
+    # the integration config forwards it into miniflare as the worker's PG_URL
+    # binding. Points at the disposable Postgres started below.
+    env:
+      PG_URL: postgres://postgres:postgres@localhost:5432/party_db_test
+
     steps:
       - uses: actions/checkout@v4
+
+      # A disposable Postgres for the pg lanes. Started with `docker run` rather than
+      # a `services:` container because we need `-c wal_level=logical` — a command
+      # arg, which service containers can't pass. This is the SAME one-liner the
+      # README documents for local dev, so CI and local stay in lockstep; keep the
+      # pinned version (17-alpine) matching there. `wal_level=logical` costs nothing
+      # now and is what the eventual WAL/replication work (docs/postgres-todo.md)
+      # needs, so it's on from day one. Health-gated so a slow start can't flake.
+      - name: Start Postgres (wal_level=logical)
+        run: |
+          docker run -d --name party-db-pg \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=party_db_test \
+            -p 5432:5432 \
+            --health-cmd "pg_isready -U postgres" --health-interval 3s --health-timeout 5s --health-retries 20 \
+            postgres:17-alpine -c wal_level=logical
+          # block until the container reports healthy before any test step runs
+          for i in $(seq 1 40); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' party-db-pg)" = healthy ] && break
+            sleep 1
+          done
+          docker exec party-db-pg psql -U postgres -c "SHOW wal_level"
 
       # pnpm version comes from package.json's `packageManager` field.
       - uses: pnpm/action-setup@v4
@@ -28,5 +56,7 @@ jobs:
       - run: pnpm test
 
       - run: pnpm test:integration
+
+      - run: pnpm test:pg
 
       - run: pnpm publish --dry-run --no-git-checks
