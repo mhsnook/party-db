@@ -13,10 +13,10 @@
 // data, the log, and the AUTOINCREMENT seqs commit together or not at all — nothing
 // can tear, and `?since` deltas behave identically to embedded.
 //
-// D1 is structured-only: the modes are a ratchet (uncontrolled → DO-SQLite → D1 →
-// Postgres) and uncontrolled/blob mode stays an embedded-DO story. A collection
-// with no readable schema on a D1 room is a configuration error at init(), not a
-// blob table in someone's production database.
+// D1 is structured-only: uncontrolled/blob mode (mode 0 of the four persistence
+// modes) stays an embedded-DO story. A collection with no readable schema on a D1
+// room is a configuration error at init(), not a blob table in someone's
+// production database.
 
 import type { SequencedBatch, WriteBatch } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
