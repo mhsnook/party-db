@@ -6,12 +6,14 @@ import { routePartykitRequest } from 'partyserver'
 import {
   PartyDbServer,
   D1Adapter,
+  PgAdapter,
   definePartyCollection,
   authHooks,
   bearer,
   type AuthContext,
   type PartyCollection,
   type PersistenceAdapter,
+  type PgClient,
 } from '../../src/server/index.ts'
 import { z } from 'zod'
 
@@ -72,6 +74,50 @@ export class D1Room extends PartyDbServer {
     await this.env.DB.exec(
       `CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, rev INTEGER NOT NULL DEFAULT 1)`,
     )
+    return super.onStart()
+  }
+}
+
+// The same room persisting into a real Postgres (data + _oplog both in PG) — the
+// third v1 target, proving mode 3's write path end-to-end through a DO. Like
+// `D1Room` it overrides only `createAdapter()`; the transport is invariant. The
+// connection string arrives as the `PG_URL` binding; `pg` connects over
+// `cloudflare:sockets` (proven by the pg-connect spike). Small oplogRetention so
+// the stale-cursor reset path is reachable, mirroring the other rooms.
+export class PgRoom extends PartyDbServer {
+  collections: PartyCollection<any>[] = [todos]
+  oplogRetention = 50
+
+  protected createAdapter(): PersistenceAdapter {
+    // lazy factory: open + connect a fresh pg client on first use (and again if the
+    // adapter ever discards a bad connection). One room per Postgres database, so a
+    // single connection per DO is all we need.
+    return new PgAdapter(
+      async () => {
+        const { default: pg } = await import('pg')
+        const client = new pg.Client({ connectionString: this.env.PG_URL })
+        await client.connect()
+        return client as unknown as PgClient
+      },
+      this.collections,
+      { oplogRetention: this.oplogRetention },
+    )
+  }
+
+  // the app owns its table — here it lives in Postgres. Create it via a throwaway
+  // connection before super.onStart() runs the adapter's init() (which creates the
+  // _oplog through the adapter's own connection).
+  async onStart() {
+    const { default: pg } = await import('pg')
+    const client = new pg.Client({ connectionString: this.env.PG_URL })
+    await client.connect()
+    try {
+      await client.query(
+        `CREATE TABLE IF NOT EXISTS todos (id text PRIMARY KEY, text text NOT NULL, done boolean NOT NULL DEFAULT false, rev integer NOT NULL DEFAULT 1)`,
+      )
+    } finally {
+      await client.end()
+    }
     return super.onStart()
   }
 }
