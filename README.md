@@ -165,6 +165,27 @@ tx.mutate(() => {
 await tx.isPersisted.promise // both land in one POST, or neither does
 ```
 
+## onAuthError callback
+
+If a client connection makes it past the initial worker check (stateless auth check)
+into the durable object room, and _then_ gets rejected, the socket closes with a
+**1008** (policy violation). This is the one kind of disconnect that the PartySocket
+client _should not_ try to reconnect from. Client code may wish to notice this kind
+of close event and do something with it, such as showing a login challenge.
+
+Every other close code (1006 network, 1011 server, normal) keeps the default reconnect.
+
+```ts
+const { db, onAuthError } = createPartyDb(transport, [todos])
+onAuthError((err) => {
+  // err instanceof AuthError, err.code === 1008 — the socket is down for good.
+  redirectToLogin()
+})
+```
+
+The write (up) path already surfaces its own verdict: `transport.send` throws a
+`WriteError` carrying the `401` on a rejected POST.
+
 ## Testing
 
 | Command | Runs |
@@ -200,7 +221,7 @@ pnpm test:pg && pnpm test:integration
 | `src/client/seq-tracker.ts` | pure settlement: per-channel high-water mark, waiters, timeout |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
-| `src/client/errors.ts` | `WriteError` / `TransportError` — classified write failures |
+| `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` — classified write & auth failures |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write`, behind a `PersistenceAdapter` |
 | `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |

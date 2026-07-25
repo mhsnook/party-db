@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SequencedBatch } from '../src/protocol.ts'
+import { AuthError } from '../src/client/errors.ts'
 
 // A fake PartySocket: records constructor opts, lets the test fire 'message'
 // events, and exposes a static fetch() like the real default export.
@@ -152,6 +153,66 @@ describe('partyTransport send', () => {
       name: 'TransportError',
       cause,
     })
+  })
+})
+
+describe('partyTransport 1008 (policy violation) is terminal', () => {
+  const closeEvent = (code: number, reason = '') => ({ code, reason })
+
+  it('does not reconnect on a 1008 close (shouldReconnectOnClose returns false)', () => {
+    partyTransport({ host: 'example.com', room: 'r1' })
+    const { shouldReconnectOnClose } = lastSocket().opts
+    expect(shouldReconnectOnClose(closeEvent(1008))).toBe(false)
+  })
+
+  it('keeps the default reconnect for other close codes', () => {
+    partyTransport({ host: 'example.com', room: 'r1' })
+    const { shouldReconnectOnClose } = lastSocket().opts
+    // 1006 network, 1011 server, 1000 normal — all stay on the reconnect path.
+    expect(shouldReconnectOnClose(closeEvent(1006))).toBe(true)
+    expect(shouldReconnectOnClose(closeEvent(1011))).toBe(true)
+    expect(shouldReconnectOnClose(closeEvent(1000))).toBe(true)
+  })
+
+  it('surfaces an AuthError to onAuthError subscribers on a 1008 close', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: AuthError[] = []
+    transport.onAuthError?.((e) => seen.push(e))
+
+    lastSocket().emit('close', closeEvent(1008, 'not a member of this room'))
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toBeInstanceOf(AuthError)
+    expect(seen[0]).toMatchObject({ name: 'AuthError', code: 1008, message: 'not a member of this room' })
+  })
+
+  it('falls back to a default message when the 1008 close carries no reason', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: AuthError[] = []
+    transport.onAuthError?.((e) => seen.push(e))
+
+    lastSocket().emit('close', closeEvent(1008))
+    expect(seen[0].message).toMatch(/1008/)
+  })
+
+  it('does not surface an AuthError for non-1008 closes', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: AuthError[] = []
+    transport.onAuthError?.((e) => seen.push(e))
+
+    lastSocket().emit('close', closeEvent(1006))
+    lastSocket().emit('close', closeEvent(1011))
+    expect(seen).toEqual([])
+  })
+
+  it('stops delivering after onAuthError is unsubscribed', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: AuthError[] = []
+    const off = transport.onAuthError?.((e) => seen.push(e))
+    off?.()
+
+    lastSocket().emit('close', closeEvent(1008))
+    expect(seen).toEqual([])
   })
 })
 

@@ -4,6 +4,7 @@
 
 import { applyBatch, type ChannelSink } from './apply.ts'
 import { SeqTracker, type CursorCompare } from './seq-tracker.ts'
+import type { AuthError } from './errors.ts'
 import type { Cursor, SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
 
 // A transport is just "a stream coming down" + "a way to push writes up".
@@ -13,6 +14,9 @@ export type Transport = {
   subscribe: (onBatch: (batch: SequencedBatch) => void) => () => void
   send: (batches: WriteBatch[]) => Promise<WriteAck>
   isConnecting?: () => boolean
+  // we don't auto-reconnect when the down-stream is closed for auth (1008); this
+  // hands that verdict to the app instead. Returns an unsubscribe.
+  onAuthError?: (listener: (error: AuthError) => void) => () => void
 }
 
 export type SyncClientOptions = {
