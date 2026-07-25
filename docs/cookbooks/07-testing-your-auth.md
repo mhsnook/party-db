@@ -14,18 +14,20 @@ write. Knowing which is which tells you what your test can rely on:
 
 - `authHooks(authorize)`, `getTokenFromRequest(req)`, `bearer(req)` — functions you import.
 - `Authorize`, `AuthContext`, `AuthDecision`, `AuthKind` — the types your `authorize` is written against; [`WriteReject`](../../src/protocol.ts) — the rejected-write body.
-- **Guaranteed behavior:** a request `authHooks` gates and `authorize` rejects is refused at the *lobby*, before the DO wakes — a `401` with **no** WebSocket upgrade on connect, a `401` `WriteReject` on write. This is what your assertions lean on, and it holds for any `authorize` you write.
+- **Guaranteed behavior:** a request `authHooks` gates and `authorize` rejects is refused at the *lobby*, before the DO wakes — a `401` with **no** WebSocket upgrade on connect, a `401` `WriteReject` on write. Holds for any `authorize` you write.
+- **Token placement:** party-db owns the client, so *it* sends the credential — `?token=` on the WS connect (a browser can't set headers on an upgrade), `Authorization: Bearer` on the POST — and `getTokenFromRequest` reads both. You supply the token's *value* and verify it; you don't choose where it rides.
 
 **Convention — our shape, but just JavaScript; diverge and your test follows you:**
 
 - Gating at the lobby via `authHooks`. (Auth that needs per-room DO *state* is a separate, in-object concern — a different pattern, so a different test.)
-- Token *placement*: `?token=` on the WS connect (a browser can't set headers on an upgrade), `Authorization: Bearer` on the POST. party-db's client sends them there and `getTokenFromRequest` reads both — the placement is ours, the token value and its verification are yours.
-- What `authorize` actually checks (a JWT, a session, a password), and testing with `SELF.fetch` + [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/), one room per test.
+- What `authorize` verifies — a JWT, a session, a password.
+- Testing with `SELF.fetch` + [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/), one room per test.
 
 party-db rejects unauthorized requests the same way no matter what `authorize`
 checks, so the assertions below (`401`, no `webSocket`, `WriteReject`) work for any
-gate — no client, no browser. The one thing you'd change: if your token doesn't
-ride in `?token=`/`Bearer`, send it however you do in the test. ✅
+gate — no client, no browser. And the test sends the token in `?token=`/`Bearer`
+because that's exactly what party-db's client sends — the test is standing in for
+it. ✅
 
 This assumes a worker that gates both doors, like [recipe 3](./03-external-auth-workos.md)
 or [recipe 4](./04-public-read-private-write.md). Swap `TOKEN` for a valid
@@ -39,8 +41,8 @@ import { SELF } from 'cloudflare:test'
 // a valid credential your authorize() accepts; a real test mints/signs this
 const TOKEN = 's3cret'
 
-// Build a room URL. Token placement is party-db's convention: it rides in ?token=
-// on the connect (a browser WS upgrade can't set headers), Bearer on the POST.
+// Build a room URL. This mirrors what party-db's own client sends: the token in
+// ?token= on the connect (a browser WS upgrade can't set headers), Bearer on the POST.
 const room = (name: string, token?: string) =>
   `https://example.com/parties/main/${name}${token ? `?token=${token}` : ''}`
 // partyserver reads the room from the path; under miniflare ctx.id.name isn't
