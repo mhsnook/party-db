@@ -1,11 +1,17 @@
 # Test your auth
 
+PartyDB has its own tests, but it leaves some of the server setup and config up to
+you — it's just JavaScript, with no new API to learn. So you can follow our example
+code (it's all covered by our own tests), but if you diverge from these documented
+patterns — and even if you don't — you'll probably want your own tests, to be sure
+you haven't "just JavaScript"ed your way into a security hole.
+
 Your `authorize` seam is the one thing standing between the open internet and your
-room, so it's worth a test. Because `authHooks` runs it at the *lobby* — before the
-request reaches the DO — both doors answer over plain HTTP: an unauthorized read is
-a `401` with **no** WebSocket upgrade, and an unauthorized write is a `401`
-[`WriteReject`](../../src/protocol.ts). So you can assert the whole gate with
-`SELF.fetch` against the real worker in
+room, so it's the first thing worth testing. Because `authHooks` runs it at the
+*lobby* — before the request reaches the DO — both doors answer over plain HTTP: an
+unauthorized read is a `401` with **no** WebSocket upgrade, and an unauthorized
+write is a `401` [`WriteReject`](../../src/protocol.ts). So you can assert the whole
+gate with `SELF.fetch` against the real worker in
 [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) —
 no client, no browser. ✅
 
