@@ -22,6 +22,7 @@ import type { SequencedBatch, WriteAck, WriteBatch, WriteReject } from '../proto
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
+import { warnUnenforcedAccess } from './access.ts'
 
 export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
   static options = { hibernate: true }
@@ -71,6 +72,9 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   }
 
   async onStart() {
+    // Until access policies are implemented (#33) this will warn you if you set up
+    // access policies that don't do anything yet.
+    warnUnenforcedAccess(this.collections)
     this.adapter = this.createAdapter()
     for (const c of this.collections) this.channels.add(c.name)
     await this.adapter.init()
