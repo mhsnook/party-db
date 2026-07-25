@@ -72,9 +72,8 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   }
 
   async onStart() {
-    // loud heads-up if any collection declares an access policy that nothing
-    // enforces yet — a declared-but-inert security rule must never pass silently
-    // (issue #33). Warns, doesn't throw: fine to experiment, not fine to be quiet.
+    // Until access policies are implemented (#33) this will warn you if you set up
+    // access policies that don't do anything yet.
     warnUnenforcedAccess(this.collections)
     this.adapter = this.createAdapter()
     for (const c of this.collections) this.channels.add(c.name)
