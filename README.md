@@ -165,6 +165,31 @@ tx.mutate(() => {
 await tx.isPersisted.promise // both land in one POST, or neither does
 ```
 
+## Auth-gated rooms
+
+For an auth-gated room, pass a `token` (a string, or a function re-read on every
+(re)connect and write so a refreshed token sticks). It rides the `/write` POST as
+`Authorization: Bearer <token>` and the socket connect as `?token=<token>` (a WS
+upgrade can't set headers).
+
+party-db owns the client, so you don't handle WebSocket close codes yourself. If a
+room-aware auth check rejects the socket by closing it **1008** (policy violation),
+party-db treats that as terminal: it **stops reconnecting** — a rejected client
+would otherwise close-reconnect-close forever — and hands you an `AuthError` so you
+can prompt re-auth. Every other close code (1006 network, 1011 server, normal)
+keeps the default reconnect.
+
+```ts
+const { db, onAuthError } = createPartyDb(transport, [todos])
+onAuthError((err) => {
+  // err instanceof AuthError, err.code === 1008 — the socket is down for good.
+  redirectToLogin()
+})
+```
+
+The write (up) path already surfaces its own verdict: `transport.send` throws a
+`WriteError` carrying the `401` on a rejected POST.
+
 ## Testing
 
 | Command | Runs |
@@ -200,7 +225,7 @@ pnpm test:pg && pnpm test:integration
 | `src/client/seq-tracker.ts` | pure settlement: per-channel high-water mark, waiters, timeout |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
-| `src/client/errors.ts` | `WriteError` / `TransportError` — classified write failures |
+| `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` — classified write & auth failures |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write`, behind a `PersistenceAdapter` |
 | `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |

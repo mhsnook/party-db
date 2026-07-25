@@ -8,6 +8,9 @@
 //   TransportError  — the request never got a response (offline, DNS, reset). A
 //                     plain TanStackDBError (NOT NonRetriable), so a retry-aware
 //                     layer may re-send. Wraps the underlying error as `cause`.
+//   AuthError       — the down-stream (WebSocket) was closed 1008 (policy
+//                     violation) by a room-aware auth check. The write path's
+//                     verdict for the *down* path: terminal, no reconnect.
 //
 // Both reach the app intact: the transport throws from the write mutationFn, and
 // TanStack rejects the transaction's `isPersisted.promise` with that very
@@ -30,6 +33,24 @@ export class WriteError extends NonRetriableError {
     this.status = status
     this.channel = reject.channel
     this.constraint = reject.constraint
+  }
+}
+
+// The server closed the down-stream WebSocket with 1008 (policy violation) — a
+// room-aware auth check rejected the connection (see docs/auth.md §2). party-db
+// treats this as terminal: it stops the socket re-dialing (a rejected client
+// would otherwise close-reconnect-close in a loop) and hands the app this error
+// so it can prompt re-auth. Non-retriable, mirroring the write path's 401: the
+// same token won't be accepted on a blind reconnect, a fresh one is needed.
+export class AuthError extends NonRetriableError {
+  // the WebSocket close code (1008); kept so a consumer can branch on it and to
+  // leave room for other policy codes later without changing the type.
+  readonly code: number
+
+  constructor(message: string, code = 1008) {
+    super(message)
+    this.name = 'AuthError'
+    this.code = code
   }
 }
 

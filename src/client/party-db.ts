@@ -4,8 +4,13 @@
 import PartySocket from 'partysocket'
 import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type PartyCollectionConfig } from './collection.ts'
-import { WriteError, TransportError, toWriteReject } from './errors.ts'
+import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
 import type { SequencedBatch } from '../protocol.ts'
+
+// WebSocket close code the server uses when a room-aware auth check rejects the
+// connection (docs/auth.md §2). Unlike 1006 (network) / 1011 (server) / normal,
+// re-dialing can't fix it — the same token loops — so we treat it as terminal.
+const CLOSE_POLICY_VIOLATION = 1008
 
 // The DO / PartyKit transport: down = the partysocket (hibernatable WS on the
 // server), up = POST to the same room (so the socket can hibernate).
@@ -21,6 +26,9 @@ export function partyTransport(opts: {
   const party = opts.party ?? 'main'
   const tokenOf = () => (typeof opts.token === 'function' ? opts.token() : opts.token)
   let lastSeq: number | undefined // highest seq applied; drives delta reconnect
+  // consumers waiting to hear that the down path was auth-rejected (1008). We
+  // fan out to a set so an app can register a handler without racing construction.
+  const authListeners = new Set<(error: AuthError) => void>()
   const socket = new PartySocket({
     host: opts.host,
     room: opts.room,
@@ -34,6 +42,18 @@ export function partyTransport(opts: {
         ...(token ? { token } : {}),
       }
     },
+    // a 1008 (policy violation) close is the server's auth verdict on the socket:
+    // stop PartySocket re-dialing (it would just close-reconnect-close in a loop).
+    // Every other code keeps the default reconnect (1006 network, 1011 server, …).
+    shouldReconnectOnClose: (event) => event.code !== CLOSE_POLICY_VIOLATION,
+  })
+  // ...and surface it, so the app can prompt re-auth instead of watching a silent
+  // dead socket. shouldReconnectOnClose above already ran on this same event, so
+  // by the time we notify, the reconnect has been suppressed.
+  socket.addEventListener('close', (event) => {
+    if (event.code !== CLOSE_POLICY_VIOLATION) return
+    const error = new AuthError(event.reason || 'websocket closed by server auth policy (1008)', event.code)
+    for (const listener of authListeners) listener(error)
   })
   return {
     subscribe(onBatch) {
@@ -71,6 +91,10 @@ export function partyTransport(opts: {
       return res.json()
     },
     isConnecting: () => socket.readyState === socket.CONNECTING,
+    onAuthError(listener) {
+      authListeners.add(listener)
+      return () => authListeners.delete(listener)
+    },
   }
 }
 
@@ -89,6 +113,12 @@ export function createPartyDb<C extends PartyCollectionConfig<any>[]>(
     client,
     get isConnecting() {
       return transport.isConnecting?.() ?? false
+    },
+    // subscribe to a terminal auth rejection on the down-stream (a 1008 close):
+    // the transport has stopped reconnecting, so re-auth is the app's move. No-op
+    // (and an inert unsubscribe) for a transport without an auth-gated down path.
+    onAuthError(listener: (error: AuthError) => void): () => void {
+      return transport.onAuthError?.(listener) ?? (() => {})
     },
   }
 }
