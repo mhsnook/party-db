@@ -30,6 +30,16 @@ schemas that already power TanStack DB now drive your production database too,
 replicating writes up and back out to every consumer. "Near-zero config" is
 literal: you pass Zod schemas, but you already needed those for TanStack DB.
 
+**You write client code or server code, never the wire between them.** The
+transport — the connection, the request shapes, where a token rides, the ack, the
+fan-out — is ours; the client and the server never hand-shake through code you
+author. The one exception is the ten-line server that wires it up (your
+collections, and `authHooks(authorize)` if you gate the room): the *only* plumbing
+you write, and so the only place the wiring can be wrong. That's why its
+security-critical piece, auth, gets a dedicated
+[test recipe](./cookbooks/07-testing-your-auth.md) — the extra mile on the one seam
+that's yours.
+
 The shape of it:
 
 1. The client defines collections exactly as it would for any TanStack DB app
