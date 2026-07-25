@@ -22,10 +22,10 @@ write. Knowing which is which tells you what your test can rely on:
 - Token *placement*: `?token=` on the WS connect (a browser can't set headers on an upgrade), `Authorization: Bearer` on the POST. party-db's client sends them there and `getTokenFromRequest` reads both — the placement is ours, the token value and its verification are yours.
 - What `authorize` actually checks (a JWT, a session, a password), and testing with `SELF.fetch` + [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/), one room per test.
 
-Because the enforcement is API, the assertions below (`401`, no `webSocket`,
-`WriteReject`) are true for any gate — no client, no browser. Because the placement
-is convention, if you diverge from it, your `?token=`/`Bearer` fixture has to match
-whatever you did. ✅
+party-db rejects unauthorized requests the same way no matter what `authorize`
+checks, so the assertions below (`401`, no `webSocket`, `WriteReject`) work for any
+gate — no client, no browser. The one thing you'd change: if your token doesn't
+ride in `?token=`/`Bearer`, send it however you do in the test. ✅
 
 This assumes a worker that gates both doors, like [recipe 3](./03-external-auth-workos.md)
 or [recipe 4](./04-public-read-private-write.md). Swap `TOKEN` for a valid
