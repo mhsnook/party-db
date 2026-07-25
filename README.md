@@ -165,19 +165,15 @@ tx.mutate(() => {
 await tx.isPersisted.promise // both land in one POST, or neither does
 ```
 
-## Auth-gated rooms
+## onAuthError callback
 
-For an auth-gated room, pass a `token` (a string, or a function re-read on every
-(re)connect and write so a refreshed token sticks). It rides the `/write` POST as
-`Authorization: Bearer <token>` and the socket connect as `?token=<token>` (a WS
-upgrade can't set headers).
+If a client connection makes it past the initial worker check (stateless auth check)
+into the durable object room, and _then_ gets rejected, the socket closes with a
+**1008** (policy violation). This is the one kind of disconnect that the PartySocket
+client _should not_ try to reconnect from. Client code may wish to notice this kind
+of close event and do something with it, such as showing a login challenge.
 
-party-db owns the client, so you don't handle WebSocket close codes yourself. If a
-room-aware auth check rejects the socket by closing it **1008** (policy violation),
-party-db treats that as terminal: it **stops reconnecting** — a rejected client
-would otherwise close-reconnect-close forever — and hands you an `AuthError` so you
-can prompt re-auth. Every other close code (1006 network, 1011 server, normal)
-keeps the default reconnect.
+Every other close code (1006 network, 1011 server, normal) keeps the default reconnect.
 
 ```ts
 const { db, onAuthError } = createPartyDb(transport, [todos])

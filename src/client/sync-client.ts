@@ -14,10 +14,8 @@ export type Transport = {
   subscribe: (onBatch: (batch: SequencedBatch) => void) => () => void
   send: (batches: WriteBatch[]) => Promise<WriteAck>
   isConnecting?: () => boolean
-  // notify when the down-stream is terminally closed by a server auth verdict
-  // (1008 policy violation) — the transport has stopped reconnecting, so the app
-  // should prompt re-auth. Optional: not every transport has an auth-gated down
-  // path. Returns an unsubscribe.
+  // we don't auto-reconnect when the down-stream is closed for auth (1008); this
+  // hands that verdict to the app instead. Returns an unsubscribe.
   onAuthError?: (listener: (error: AuthError) => void) => () => void
 }
 
