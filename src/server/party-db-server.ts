@@ -22,6 +22,7 @@ import type { SequencedBatch, WriteAck, WriteBatch, WriteReject } from '../proto
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
+import { warnUnenforcedAccess } from './access.ts'
 
 export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
   static options = { hibernate: true }
@@ -71,6 +72,10 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   }
 
   async onStart() {
+    // loud heads-up if any collection declares an access policy that nothing
+    // enforces yet — a declared-but-inert security rule must never pass silently
+    // (issue #33). Warns, doesn't throw: fine to experiment, not fine to be quiet.
+    warnUnenforcedAccess(this.collections)
     this.adapter = this.createAdapter()
     for (const c of this.collections) this.channels.add(c.name)
     await this.adapter.init()

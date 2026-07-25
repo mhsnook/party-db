@@ -19,10 +19,12 @@ This example is **API-first**: it's the target userspace code, written before th
 framework that backs it. `access`, `owner`, and the server's `auth` getter are declared
 and they **typecheck**, but the current `PartyDbServer` does **not** enforce them — so in
 the running demo *every collection syncs publicly* and switching identity does not hide
-another learner's rows. What the framework still owes this app (owner-stamping on insert,
-the read filter at snapshot / `?since` / fan-out, the write gate) is spelled out in
-[cookbook 05](../docs/cookbooks/05-public-and-private-collections.md) and
-[`postgres-todo.md`](../docs/postgres-todo.md) §5.
+another learner's rows. Because declaring an unenforced policy is a security-shaped
+footgun, the server now **warns loudly at startup** that these rules do nothing yet. What
+the framework still owes this app (owner-stamping on insert, the read filter at snapshot /
+`?since` / fan-out, the write gate) is tracked in
+**[issue #33](https://github.com/mhsnook/party-db/issues/33)** (the JS-layer access work),
+with the design in [cookbook 05](../docs/cookbooks/05-public-and-private-collections.md).
 
 What *does* run today: the full sync + optimistic writes, the shared-once collections, the
 public-catalog + your-overlay UI, and deck settings — all of it is ordinary party-db CRUD.
