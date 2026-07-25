@@ -7,11 +7,12 @@ patterns — and even if you don't — you'll probably want your own tests, to b
 you haven't "just JavaScript"ed your way into a security hole.
 
 The shape of the whole library is that you write client code or server code, never
-the wire between them — that plumbing is ours. What's left to you is a little server
-setup, and the auth gate is its security-critical piece: the one seam that can
-actually be wrong, so the first thing worth the extra mile of a test. It's a mix of
-what we ship and what you write, and knowing which is which tells you what your test
-can rely on:
+the wire between them — that plumbing is ours. The one exception is the ten-line
+server that wires it up (your collections, and `authHooks(authorize)`): the *only*
+plumbing you write, so the only place it can go wrong. The auth gate is its
+security-critical piece, which is why this recipe goes the extra mile to make sure
+you got it right. It's a mix of what we ship and what you write, and knowing which
+is which tells you what your test can rely on:
 
 **API — shipped by `party-db/server`, the contract is fixed:**
 
