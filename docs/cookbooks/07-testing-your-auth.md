@@ -6,16 +6,19 @@ code (it's all covered by our own tests), but if you diverge from these document
 patterns — and even if you don't — you'll probably want your own tests, to be sure
 you haven't "just JavaScript"ed your way into a security hole.
 
-Your auth gate is the one thing standing between the open internet and your room, so
-it's the first thing worth testing — and it's a mix of what we ship and what you
-write. Knowing which is which tells you what your test can rely on:
+The shape of the whole library is that you write client code or server code, never
+the wire between them — that plumbing is ours. What's left to you is a little server
+setup, and the auth gate is its security-critical piece: the one seam that can
+actually be wrong, so the first thing worth the extra mile of a test. It's a mix of
+what we ship and what you write, and knowing which is which tells you what your test
+can rely on:
 
 **API — shipped by `party-db/server`, the contract is fixed:**
 
 - `authHooks(authorize)`, `getTokenFromRequest(req)`, `bearer(req)` — functions you import.
 - `Authorize`, `AuthContext`, `AuthDecision`, `AuthKind` — the types your `authorize` is written against; [`WriteReject`](../../src/protocol.ts) — the rejected-write body.
 - **Guaranteed behavior:** a request `authHooks` gates and `authorize` rejects is refused at the *lobby*, before the DO wakes — a `401` with **no** WebSocket upgrade on connect, a `401` `WriteReject` on write. Holds for any `authorize` you write.
-- **Token placement:** party-db owns the client, so *it* sends the credential — `?token=` on the WS connect (a browser can't set headers on an upgrade), `Authorization: Bearer` on the POST — and `getTokenFromRequest` reads both. You supply the token's *value* and verify it; you don't choose where it rides.
+- **Token placement:** you write a client that holds a token and a server that reads one, but never the wire between them — that's ours. party-db's client sends the credential (`?token=` on the WS connect, since a browser can't set headers on an upgrade; `Authorization: Bearer` on the POST) and `getTokenFromRequest` reads both. You supply the token's *value* and verify it; you never wire up where it rides.
 
 **Convention — our shape, but just JavaScript; diverge and your test follows you:**
 
