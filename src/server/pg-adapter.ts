@@ -20,9 +20,9 @@
 // collection is a configuration error at init(), not a blob table in your
 // production database.
 
-import type { SequencedBatch, WriteBatch, WriteEvent, WriteReject } from '../protocol.ts'
+import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
-import type { PersistenceAdapter } from './persistence.ts'
+import type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'
 import { pgDecodeRow, pgEncode } from './columns.ts'
 import { buildPlans, resolveStructured, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
 
@@ -108,7 +108,7 @@ export class PgAdapter implements PersistenceAdapter {
     await c.query(`CREATE TABLE IF NOT EXISTS _oplog (seq BIGSERIAL PRIMARY KEY, channel TEXT NOT NULL, ops JSONB NOT NULL)`)
   }
 
-  async write(batches: WriteBatch[]): Promise<SequencedBatch[]> {
+  async write(batches: WriteBatch[], identity?: WriteIdentity): Promise<SequencedBatch[]> {
     if (!batches.length) return []
     const c = await this.conn()
     try {
@@ -117,6 +117,10 @@ export class PgAdapter implements PersistenceAdapter {
       // rides inside it so the oplog never has a torn floor. On a rollback the
       // BIGSERIAL still advances — the seq is burned, not emitted (verified).
       await c.query('BEGIN')
+      // carry the verified identity into THIS transaction so the user's RLS
+      // policies (and owner-column defaults) evaluate as that user. Transaction-
+      // scoped, so it rides the existing shared connection with no per-user pool.
+      await this.injectIdentity(c, identity)
       const sequenced: SequencedBatch[] = []
       for (const batch of batches) sequenced.push(await this.applyOne(c, batch))
       await this.compact(c)
@@ -132,6 +136,68 @@ export class PgAdapter implements PersistenceAdapter {
         await this.drop()
       }
       throw e
+    }
+  }
+
+  // Set transaction-local settings in ONE round-trip via `set_config(name, value,
+  // is_local => true)` — the FUNCTION form of `SET LOCAL`: transaction-scoped just
+  // the same, but PARAMETERIZED, so every value is a bound value that can never
+  // break out into SQL. (`SET LOCAL` itself takes no bind params; string-building it
+  // would reopen the injection surface this feature exists to remove.) No-op when
+  // there is nothing to set.
+  private async setLocal(c: PgClient, settings: [name: string, value: string][]): Promise<void> {
+    if (!settings.length) return
+    const calls = settings.map((_, i) => `set_config($${i * 2 + 1}, $${i * 2 + 2}, true)`).join(', ')
+    await c.query(`SELECT ${calls}`, settings.flat())
+  }
+
+  // Inject the writer's verified identity into the current transaction, so RLS
+  // policies and owner-column defaults see it — claims as the namespaced
+  // `request.jwt.claims` (any role may set it) and/or the role to assume.
+  //
+  // The connection role MUST be RLS-subject — an ordinary role, or the table
+  // owner under `FORCE ROW LEVEL SECURITY`. A superuser or `BYPASSRLS` role, or a
+  // table owner without FORCE, skips every policy and this injection buys nothing.
+  private async injectIdentity(c: PgClient, identity?: WriteIdentity): Promise<void> {
+    if (!identity) return
+    const settings: [string, string][] = []
+    if (identity.claims) settings.push(['request.jwt.claims', JSON.stringify(identity.claims)])
+    if (identity.role) settings.push(['role', identity.role])
+    await this.setLocal(c, settings)
+  }
+
+  // Boot-time proof that the anonymous-write latch (`anonRole`) is real and safe,
+  // so a misconfigured latch fails at startup, not on the first anonymous write.
+  // Three checks, each with an actionable throw: the role EXISTS; it does NOT bypass
+  // RLS (a superuser/`BYPASSRLS` anon role would let anonymous writes past every
+  // policy — the exact thing the latch exists to prevent); and this connection can
+  // actually ASSUME it (superuser, or a member — else the SET at write time would
+  // 42501 every anonymous request).
+  async verifyAnonRole(role: string): Promise<void> {
+    const c = await this.conn()
+    const { rows } = await c.query<{ bypass: boolean }>(
+      `SELECT rolsuper OR rolbypassrls AS bypass FROM pg_roles WHERE rolname = $1`,
+      [role],
+    )
+    if (!rows.length) throw new Error(`anonRole "${role}" does not exist — create it (CREATE ROLE "${role}" NOSUPERUSER NOBYPASSRLS) or fix the name`)
+    if (rows[0].bypass) {
+      throw new Error(`anonRole "${role}" bypasses RLS (it is a superuser or has BYPASSRLS) — anonymous writes would not be governed by your policies; use an ordinary role`)
+    }
+    // Can this connection assume it? Test the exact SET the write path will do,
+    // inside a throwaway transaction so nothing sticks.
+    try {
+      await c.query('BEGIN')
+      await this.setLocal(c, [['role', role]])
+      await c.query('COMMIT')
+    } catch (e) {
+      try {
+        await c.query('ROLLBACK')
+      } catch {
+        await this.drop()
+      }
+      throw new Error(
+        `the adapter's connection role cannot assume anonRole "${role}" — GRANT "${role}" TO the connection role, or connect as one that may SET ROLE "${role}" (${e instanceof Error ? e.message : String(e)})`,
+      )
     }
   }
 
@@ -218,15 +284,28 @@ export class PgAdapter implements PersistenceAdapter {
   }
 
   // Constraint classification lives with the dialect, not in a server-side regex:
-  // Postgres tags every integrity violation with a SQLSTATE class `23…` on the
-  // error's `code`, and names the violated constraint on `constraint` — strictly
-  // better than any message match. The server consults this first; a `null` return
-  // (any non-23 error) falls through to its generic-500 path.
-  classifyError(e: unknown): WriteReject | null {
+  // Postgres tags each error with a SQLSTATE on the error's `code`. Two classes
+  // are client rejections, everything else is an internal fault (`null` → the
+  // server's generic-500 path):
+  //
+  //  - `42501` insufficient_privilege — an RLS/permission denial: a forged owner
+  //    id, a write outside your tenancy, a WITH CHECK your claims don't satisfy.
+  //    The database refused THIS USER, not the DATA, so it's a 403 (not a 409) and
+  //    the client rolls its optimistic mutation back like any other rejection.
+  //    (Note: an UPDATE/DELETE of a row your policy makes INVISIBLE is a 0-row
+  //    no-op, not a 42501 — you can't be refused a row you can't see. Only a
+  //    visible row failing WITH CHECK, or a forged INSERT, raises 42501.)
+  //  - `23…` integrity class (PK/FK/UNIQUE/CHECK/NOT NULL) — a 409 carrying the
+  //    violated constraint's real name, strictly better than any message match.
+  classifyError(e: unknown): WriteRejection | null {
     const code = (e as { code?: unknown })?.code
-    if (typeof code !== 'string' || !code.startsWith('23')) return null
-    const constraint = (e as { constraint?: unknown }).constraint
+    if (typeof code !== 'string') return null
     const error = e instanceof Error ? e.message : String(e)
-    return typeof constraint === 'string' ? { error, constraint } : { error }
+    if (code === '42501') return { error, status: 403 }
+    if (code.startsWith('23')) {
+      const constraint = (e as { constraint?: unknown }).constraint
+      return typeof constraint === 'string' ? { error, constraint } : { error }
+    }
+    return null
   }
 }

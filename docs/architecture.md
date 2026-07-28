@@ -335,6 +335,58 @@ credential auth. Running in the Worker means a reject costs nothing on the stora
 claim. The library validates nothing about your auth — it hands you the `Request` and
 believes your verdict.
 
+### 10a. Identity-aware writes on Postgres — RLS via injected claims
+
+The lobby gate (§10) is coarse: "may this request touch this room." It cannot say
+"this user may insert *this row* but not stamp someone else's id." On Postgres we get
+that granularity for free by delegating to the database's own **Row-Level Security** —
+we do not re-implement RLS in the library, we carry the caller's identity into the
+write so Postgres' policies can enforce it.
+
+The seam is `auth` on the server: `(req) => WriteIdentity | null`, resolved **fresh on
+every POST** (a write never trusts a stale value). You verify the token — the library
+validates nothing (§10) — and return the verified `{ claims?, role? }`. The `PgAdapter`
+then, at the very top of the write transaction, injects them with the *function* form
+of `SET LOCAL` — `SELECT set_config('request.jwt.claims', $1, true)` and, if a role is
+given, `set_config('role', $2, true)`. Both are transaction-scoped (`is_local`), so
+this rides the existing single cached connection with **no per-user pooling**; both are
+*parameterized*, so the claims JSON and role name can never break out into SQL. Your
+policies and owner-column defaults then read the claim —
+`NULLIF(current_setting('request.jwt.claims', true), '')::json->>'sub'` — and the
+database accepts or refuses the write. (The `NULLIF` guard is load-bearing: a
+namespaced setting reverts to the *empty string*, not NULL, on a reused connection, and
+a bare `''::json` throws.)
+
+Two consequences make this real, not decorative:
+
+- **The connection role must be RLS-subject.** A superuser, a `BYPASSRLS` role, or a
+  table's owner *without* `FORCE ROW LEVEL SECURITY` skips every policy — the injection
+  would then buy nothing. Point the adapter at an ordinary role that has DML on your
+  tables (and on the library's `_oplog`) but owns neither.
+- **An RLS denial is a clean rejection, not a 500.** Postgres raises SQLSTATE `42501`
+  (insufficient_privilege) for a forged insert or a `WITH CHECK` your claims don't
+  satisfy; `classifyError` maps it to **403** (distinct from the `23…` integrity class →
+  409), and the server answers 403 at the wire so the client rolls its optimistic
+  mutation back like any other reject. One honest asymmetry: an UPDATE/DELETE of a row a
+  policy makes *invisible* is a 0-row no-op, not a 42501 — you can't be refused a row you
+  can't see, and that is safe.
+- **The anonymous case is fail-closed.** When `auth` is set but a POST resolves no
+  identity (`auth` → `null`), the write is *not* run identity-less — which on a privileged
+  connection would bypass RLS. The server rejects it **401** before any transaction opens.
+  There is one deliberate latch to allow anonymous writes: naming an `anonRole`, which
+  runs them as that role via `SET LOCAL role` — the server assigns it (nothing from the
+  client is trusted, so there is no anonymous token to forge), and because only a role
+  switch drops privilege it governs the write even on a privileged connection. `anonRole`
+  is explicit config (never defaulted, never auto-detected — creating a DB role must not
+  silently open the door) and is **verified at boot**: `onStart` throws unless the role
+  exists, is assumable from the connection, and does not itself bypass RLS.
+
+This is Postgres-native and write-only: SQLite/D1 have no RLS and ignore the injected
+identity (a no-op there); a server that sets no `auth` behaves exactly as before.
+Identity-aware *reads* (snapshot / backlog / fan-out filtering) are separate, later
+work. The worked policy set, owner defaults, and role/grant setup are in
+[cookbook 08](./cookbooks/08-postgres-rls.md).
+
 ## 11. Schemas are shared by import
 
 Define the Zod/StandardSchema once and import it on both client and server. There

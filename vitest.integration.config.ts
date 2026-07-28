@@ -20,10 +20,14 @@ export default defineConfig({
           Main: { className: 'Main', useSQLite: true },
           Guarded: { className: 'Guarded', useSQLite: true },
           Faulty: { className: 'Faulty', useSQLite: true },
+          // the server-layer identity gate (auth, fail-closed default), SQLite-backed.
+          Authed: { className: 'Authed', useSQLite: true },
           // persists into D1 (env.DB) rather than its own SQLite; still a real DO.
           D1Room: { className: 'D1Room', useSQLite: true },
           // persists into a real Postgres (env.PG_URL) over cloudflare:sockets.
           PgRoom: { className: 'PgRoom', useSQLite: true },
+          // like PgRoom, but enforces per-user writes with Postgres' own RLS.
+          PgRlsRoom: { className: 'PgRlsRoom', useSQLite: true },
         },
         // a local D1 database bound as `env.DB` — the target the D1Adapter persists
         // into (data + _oplog both live here). The value is miniflare's database id.

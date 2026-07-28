@@ -53,11 +53,18 @@ describe.skipIf(!PG_URL)('Postgres adapter, end-to-end through a Durable Object'
     pgClient = c as any
   })
   afterAll(async () => {
-    await pgClient?.query('DROP TABLE IF EXISTS todos, _oplog')
+    await pgClient?.query('DROP TABLE IF EXISTS todos, docs, _oplog')
+    // best-effort: release + drop the RLS-subject role the RLS suite created.
+    await pgClient
+      ?.query(`DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname='party_rls') THEN EXECUTE 'DROP OWNED BY party_rls'; DROP ROLE party_rls; END IF; END $$`)
+      .catch(() => {})
     await pgClient?.end()
   })
   beforeEach(async () => {
-    await pgClient.query('DROP TABLE IF EXISTS todos, _oplog')
+    // every RLS test below uses a fresh room name (→ fresh DO → onStart rebuilds
+    // docs + policy + role), so a clean-slate drop here is race-free (files in this
+    // lane run sequentially within one file).
+    await pgClient.query('DROP TABLE IF EXISTS todos, docs, _oplog')
   })
 
   const countOf = async (table: string) => {
@@ -169,5 +176,54 @@ describe.skipIf(!PG_URL)('Postgres adapter, end-to-end through a Durable Object'
     expect(seqs).toEqual([...seqs].sort((p, q) => p - q)) // monotonic
     expect(new Set(seqs)).toEqual(new Set([1, 2, 3, 4])) // each exactly once
     sub.ws.close()
+  })
+})
+
+// Postgres-native RLS, proven END TO END through a Durable Object: the identity
+// the `auth` hook resolves per POST is injected into the write transaction, and
+// the app's own RLS policies decide the outcome — a forged write comes back 403 AT
+// THE WIRE, not 200 and not 500. The adapter-level enforcement is pinned in the
+// node lane (test/pg/pg-rls.test.ts); this proves the server threads identity and
+// maps the RLS denial to the right HTTP status. Shares this file (not a new one) so
+// all PG-touching integration stays in one sequentially-run file — the rooms share
+// the one Postgres and its `_oplog`. Skips when PG_URL is unset.
+describe.skipIf(!PG_URL)('Postgres RLS end-to-end (PgRlsRoom: SET LOCAL role + claims)', () => {
+  // POST to the RLS room, optionally as a user (Bearer token IS the user id here).
+  const rlsUrl = (room: string) => partyUrl('pg-rls-room', room, {})
+  async function rlsPost(room: string, body: unknown, token?: string): Promise<Response> {
+    return SELF.fetch(rlsUrl(room), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...roomHeader(room),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    })
+  }
+  const doc = (id: string, body: string, owner?: string): WriteBatch[] => [
+    { channel: 'docs', ops: [{ type: 'insert', value: owner === undefined ? { id, body } : { id, owner, body } }] },
+  ]
+
+  it('authorized write commits (200) and the owner is stamped from the verified claim', async () => {
+    const res = await rlsPost('rls-ok', doc('d1', 'hi'), 'alice') // owner omitted → defaulted from claim
+    expect(res.status).toBe(200)
+    const ack = (await res.json()) as WriteAck
+    expect(ack.changed?.[0].ops[0].value).toEqual({ id: 'd1', owner: 'alice', body: 'hi' })
+  })
+
+  it('a forged owner id is refused by the database and surfaces as 403 at the wire', async () => {
+    const res = await rlsPost('rls-forge', doc('d2', 'forge', 'bob'), 'alice') // alice claims bob's id
+    expect(res.status).toBe(403)
+    const body = (await res.json()) as WriteReject
+    expect(body.error).toMatch(/row-level security/i)
+  })
+
+  it('an anonymous write runs as the anonRole (party_rls) — RLS-subject, so it is refused → 403, not bypassed', async () => {
+    // no Bearer → auth returns null → `anonRole` downgrades the (superuser)
+    // connection to party_rls before the write, so RLS still governs it. Without
+    // that downgrade a superuser connection would write straight through.
+    const res = await rlsPost('rls-anon', doc('d3', 'x', 'anyone'))
+    expect(res.status).toBe(403)
   })
 })

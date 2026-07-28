@@ -57,12 +57,16 @@ transparent, RDBMS, and Postgres CRUD.
    real Postgres — CRUD + `RETURNING`, the `_oplog` beside your data, `?since` deltas,
    SQLSTATE constraint errors, identical wire contract. What's *not* yet live: writes
    that bypass `/write` (cron, other services, trigger side-effects) — those need the WAL.
+ - Milestone 2a′: **Postgres-native RLS on writes (shipped):** an `auth` hook injects the
+   caller's verified JWT claims into the write transaction (`SET LOCAL`), so your *own*
+   Row-Level Security policies enforce per-user/per-tenant writes — a forged write comes
+   back `403`. See [cookbook 08](./docs/cookbooks/08-postgres-rls.md).
 
 **Future**
 
 - Milestone 2b: **Postgres, all DB ops:** everything above, plus the global WAL as the
-  stream (out-of-band writes fan out live), RPCs, RLS (protecting writes),
-  table-sharing config, user-protected tables.
+  stream (out-of-band writes fan out live), RPCs, RLS-enabled *reads* (identity-aware
+  snapshot / backlog / fan-out), table-sharing config, user-protected tables.
 - Milestone 3: **Not just a party anymore:** query slicing, RLS-in-JS -- most apps
   don't work as parties, you need to filter content by more than just public-or-userID.
 - Far Future: **Codegen mode:** build the entire system from a DB string or schemas, live
