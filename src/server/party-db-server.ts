@@ -20,7 +20,7 @@
 import { Server, type Connection, type ConnectionContext } from 'partyserver'
 import type { SequencedBatch, WriteAck, WriteBatch, WriteReject } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
-import type { PersistenceAdapter } from './persistence.ts'
+import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
 import { warnUnenforcedAccess } from './access.ts'
 
@@ -38,6 +38,35 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // reject a POST /write carrying more than this many ops across all batches
   // (413). Override to tune; 0 disables the check.
   maxWriteOps = 1_000
+
+  // Resolve the writer's verified identity from the POST — fresh every request,
+  // never a stale value — so the storage layer can enforce it. On Postgres the
+  // returned claims/role are injected into the write transaction (transaction-
+  // local `SET`) and the app's own Row-Level Security policies decide what the
+  // write may touch; a forged or unauthorized write comes back 403. Adapters with
+  // no RLS (embedded SQLite, D1) ignore the result, so this is a no-op there.
+  //
+  // The library does NOT verify the token — you do, here: read the credential
+  // (`getTokenFromRequest`), verify it however you verify JWTs (JWKS, shared
+  // secret — your call), and return its claims. Return `null` for an anonymous /
+  // unauthenticated write — which is REJECTED (401) unless you've latched anonymous
+  // writes open with `anonRole` (see below). This is orthogonal to the lobby
+  // `authHooks` gate (a coarse allow/deny before the DO wakes); this hook produces
+  // the identity the DATABASE enforces against. A throw is an auth failure → 401.
+  auth?: (req: Request) => WriteIdentity | null | Promise<WriteIdentity | null>
+
+  // The single latch for anonymous writes, and it is a DELIBERATE one. When `auth`
+  // is configured, a write that resolves NO identity is REJECTED (401) unless you
+  // name an `anonRole` here — then it runs as that role via `SET LOCAL role`.
+  // Anonymous is never inferred, never inherited, never the privileged connection:
+  // the server assigns this role itself (nothing from the client is trusted), and
+  // because only a role switch drops privilege — an absent claim does not — the
+  // role governs the write even on a privileged connection. Make it a low-privilege,
+  // RLS-subject role (e.g. `anon`, PostgREST/Supabase's convention); `onStart`
+  // probes at boot that it exists, is assumable from the adapter's connection, and
+  // does NOT bypass RLS, and throws loudly if not. Unset ⇒ every unsigned write is
+  // rejected. Postgres only; SQLite/D1 have no roles and ignore it.
+  anonRole?: string
 
   private adapter!: PersistenceAdapter
   private channels = new Set<string>()
@@ -78,6 +107,13 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
     this.adapter = this.createAdapter()
     for (const c of this.collections) this.channels.add(c.name)
     await this.adapter.init()
+    // Latch check, at boot, not on the first anonymous request: if you've opened
+    // anonymous writes with `anonRole`, prove the role is real and safe now — it
+    // exists, this connection can assume it, and it does NOT bypass RLS. A throw
+    // here fails the DO loudly at startup rather than silently accepting anonymous
+    // writes that wouldn't actually be governed. Adapters with no RLS (SQLite/D1)
+    // have no `verifyAnonRole` and skip this.
+    if (this.anonRole) await this.adapter.verifyAnonRole?.(this.anonRole)
   }
 
   // a reconnecting client passes ?since=<lastSeq> and gets only what it missed;
@@ -141,10 +177,39 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       return Response.json({ error: `write carries too many ops (max ${this.maxWriteOps})` } satisfies WriteReject, { status: 413 })
     }
 
+    // resolve the writer's identity fresh for THIS POST, before opening any
+    // transaction, so it can be injected into the write (Postgres RLS). A verifier
+    // that throws (malformed/expired token) is an auth failure → 401, not a 500;
+    // the app's lobby gate may also have refused earlier, this is belt-and-braces.
+    let identity: WriteIdentity | null = null
+    if (this.auth) {
+      try {
+        identity = await this.auth(req)
+      } catch {
+        return Response.json({ error: 'unauthorized' } satisfies WriteReject, { status: 401 })
+      }
+    }
+
+    // The anonymous case — no resolved claims or role — is fail-closed. `anonRole`
+    // is the deliberate latch: set → run as that low-privilege role; unset (with
+    // `auth` in use) → reject before any SQL, rather than run identity-less, which
+    // on a privileged connection would bypass RLS. With no `auth` hook at all this
+    // block is inert: the write proceeds as the connection role, as a non-RLS
+    // server always has.
+    if (!identity?.claims && !identity?.role) {
+      if (this.anonRole) {
+        identity = { role: this.anonRole }
+      } else if (this.auth) {
+        return Response.json({ error: 'authentication required' } satisfies WriteReject, { status: 401 })
+      }
+      // else: no `auth` hook at all → anonymous is fine, `identity` stays null and
+      // the write proceeds as the connection role, as a non-RLS server always has.
+    }
+
     return this.serialize(async () => {
       let sequenced: SequencedBatch[]
       try {
-        sequenced = await this.adapter.write(body)
+        sequenced = await this.adapter.write(body, identity ?? undefined)
       } catch (e) {
         // a constraint rejection is the database's verdict on the DATA — hand it
         // back faithfully (409) so the client can roll back and report it. Anything
@@ -154,9 +219,14 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
         //
         // The adapter classifies first if it can (Postgres reads SQLSTATE +
         // constraint name off the error); adapters without their own classifier
-        // (embedded + D1) fall through to the SQLite-message regex, unchanged.
+        // (embedded + D1) fall through to the SQLite-message regex, unchanged. The
+        // adapter picks the status too — 409 for an integrity conflict (default),
+        // 403 for an RLS/authorization denial — stripped from the client body.
         const rejection = this.adapter.classifyError?.(e)
-        if (rejection) return Response.json(rejection satisfies WriteReject, { status: 409 })
+        if (rejection) {
+          const { status = 409, ...reject } = rejection
+          return Response.json(reject satisfies WriteReject, { status })
+        }
         if (isConstraintError(e)) {
           return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
         }

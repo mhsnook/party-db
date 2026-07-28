@@ -14,5 +14,10 @@ export default defineConfig({
   test: {
     include: ['test/pg/**/*.test.ts'],
     environment: 'node',
+    // every suite in this lane shares the ONE Postgres at PG_URL and the library's
+    // single `_oplog` table (one room per database). Running files in parallel
+    // races their DROP/CREATE of the shared tables — `CREATE TABLE IF NOT EXISTS
+    // _oplog` is not concurrency-safe (duplicate pg_type). Serialize the files.
+    fileParallelism: false,
   },
 })

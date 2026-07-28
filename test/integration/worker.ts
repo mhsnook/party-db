@@ -14,6 +14,7 @@ import {
   type PartyCollection,
   type PersistenceAdapter,
   type PgClient,
+  type WriteIdentity,
 } from '../../src/server/index.ts'
 import { z } from 'zod'
 
@@ -119,6 +120,103 @@ export class PgRoom extends PartyDbServer {
       await client.end()
     }
     return super.onStart()
+  }
+}
+
+// The `docs` collection the RLS room enforces per-user writes over. `owner` is
+// optional on the wire — omitted, the table's DEFAULT stamps it from the injected
+// claim, so a client never even names an owner.
+const docsRls = definePartyCollection({
+  name: 'docs',
+  key: 'id',
+  schema: z.object({ id: z.string(), owner: z.string().optional(), body: z.string() }),
+})
+
+// Postgres-native RLS end-to-end through a Durable Object. The DO connects as the
+// superuser PG_URL, but every write ASSUMES an RLS-subject role (`party_rls`, via
+// SET LOCAL role) and carries the caller's verified claims (SET LOCAL
+// request.jwt.claims) — so Postgres' OWN policies decide what each write may
+// touch, and a forged write comes back 403 at the wire. The `auth` hook is the
+// identity seam: here the test's Bearer token IS the user id (a real app would
+// verify a JWT and read `sub`). Anonymous requests (no token) resolve to NO
+// identity — and `anonRole` then downgrades them to the RLS-subject `party_rls`
+// role, so the superuser connection can never write past the policies even with
+// no claims. (Without an `anonRole` latch, anonymous writes are rejected 401
+// instead — see the `Authed` room.)
+export class PgRlsRoom extends PartyDbServer {
+  collections: PartyCollection<any>[] = [docsRls]
+  oplogRetention = 50
+  // fail-closed anonymous: run tokenless writes as the low-privilege RLS-subject
+  // role rather than the privileged connection role.
+  anonRole = 'party_rls'
+
+  auth = (req: Request): WriteIdentity | null => {
+    const sub = bearer(req)
+    return sub ? { role: 'party_rls', claims: { sub } } : null
+  }
+
+  protected createAdapter(): PersistenceAdapter {
+    return new PgAdapter(
+      async () => {
+        const { default: pg } = await import('pg')
+        const client = new pg.Client({ connectionString: this.env.PG_URL })
+        await client.connect()
+        return client as unknown as PgClient
+      },
+      this.collections,
+      { oplogRetention: this.oplogRetention },
+    )
+  }
+
+  // Build the RLS contract the app owns: the table + owner policy keyed on the
+  // injected claim, the RLS-subject role, and the grants — then let super.onStart()
+  // create the library `_oplog` (as the superuser connection) and grant the role
+  // access to it. The `NULLIF(current_setting(...), '')` guard is load-bearing: a
+  // namespaced setting reverts to the EMPTY STRING (not NULL) on a reused
+  // connection, and a bare `''::json` throws — NULLIF makes a claimless write deny
+  // cleanly (owner = NULL → 42501) instead.
+  async onStart() {
+    const { default: pg } = await import('pg')
+    const claim = `NULLIF(current_setting('request.jwt.claims', true), '')::json->>'sub'`
+    const admin = new pg.Client({ connectionString: this.env.PG_URL })
+    await admin.connect()
+    try {
+      await admin.query(
+        `CREATE TABLE IF NOT EXISTS docs (id text PRIMARY KEY, owner text NOT NULL DEFAULT ${claim}, body text NOT NULL)`,
+      )
+      await admin.query(`ALTER TABLE docs ENABLE ROW LEVEL SECURITY`)
+      await admin.query(`DROP POLICY IF EXISTS docs_owner ON docs`)
+      await admin.query(`CREATE POLICY docs_owner ON docs USING (owner = ${claim}) WITH CHECK (owner = ${claim})`)
+      await admin.query(
+        `DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='party_rls') THEN CREATE ROLE party_rls NOSUPERUSER NOBYPASSRLS; END IF; END $$`,
+      )
+      await admin.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON docs TO party_rls`)
+    } finally {
+      await admin.end()
+    }
+    await super.onStart() // adapter.init() creates _oplog on the (superuser) adapter connection
+    const grant = new pg.Client({ connectionString: this.env.PG_URL })
+    await grant.connect()
+    try {
+      await grant.query(`GRANT SELECT, INSERT, DELETE ON _oplog TO party_rls`)
+      await grant.query(`GRANT USAGE, SELECT ON SEQUENCE _oplog_seq_seq TO party_rls`)
+    } finally {
+      await grant.end()
+    }
+  }
+}
+
+// The identity SEAM at the server layer, on plain DO-SQLite (no RLS needed). Proves
+// the fail-closed gate that ALSO protects the Postgres privileged-connection
+// footgun: with `auth` set and no `anonRole` latch, an anonymous write is rejected
+// 401 BEFORE any transaction opens — it never reaches the adapter
+// — and a verifier that throws is a 401 too. A valid token passes (SQLite ignores
+// the injected identity itself; the point here is the server gate, not enforcement).
+export class Authed extends Main {
+  auth = (req: Request): WriteIdentity | null => {
+    const token = bearer(req)
+    if (token === 'boom') throw new Error('token verification failed')
+    return token ? { claims: { sub: token } } : null
   }
 }
 

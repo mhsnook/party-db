@@ -264,11 +264,17 @@ as defense-in-depth is a P2 note below.)
       collection replays only your rows; the oplog replay path grows a per-op
       filter (cheap: the events carry whole `value`s, so the owner column is
       right there).
-- [ ] *(P2)* **Belt-and-braces with real RLS.** Nothing stops you enabling
-      Postgres RLS on the same tables; our `/write` connection would then need to
-      set the user context (e.g. a `set_config('request.jwt.claim.sub', …)`
-      convention) per transaction. Deferred until someone needs it — the simple
-      rule is the product; RLS compatibility is insurance.
+- [x] *(P2 → landed, write path)* **Real Postgres RLS on the write path.** The
+      `/write` transaction now carries the caller's verified identity: the server's
+      `auth: (req) => WriteIdentity | null` hook resolves it per POST, and the
+      `PgAdapter` injects it at the top of the transaction with the parameterized,
+      transaction-scoped `set_config('request.jwt.claims', …, true)` (and, optionally,
+      `set_config('role', …, true)`), so your own RLS policies enforce the write. An
+      RLS denial (SQLSTATE `42501`) maps to a `403`. This is Postgres-native and
+      write-only — orthogonal to §5's database-agnostic owner rules, and complementary
+      to it as defense-in-depth. See [`architecture.md`](./architecture.md) §10a and
+      [cookbook 08](./cookbooks/08-postgres-rls.md). RLS-enabled *reads* (identity-aware
+      snapshot / backlog / fan-out) remain future work.
 
 ### 6. In-object (stateful) auth — **P1** ❌
 

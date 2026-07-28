@@ -11,6 +11,32 @@
 
 import type { SequencedBatch, WriteBatch, WriteReject } from '../protocol.ts'
 
+// The writer's verified identity for a single POST, resolved fresh each write by
+// the server's `auth` hook and threaded into `write()`. Adapters that can enforce
+// identity IN THE DATABASE (Postgres, via Row-Level Security) inject it into the
+// write transaction so the user's own RLS policies decide what the write may
+// touch; adapters with no RLS (embedded SQLite, D1) ignore it — passing it is a
+// no-op there. The library does NOT verify the token; this is only the verified
+// OUTPUT of the app's verifier.
+//
+//  - `claims`: the JWT's verified claims, injected as the transaction-local
+//    `request.jwt.claims` setting, so RLS policies and owner-column defaults read
+//    `current_setting('request.jwt.claims', true)::json->>'sub'` (PostgREST's
+//    convention).
+//  - `role`: an optional Postgres role to assume for the transaction, when the
+//    app models tenants/users as database roles rather than a claim.
+export type WriteIdentity = {
+  claims?: Record<string, unknown>
+  role?: string
+}
+
+// What `classifyError` returns: the client-facing `WriteReject` plus the HTTP
+// status the server should answer with. `status` defaults to 409 (a data /
+// integrity conflict) when omitted; an adapter sets 403 for an AUTHORIZATION
+// denial — Postgres RLS surfaces one as SQLSTATE 42501 — so a forged or
+// unauthorized write reads as a normal client rejection, not a conflict.
+export type WriteRejection = WriteReject & { status?: number }
+
 export interface PersistenceAdapter {
   // ensure our own infrastructure exists (the _oplog; the blob tables we own for
   // schema-less collections). It does NOT create your tables.
@@ -21,7 +47,11 @@ export interface PersistenceAdapter {
   // returned batch carries its assigned `seq` and its ops REPLACED by the
   // resolved rows the database actually committed (defaults, generated columns,
   // serials, same-row trigger effects).
-  write(batches: WriteBatch[]): Promise<SequencedBatch[]>
+  //
+  // `identity`, when present, is the writer's verified claims/role for THIS POST.
+  // An RLS-capable adapter injects it at the top of the transaction (see
+  // `WriteIdentity`); others ignore it.
+  write(batches: WriteBatch[], identity?: WriteIdentity): Promise<SequencedBatch[]>
 
   // Full current state per collection + the latest seq, for a fresh connection.
   snapshot(): Promise<SequencedBatch[]>
@@ -37,6 +67,16 @@ export interface PersistenceAdapter {
   // engine knows how it phrases a constraint violation — Postgres has a structured
   // SQLSTATE + constraint name, strictly better than a message regex — so
   // classification belongs with the dialect. Adapters that omit this fall back to
-  // the server's built-in SQLite-message classifier (embedded + D1).
-  classifyError?(e: unknown): WriteReject | null
+  // the server's built-in SQLite-message classifier (embedded + D1). The optional
+  // `status` on the result lets the adapter distinguish an integrity conflict
+  // (409, the default) from an RLS/authorization denial (403).
+  classifyError?(e: unknown): WriteRejection | null
+
+  // Optional boot-time validation of the server's `anonRole` (the anonymous-write
+  // latch). Called from `onStart` when `anonRole` is set. An RLS-capable adapter
+  // proves the role is real and safe — exists, is assumable from this connection,
+  // does NOT bypass RLS — and THROWS with an actionable message if not, so a
+  // misconfigured latch fails at boot rather than silently accepting anonymous
+  // writes it can't govern. Adapters with no roles/RLS (embedded SQLite, D1) omit it.
+  verifyAnonRole?(role: string): Promise<void>
 }
