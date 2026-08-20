@@ -21,12 +21,14 @@ Every seam a write crosses, in order. Grep the named symbol to land in the right
    them through the transport — **`partyTransport`**, `src/client/party-db.ts`.
 3. The **lobby** gate runs in the Worker, before the Durable Object wakes — **`authHooks`**,
    `src/server/auth.ts`. One `authorize(req, ctx)` gates both doors: the WS connect and the POST.
-4. **`PartyDbServer.onRequest`** validates the body, resolves the writer's identity through the
-   `auth` hook, and serializes the write → seq → broadcast section — `src/server/party-db-server.ts`.
-5. One **`PersistenceAdapter.write()`** commits the whole POST body in one transaction and returns
-   each batch's resolved rows plus its `seq` — `src/server/persistence.ts`.
-6. The server broadcasts each `SequencedBatch` on the socket inline, after the commit and before
-   it answers the POST with a `WriteAck`.
+4. **`PartyDbServer.onRequest`** validates the body and resolves the writer's identity through
+   the `auth` hook, then hands the batches to `commit` — `src/server/party-db-server.ts`.
+5. **`PartyDbServer.commit`** serializes the write → seq → broadcast section. Host code running
+   in the DO calls it directly for a row the server itself authors (`docs/architecture.md` §14).
+6. One **`PersistenceAdapter.write()`** commits the whole POST body in one transaction and returns
+   each batch's resolved rows plus its `seq` — `src/server/persistence.ts`. `commit` broadcasts each
+   `SequencedBatch` on the socket inline, after the commit and before `onRequest` answers the POST
+   with a `WriteAck`.
 7. **`SyncClient.waitForSeq`** resolves once that `seq` arrives back down the stream, so the
    optimistic overlay drops onto the synced row without a flicker.
 
@@ -61,11 +63,11 @@ Vocabulary, used exactly this way everywhere:
 | Read this | For |
 | --- | --- |
 | `README.md` | the user-facing pitch, both setup snippets, and a per-file table of `src/` |
-| `docs/architecture.md` | the decision record — 13 settled decisions, each with its why, plus the roadmap |
+| `docs/architecture.md` | the decision record — 14 settled decisions, each with its why, plus the roadmap |
 | `docs/unspecified.md` | open questions and modes we describe but have not built |
 | `docs/postgres-todo.md` | the v2 plan: WAL tailing, RPCs, identity-aware reads |
 | `docs/collection-types.md` | TanStack DB's other collection types, and our read-side capabilities |
-| `docs/cookbooks/` | 8 worked recipes; ✅ = works today, 🚧 = the seam exists but the use is proposed |
+| `docs/cookbooks/` | 9 worked recipes; ✅ = works today, 🚧 = the seam exists but the use is proposed |
 | `plans/README.md` | the plan queue with status, dependencies, and findings already rejected |
 
 Before proposing something, check `plans/README.md` — its "Findings considered and rejected" section
@@ -95,7 +97,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 
 **Server**
 
-- `PartyDbServer.onRequest` / `.onConnect` / `.onStart` / `.createAdapter` / `.serialize` — `src/server/party-db-server.ts`
+- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onStart` / `.createAdapter` / `.serialize` — `src/server/party-db-server.ts`
 - `authHooks(authorize)` / `bearer(req)` / `getTokenFromRequest(req)` — `src/server/auth.ts`
 - `buildPlans` / `structuredStmt` / `blobStmt` / `resolveStructured` / `resolvedOpJsonExpr` / `oplogInsertStmt` / `toPg` — `src/server/statements.ts`
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`

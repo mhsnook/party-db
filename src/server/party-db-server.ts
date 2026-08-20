@@ -206,43 +206,68 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       // the write proceeds as the connection role, as a non-RLS server always has.
     }
 
-    return this.serialize(async () => {
-      let sequenced: SequencedBatch[]
-      try {
-        sequenced = await this.adapter.write(body, identity ?? undefined)
-      } catch (e) {
-        // a constraint rejection is the database's verdict on the DATA — hand it
-        // back faithfully (409) so the client can roll back and report it. Anything
-        // else (missing table, adapter bug) is an internal fault: log the detail
-        // server-side and keep the response generic, or we'd echo schema internals
-        // to any writer and mislabel 500-class faults as data rejections.
-        //
-        // The adapter classifies first if it can (Postgres reads SQLSTATE +
-        // constraint name off the error); adapters without their own classifier
-        // (embedded + D1) fall through to the SQLite-message regex, unchanged. The
-        // adapter picks the status too — 409 for an integrity conflict (default),
-        // 403 for an RLS/authorization denial — stripped from the client body.
-        const rejection = this.adapter.classifyError?.(e)
-        if (rejection) {
-          const { status = 409, ...reject } = rejection
-          return Response.json(reject satisfies WriteReject, { status })
-        }
-        if (isConstraintError(e)) {
-          return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
-        }
-        console.error('party-db write failed:', e)
-        return Response.json({ error: 'internal error applying write' } satisfies WriteReject, { status: 500 })
+    let sequenced: SequencedBatch[]
+    try {
+      sequenced = await this.commit(body, identity ?? undefined)
+    } catch (e) {
+      // a constraint rejection is the database's verdict on the DATA — hand it
+      // back faithfully (409) so the client can roll back and report it. Anything
+      // else (missing table, adapter bug) is an internal fault: log the detail
+      // server-side and keep the response generic, or we'd echo schema internals
+      // to any writer and mislabel 500-class faults as data rejections.
+      //
+      // The adapter classifies first if it can (Postgres reads SQLSTATE +
+      // constraint name off the error); adapters without their own classifier
+      // (embedded + D1) fall through to the SQLite-message regex, unchanged. The
+      // adapter picks the status too — 409 for an integrity conflict (default),
+      // 403 for an RLS/authorization denial — stripped from the client body.
+      const rejection = this.adapter.classifyError?.(e)
+      if (rejection) {
+        const { status = 409, ...reject } = rejection
+        return Response.json(reject satisfies WriteReject, { status })
       }
+      if (isConstraintError(e)) {
+        return Response.json({ error: messageOf(e), ...constraintOf(e) } satisfies WriteReject, { status: 409 })
+      }
+      console.error('party-db write failed:', e)
+      return Response.json({ error: 'internal error applying write' } satisfies WriteReject, { status: 500 })
+    }
 
-      // broadcast only after the commit succeeds; inline before responding keeps
-      // broadcast order == seq order. `changed` carries the resolved rows for a
-      // caller that holds no stream subscription.
-      const ack: WriteAck = { accepted: [], changed: sequenced }
-      for (const batch of sequenced) {
-        this.broadcast(JSON.stringify(batch))
-        ack.accepted.push({ channel: batch.channel, seq: batch.seq })
-      }
-      return Response.json(ack)
+    // `changed` carries the resolved rows for a caller that holds no stream
+    // subscription; `accepted` is the match token it awaits on the stream.
+    const ack: WriteAck = {
+      accepted: sequenced.map((b) => ({ channel: b.channel, seq: b.seq })),
+      changed: sequenced,
+    }
+    return Response.json(ack)
+  }
+
+  // Commit batches into the room exactly as a POST does: one transaction for the
+  // whole call, a `seq` and an `_oplog` entry per batch, then fan-out to every
+  // connected socket. Returns the sequenced batches — the resolved rows the
+  // database committed, each with its seq.
+  //
+  // Call it for a write the SERVER authors: a job, an agent, host code running in
+  // this room's own DO. Writing those rows with your own SQL instead splits the
+  // room — the rows reach a freshly-connecting client through the snapshot, but
+  // never reach an already-connected one and never appear in a reconnect delta.
+  //
+  // Two properties come with the queue this runs through. Ordering holds:
+  // `commit` shares the `serialize` queue with concurrent POSTs, so broadcast
+  // order stays equal to seq order. And it sits BELOW the HTTP path's size, shape
+  // and token checks — right for a write the server itself authors, since the
+  // caller is privileged host code. Pass `identity` to have the database judge it
+  // anyway (Postgres RLS); omit it and the write runs as the connection's role.
+  //
+  // A rejection from the database THROWS. `onRequest` turns that into a 409/403/500;
+  // host code catches it however it reports its own failures.
+  protected commit(batches: WriteBatch[], identity?: WriteIdentity): Promise<SequencedBatch[]> {
+    return this.serialize(async () => {
+      const sequenced = await this.adapter.write(batches, identity)
+      // broadcast only after the commit succeeds, inline inside the queued
+      // section, which is what keeps broadcast order == seq order.
+      for (const batch of sequenced) this.broadcast(JSON.stringify(batch))
+      return sequenced
     })
   }
 }

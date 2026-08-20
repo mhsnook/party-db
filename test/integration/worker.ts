@@ -220,6 +220,43 @@ export class Authed extends Main {
   }
 }
 
+// A room whose OWN host code writes rows — the case #41 opens: a job, an agent,
+// or anything running inside this Durable Object that is not a client POST.
+// `commit()` is the seam it goes through, so the rows get a seq, an `_oplog`
+// entry, and fan-out exactly as a POST's would.
+//
+// Three test-only GET endpoints stand in for that host code, since a test has to
+// be able to trigger it:
+//   ?host=<id>      commit inline; answer with the sequenced batches
+//   ?deferred=<id>  answer 202 first, commit under waitUntil — journo-harness's
+//                   shape, where the request returns and the work settles later
+//   ?raw=<id>       write the table directly with our own SQL: the split commit()
+//                   exists to close. Nothing broadcasts, nothing reaches the oplog.
+// POSTs fall through to the normal /write path.
+export class Hosted extends Main {
+  async onRequest(req: Request): Promise<Response> {
+    const q = new URL(req.url).searchParams
+    const id = q.get('host') ?? q.get('deferred')
+    if (id === null) {
+      const raw = q.get('raw')
+      if (raw === null) return super.onRequest(req)
+      this.ctx.storage.sql.exec(`INSERT INTO todos (id, text) VALUES (?, ?)`, raw, 'out of band')
+      return Response.json({ raw })
+    }
+    const batches = [{ channel: 'todos', ops: [{ type: 'insert' as const, value: { id, text: `host ${id}` } }] }]
+    if (q.has('deferred')) {
+      this.ctx.waitUntil(this.commit(batches))
+      return Response.json({ deferred: id }, { status: 202 })
+    }
+    try {
+      return Response.json({ sequenced: await this.commit(batches) })
+    } catch (e) {
+      // host code owns its own failure reporting; the test asserts the throw.
+      return Response.json({ error: String((e as Error)?.message ?? e) }, { status: 500 })
+    }
+  }
+}
+
 export const SECRET = 's3cret'
 
 // A binding so the `guarded` party has somewhere to route; the auth is in the
