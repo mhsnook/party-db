@@ -169,6 +169,32 @@ tx.mutate(() => {
 await tx.isPersisted.promise // both land in one POST, or neither does
 ```
 
+## Rows your server writes itself
+
+Not every row comes from a client. When the code writing it is your own — a job,
+an agent, a webhook handler running inside the room's Durable Object — call
+`this.commit()` instead of your own `INSERT`, and the row syncs like any other
+write: a `seq`, an `_oplog` entry, and fan-out to every socket in the room.
+
+```ts
+export class Article extends PartyDbServer {
+  collections = [{ name: 'notes', key: 'id', schema: noteSchema }]
+
+  async review(articleId: string) {
+    for await (const note of runTheModel(articleId)) {
+      // returns the resolved rows + their seq; throws if the database rejects
+      await this.commit([{ channel: 'notes', ops: [{ type: 'insert', value: note }] }])
+    }
+  }
+}
+```
+
+Every client watching the room sees each note appear as it commits — no new
+endpoint, no polling. Writing the same row with raw SQL instead would reach a
+freshly-connecting client (through the snapshot) and *never* an already-connected
+one, because only the oplog feeds the stream. See
+[cookbook 9](./docs/cookbooks/09-server-originated-writes.md).
+
 ## onAuthError callback
 
 If a client connection makes it past the initial worker check (stateless auth check)
@@ -227,7 +253,7 @@ pnpm test:pg && pnpm test:integration
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
 | `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` — classified write & auth failures |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
-| `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write`, behind a `PersistenceAdapter` |
+| `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + `commit()`, behind a `PersistenceAdapter` |
 | `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |
 | `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1 ↔ Postgres) |
 | `src/server/sqlite-adapter.ts` | `SqliteAdapter` — structured CRUD + `RETURNING`; blob fallback |

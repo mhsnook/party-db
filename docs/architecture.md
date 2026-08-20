@@ -423,6 +423,37 @@ why we skip trying to use it as the server sink, reaching for `ctx.storage.sql`
 (or a real database) directly. What's shared across sides is the wire protocol and
 the apply contract (§4), not the apply code — the sinks differ.
 
+## 14. A write the server authors goes through `commit`, not raw SQL
+
+The write → `seq` → broadcast section is a protected method — `commit(batches, identity?)`
+— and `onRequest` is only its first caller. A `PartyDbServer` subclass calls it for a
+row its own host code produces: a job, an agent, a queue consumer running inside the
+room's Durable Object. That write then gets seq assignment, the `_oplog` append, the
+resolved rows and fan-out on exactly the terms a POST gets.
+
+Writing those rows with your own `INSERT` instead splits the room. `snapshot()` reads
+your real tables; `replaySince()` reads only the `_oplog` (§8). So a row written around
+the oplog reaches a freshly-connecting client, never reaches an already-connected one,
+and never appears in a reconnecting one's delta — two clients on one room diverge by
+connection history and stay diverged until the next full snapshot.
+
+Two properties come free with the queue `commit` shares with POSTs:
+
+- **Ordering holds.** Same `serialize` queue, so broadcast order stays equal to seq
+  order (§9) however host writes and POSTs interleave.
+- **The auth layering is right.** `commit` sits *below* the HTTP path's size, shape and
+  token checks, which is what a write the server itself authors wants: the caller is
+  privileged host code, and `/write` keeps its own checks. Pass an `identity` to have
+  Postgres' RLS judge the write anyway (§10a).
+
+A database rejection **throws** out of `commit` rather than becoming a `Response`. The
+HTTP path turns that into a 409/403/500; host code reports it however it reports its
+own failures.
+
+This covers a write authored **inside the room's DO**. A write from outside it — another
+worker, a cronjob, `psql` — still never reaches the oplog, and that remains the v2 WAL
+story (`postgres-todo.md`), not something `commit` can close.
+
 ## Layering
 
 | Layer | What |
@@ -460,9 +491,11 @@ farther-away box, just makes persistence async — the atomic POST moves from
 `transactionSync` to D1's `batch()`, and the DO serializes its write → `seq` →
 broadcast section so concurrent POSTs don't interleave (10 people editing at once is
 fine — the DO orders them). What v1 *can't* see, on either target, is a change that
-never came through `/write`: a cronjob, another service, or a trigger's side-effects
+never came through the room: a cronjob, another service, or a trigger's side-effects
 on rows our statements didn't return. So avoid side-effecting triggers in v1, or
-accept they won't sync live — until v2. **Status:** all three v1 targets are landed —
+accept they won't sync live — until v2. Code running *inside* the room's own DO is the
+exception, and the one we closed: it calls `commit()` (§14) and its rows sequence,
+log and fan out like any other write. **Status:** all three v1 targets are landed —
 embedded DO-SQLite, D1, *and* Postgres's write path. The D1 shape: the whole POST —
 CRUD, `_oplog` append,
 compaction — commits as one atomic `batch()`, with the resolved-op JSON assembled

@@ -22,6 +22,8 @@ export default defineConfig({
           Faulty: { className: 'Faulty', useSQLite: true },
           // the server-layer identity gate (auth, fail-closed default), SQLite-backed.
           Authed: { className: 'Authed', useSQLite: true },
+          // writes rows from its own host code through `commit()`, not a POST.
+          Hosted: { className: 'Hosted', useSQLite: true },
           // persists into D1 (env.DB) rather than its own SQLite; still a real DO.
           D1Room: { className: 'D1Room', useSQLite: true },
           // persists into a real Postgres (env.PG_URL) over cloudflare:sockets.
