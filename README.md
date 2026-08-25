@@ -195,6 +195,58 @@ freshly-connecting client (through the snapshot) and *never* an already-connecte
 one, because only the oplog feeds the stream. See
 [cookbook 9](./docs/cookbooks/09-server-originated-writes.md).
 
+## A Server that can't subclass holds the core instead
+
+`PartyDbServer` is a thin subclass over `PartyDbCore`. If your Durable Object
+already extends another partyserver `Server` — an agents-SDK `AIChatAgent`, say —
+hold the core and forward your lifecycle events to it. Your class stays what it
+was; party-db rides along:
+
+```ts
+export class ArticleAgent extends AIChatAgent<Env> {
+  db!: PartyDbCore
+
+  async onStart() {
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS notes (...)`) // your tables, as ever
+    const engine = {
+      exec: (q, ...b) => this.ctx.storage.sql.exec(q, ...b),
+      transaction: (fn) => this.ctx.storage.transactionSync(fn),
+    }
+    this.db = new PartyDbCore({
+      collections,
+      adapter: new SqliteAdapter(engine, collections),
+      // you own the sockets: fan out only to the connections you tagged party-db
+      broadcast: (msg) => {
+        for (const conn of this.getConnections('party-db')) conn.send(msg)
+      },
+    })
+    await this.db.init()
+  }
+
+  // your convention decides which connects are party-db clients (a query marker,
+  // a path); tag them so the broadcast above finds them after hibernation.
+  getConnectionTags(conn, ctx) {
+    return isPartyDbConnect(ctx.request) ? ['party-db'] : []
+  }
+
+  onConnect(conn, ctx) {
+    if (isPartyDbConnect(ctx.request)) return this.db.connect((m) => conn.send(m), ctx.request.url)
+    // ...your own socket traffic
+  }
+
+  onRequest(req) {
+    if (isPartyDbWrite(req)) return this.db.handleWrite(req)
+    // ...your own routes
+  }
+}
+```
+
+The core never namespaces its frames onto a shared socket — party-db clients get
+their own connections, and the wire stays exactly what a `PartyDbServer` room
+speaks ([architecture §15](./docs/architecture.md)). `commit()` works the same
+way here: `this.db.commit(batches)`. A working room built this way is
+`Composed` in `test/integration/worker.ts`.
+
 ## onAuthError callback
 
 If a client connection makes it past the initial worker check (stateless auth check)
@@ -253,7 +305,8 @@ pnpm test:pg && pnpm test:integration
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
 | `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` — classified write & auth failures |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
-| `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + `commit()`, behind a `PersistenceAdapter` |
+| `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + `commit()`; the thin subclass over the core |
+| `src/server/core.ts` | `PartyDbCore` — the same room as a unit a host that can't subclass *holds* |
 | `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |
 | `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1 ↔ Postgres) |
 | `src/server/sqlite-adapter.ts` | `SqliteAdapter` — structured CRUD + `RETURNING`; blob fallback |

@@ -2,11 +2,13 @@
 // Object with SQLite. The integration test drives it through `SELF.fetch` — the
 // full HTTP + WebSocket path, partyserver routing, DO storage and all.
 
-import { routePartykitRequest } from 'partyserver'
+import { routePartykitRequest, Server, type Connection, type ConnectionContext } from 'partyserver'
 import {
   PartyDbServer,
+  PartyDbCore,
   D1Adapter,
   PgAdapter,
+  SqliteAdapter,
   definePartyCollection,
   authHooks,
   bearer,
@@ -14,6 +16,7 @@ import {
   type PartyCollection,
   type PersistenceAdapter,
   type PgClient,
+  type SqlEngine,
   type WriteIdentity,
 } from '../../src/server/index.ts'
 import { z } from 'zod'
@@ -256,6 +259,58 @@ export class Hosted extends Main {
     }
   }
 }
+
+// The host issue #43 opens the core for: a room that CANNOT subclass
+// PartyDbServer because it already extends another partyserver `Server` (the
+// stand-in here for an agents-SDK AIChatAgent). It HOLDS a `PartyDbCore`
+// instead: builds the adapter over its own storage, routes party-db clients by
+// its own convention (here a `?proto=party-db` connect marker, tagged so
+// hibernation keeps the routing), scopes the fan-out to that tag, and keeps its
+// own socket traffic — a greeting frame — off the party-db connections.
+export class Composed extends Server {
+  static options = { hibernate: true }
+  private db!: PartyDbCore
+
+  async onStart() {
+    // the app owns its table, exactly as under PartyDbServer.
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS todos (
+         id TEXT PRIMARY KEY,
+         text TEXT NOT NULL,
+         done INTEGER NOT NULL DEFAULT 0,
+         rev INTEGER NOT NULL DEFAULT 1
+       )`,
+    )
+    const engine: SqlEngine = {
+      exec: (query, ...bindings) => this.ctx.storage.sql.exec(query, ...bindings),
+      transaction: (fn) => this.ctx.storage.transactionSync(fn),
+    }
+    this.db = new PartyDbCore({
+      collections: [todos],
+      adapter: new SqliteAdapter(engine, [todos], { oplogRetention: 50 }),
+      broadcast: (message) => {
+        for (const conn of this.getConnections('party-db')) conn.send(message)
+      },
+    })
+    await this.db.init()
+  }
+
+  getConnectionTags(_conn: Connection, ctx: ConnectionContext): string[] {
+    return isPartyDbConnect(ctx.request) ? ['party-db'] : []
+  }
+
+  onConnect(conn: Connection, ctx: ConnectionContext): void | Promise<void> {
+    if (isPartyDbConnect(ctx.request)) return this.db.connect((message) => conn.send(message), ctx.request.url)
+    // the host's own protocol on its own connections — never a party-db frame.
+    conn.send('host: hello')
+  }
+
+  onRequest(req: Request): Promise<Response> {
+    return this.db.handleWrite(req)
+  }
+}
+
+const isPartyDbConnect = (req: Request) => new URL(req.url).searchParams.get('proto') === 'party-db'
 
 export const SECRET = 's3cret'
 

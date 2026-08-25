@@ -21,9 +21,11 @@ Every seam a write crosses, in order. Grep the named symbol to land in the right
    them through the transport — **`partyTransport`**, `src/client/party-db.ts`.
 3. The **lobby** gate runs in the Worker, before the Durable Object wakes — **`authHooks`**,
    `src/server/auth.ts`. One `authorize(req, ctx)` gates both doors: the WS connect and the POST.
-4. **`PartyDbServer.onRequest`** validates the body and resolves the writer's identity through
-   the `auth` hook, then hands the batches to `commit` — `src/server/party-db-server.ts`.
-5. **`PartyDbServer.commit`** serializes the write → seq → broadcast section. Host code running
+4. **`PartyDbCore.handleWrite`** validates the body and resolves the writer's identity through
+   the `auth` hook, then hands the batches to `commit` — `src/server/core.ts`. `PartyDbServer`
+   is the thin subclass that forwards `onRequest` to it; a host that can't subclass holds the
+   core itself (`docs/architecture.md` §15).
+5. **`PartyDbCore.commit`** serializes the write → seq → broadcast section. Host code running
    in the DO calls it directly for a row the server itself authors (`docs/architecture.md` §14).
 6. One **`PersistenceAdapter.write()`** commits the whole POST body in one transaction and returns
    each batch's resolved rows plus its `seq` — `src/server/persistence.ts`. `commit` broadcasts each
@@ -97,7 +99,8 @@ Four files hold the whole contract. Read them before changing anything under `sr
 
 **Server**
 
-- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onStart` / `.createAdapter` / `.serialize` — `src/server/party-db-server.ts`
+- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onStart` / `.createAdapter` — `src/server/party-db-server.ts`, the thin subclass
+- `PartyDbCore.init` / `.connect` / `.handleWrite` / `.commit` / `.serialize` — `src/server/core.ts`, the held unit for a host that can't subclass (`docs/architecture.md` §15)
 - `authHooks(authorize)` / `bearer(req)` / `getTokenFromRequest(req)` — `src/server/auth.ts`
 - `buildPlans` / `structuredStmt` / `blobStmt` / `resolveStructured` / `resolvedOpJsonExpr` / `oplogInsertStmt` / `toPg` — `src/server/statements.ts`
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`
