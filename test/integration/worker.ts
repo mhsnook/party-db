@@ -296,21 +296,26 @@ export class Composed extends Server {
   }
 
   getConnectionTags(_conn: Connection, ctx: ConnectionContext): string[] {
-    return isPartyDbConnect(ctx.request) ? ['party-db'] : []
+    return isPartyDbConnect(new URL(ctx.request.url)) ? ['party-db'] : []
   }
 
   onConnect(conn: Connection, ctx: ConnectionContext): void | Promise<void> {
-    if (isPartyDbConnect(ctx.request)) return this.db.connect((message) => conn.send(message), ctx.request.url)
+    // parse once: the same URL answers the routing question and carries `?since`.
+    const url = new URL(ctx.request.url)
+    if (isPartyDbConnect(url)) return this.db.connect((message) => conn.send(message), url)
     // the host's own protocol on its own connections — never a party-db frame.
     conn.send('host: hello')
   }
 
-  onRequest(req: Request): Promise<Response> {
+  onRequest(req: Request): Promise<Response> | Response {
+    // the host's own HTTP surface rides alongside the party-db write path, split
+    // by the same kind of convention as the connects.
+    if (new URL(req.url).searchParams.has('host-status')) return Response.json({ host: 'ok' })
     return this.db.handleWrite(req)
   }
 }
 
-const isPartyDbConnect = (req: Request) => new URL(req.url).searchParams.get('proto') === 'party-db'
+const isPartyDbConnect = (url: URL) => url.searchParams.get('proto') === 'party-db'
 
 export const SECRET = 's3cret'
 

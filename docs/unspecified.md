@@ -22,9 +22,12 @@ doc once that milestone starts; until then a short design note lives at the bott
   (`PartyDbCore`, architecture §15, #43). A host that multiplexes other traffic
   recognizes party-db connects by its own convention — a query marker, a path — but
   `partyTransport` only sends `?since` and `?token`, so such an app must build its
-  own `Transport` today. An optional query passthrough on `partyTransport` (e.g.
-  `query: { proto: 'party-db' }`) is additive sugar; it is not designed yet because
-  the first composed host (scribble-harness) hasn't fixed its convention.
+  own `Transport` today. The same gap covers the write path: the POST carries no
+  marker either, so a host with its own HTTP routes splits on path or query (the
+  `Composed` room in `test/integration/worker.ts` shows a query split). An optional
+  query passthrough on `partyTransport` (e.g. `query: { proto: 'party-db' }`) is
+  additive sugar; it is not designed yet because the first composed host
+  (scribble-harness) hasn't fixed its convention.
 - **Subscription / filtering.** Today the server broadcasts every channel and the
   client ignores unknowns. A `subscribe(channels[])` control message would let the
   server send only relevant batches + backlog. Matters as channel count grows.

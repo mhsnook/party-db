@@ -27,7 +27,7 @@ import type { SequencedBatch, WriteBatch } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
-import { PartyDbCore } from './core.ts'
+import { PartyDbCore, DEFAULT_MAX_WRITE_BYTES, DEFAULT_MAX_WRITE_OPS } from './core.ts'
 
 export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
   static options = { hibernate: true }
@@ -37,12 +37,12 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // fresh reset snapshot (see docs/architecture.md §8). Override in your subclass;
   // set 0 for unbounded (the pre-1.0 behavior).
   oplogRetention = 10_000
-  // reject a POST /write whose body exceeds this many bytes (413). Bounds DO
-  // memory per request. Override to tune; 0 disables the check.
-  maxWriteBytes = 1_048_576 // 1 MiB
+  // reject a POST /write whose body exceeds this many bytes (413; 1 MiB). Bounds
+  // DO memory per request. Override to tune; 0 disables the check.
+  maxWriteBytes = DEFAULT_MAX_WRITE_BYTES
   // reject a POST /write carrying more than this many ops across all batches
   // (413). Override to tune; 0 disables the check.
-  maxWriteOps = 1_000
+  maxWriteOps = DEFAULT_MAX_WRITE_OPS
 
   // Resolve the writer's verified identity from the POST — fresh every request,
   // never a stale value — so the storage layer can enforce it. On Postgres the
@@ -90,7 +90,9 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       collections: this.collections,
       adapter: this.createAdapter(),
       broadcast: (message) => this.broadcast(message),
-      auth: this.auth ? (req) => this.auth!(req) : undefined,
+      // all options snapshot at onStart — like every other field, `auth` must be
+      // in place before then (assign it as a class field, as the docs show).
+      auth: this.auth?.bind(this),
       anonRole: this.anonRole,
       maxWriteBytes: this.maxWriteBytes,
       maxWriteOps: this.maxWriteOps,

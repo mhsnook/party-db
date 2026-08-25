@@ -4,31 +4,11 @@
 // extend it and you never see this file. The core exists for the host that
 // cannot subclass — one that already extends another partyserver `Server` (an
 // agents-SDK `AIChatAgent`, say), where single inheritance closes that door.
-// Such a host constructs a `PartyDbCore` over its own storage and calls it from
-// its lifecycle hooks:
-//
-//   export class ArticleAgent extends AIChatAgent<Env> {
-//     db!: PartyDbCore
-//     async onStart() {
-//       this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS todos (...)`) // your tables, as ever
-//       this.db = new PartyDbCore({
-//         collections,
-//         adapter: new SqliteAdapter(engine, collections),
-//         broadcast: (msg) => {
-//           for (const conn of this.getConnections()) if (isPartyDb(conn)) conn.send(msg)
-//         },
-//       })
-//       await this.db.init()
-//     }
-//     onConnect(conn, ctx) {
-//       if (isPartyDbConnect(ctx.request)) return this.db.connect((msg) => conn.send(msg), ctx.request.url)
-//       // ...the host's own traffic
-//     }
-//     onRequest(req) {
-//       if (isPartyDbWrite(req)) return this.db.handleWrite(req)
-//       // ...the host's own routes
-//     }
-//   }
+// Such a host constructs a `PartyDbCore` over its own storage in its `onStart`,
+// calls `init()`, and forwards its `onConnect` / `onRequest` events. The worked
+// example lives in one place per audience: README §"A Server that can't
+// subclass holds the core instead", and the `Composed` room in
+// `test/integration/worker.ts` — the copy the integration suite keeps honest.
 //
 // The core never touches a socket. It emits the same wire frames every
 // `PartyDbServer` room emits — raw `SequencedBatch` JSON — through two host
@@ -70,6 +50,11 @@ export interface PartyDbCoreOptions {
   maxWriteOps?: number
 }
 
+// One owner for the write-cap defaults: `PartyDbServer`'s field initializers and
+// the core's option fallbacks both read these, so the two host styles can't drift.
+export const DEFAULT_MAX_WRITE_BYTES = 1_048_576 // 1 MiB
+export const DEFAULT_MAX_WRITE_OPS = 1_000
+
 export class PartyDbCore {
   private adapter: PersistenceAdapter
   private collections: PartyCollection<any>[]
@@ -78,7 +63,7 @@ export class PartyDbCore {
   private anonRole?: string
   private maxWriteBytes: number
   private maxWriteOps: number
-  private channels = new Set<string>()
+  private channels: Set<string>
   // serializes the write → seq → broadcast section. A no-op for embedded SQLite
   // (the apply is synchronous), but the contract is async for D1, where two
   // concurrent POSTs' awaits could otherwise interleave the ordering.
@@ -90,9 +75,9 @@ export class PartyDbCore {
     this.broadcast = opts.broadcast
     this.auth = opts.auth
     this.anonRole = opts.anonRole
-    this.maxWriteBytes = opts.maxWriteBytes ?? 1_048_576
-    this.maxWriteOps = opts.maxWriteOps ?? 1_000
-    for (const c of this.collections) this.channels.add(c.name)
+    this.maxWriteBytes = opts.maxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES
+    this.maxWriteOps = opts.maxWriteOps ?? DEFAULT_MAX_WRITE_OPS
+    this.channels = new Set(opts.collections.map((c) => c.name))
   }
 
   // Run `fn` after every previously-queued section completes, so the ordering of
@@ -133,7 +118,8 @@ export class PartyDbCore {
   // ws.send enqueues, so the queue is never held on network I/O.
   connect(send: (message: string) => void, url: string | URL): Promise<void> {
     return this.serialize(async () => {
-      const cursor = cursorParam(new URL(url).searchParams.get('since'))
+      const parsed = url instanceof URL ? url : new URL(url)
+      const cursor = cursorParam(parsed.searchParams.get('since'))
       const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
       const batches = delta ?? (await this.adapter.snapshot())
       for (const b of batches) send(JSON.stringify(b))

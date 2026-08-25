@@ -61,6 +61,10 @@ describe('a Server that holds the core instead of subclassing', () => {
     expect(own.frames).toEqual(['host: hello'])
     await sub.waitFor(1) // the connect snapshot of the (empty) room
 
+    // the host's own HTTP route answers beside the party-db write path
+    const status = await SELF.fetch(url(room, { 'host-status': '1' }), { headers: roomHeader(room) })
+    expect(await status.json()).toEqual({ host: 'ok' })
+
     await post(room, insert('c2', 'routed'))
     await sub.waitFor(2)
 

@@ -18,7 +18,8 @@ const todoSchema = z.object({ id: z.string(), text: z.string(), done: z.boolean(
 const collections = [definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })]
 
 // the host: it owns the storage and the "sockets" (here, an array of frames).
-function host(opts: { auth?: (req: Request) => WriteIdentity | null } = {}) {
+// Initialized, as a real host's onStart leaves it — no test exercises pre-init.
+async function host(opts: { auth?: (req: Request) => WriteIdentity | null } = {}) {
   const { engine, db } = memoryEngine()
   db.exec(`CREATE TABLE todos (id TEXT PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)`)
   const broadcasts: SequencedBatch[] = []
@@ -28,6 +29,7 @@ function host(opts: { auth?: (req: Request) => WriteIdentity | null } = {}) {
     broadcast: (message) => broadcasts.push(JSON.parse(message)),
     ...opts,
   })
+  await core.init()
   return { core, db, broadcasts }
 }
 
@@ -38,8 +40,7 @@ const post = (body: unknown, headers: Record<string, string> = {}) =>
 
 describe('PartyDbCore — composed into a host that cannot subclass', () => {
   it('init creates the _oplog in the host-built adapter', async () => {
-    const { core, db } = host()
-    await core.init()
+    const { core, db } = await host()
     const tables = db
       .prepare(`SELECT name FROM sqlite_master WHERE type='table'`)
       .all()
@@ -48,8 +49,7 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
   })
 
   it('handleWrite commits, acks the resolved row, and fans out through the host broadcast', async () => {
-    const { core, broadcasts } = host()
-    await core.init()
+    const { core, broadcasts } = await host()
     const res = await core.handleWrite(post(write('a', 'compose')))
     expect(res.status).toBe(200)
     const ack = (await res.json()) as WriteAck
@@ -61,36 +61,36 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
   })
 
   it('commit sequences and fans out a write the host itself authors', async () => {
-    const { core, broadcasts } = host()
-    await core.init()
+    const { core, broadcasts } = await host()
     const sequenced = await core.commit(write('h', 'host-authored'))
     expect(sequenced[0].seq).toBeGreaterThan(0)
     expect(broadcasts).toEqual(sequenced)
   })
 
   it('connect sends a fresh client the snapshot and a cursored client only the delta', async () => {
-    const { core } = host()
-    await core.init()
+    const { core } = await host()
     await core.commit(write('a', 'one'))
     const [{ seq }] = await core.commit(write('b', 'two'))
 
-    const fresh: SequencedBatch[] = []
-    await core.connect((m) => fresh.push(JSON.parse(m)), 'https://example.com/parties/main/room')
+    const connectFrames = async (query = '') => {
+      const frames: SequencedBatch[] = []
+      await core.connect((m) => frames.push(JSON.parse(m)), `https://example.com/parties/main/room${query}`)
+      return frames
+    }
+
+    const fresh = await connectFrames()
     expect(fresh[0].ops.map((op) => (op.value as any).id).sort()).toEqual(['a', 'b'])
 
-    const behindByOne: SequencedBatch[] = []
-    await core.connect((m) => behindByOne.push(JSON.parse(m)), `https://example.com/parties/main/room?since=${Number(seq) - 1}`)
+    const behindByOne = await connectFrames(`?since=${Number(seq) - 1}`)
     expect(behindByOne).toHaveLength(1)
     expect(behindByOne[0].ops[0].value).toMatchObject({ id: 'b' })
 
-    const current: SequencedBatch[] = []
-    await core.connect((m) => current.push(JSON.parse(m)), `https://example.com/parties/main/room?since=${seq}`)
+    const current = await connectFrames(`?since=${seq}`)
     expect(current).toHaveLength(0)
   })
 
   it('rejects an unknown channel 400 and a non-POST 404 without touching the adapter', async () => {
-    const { core, broadcasts } = host()
-    await core.init()
+    const { core, broadcasts } = await host()
     const bad = await core.handleWrite(post([{ channel: 'nope', ops: [] }]))
     expect(bad.status).toBe(400)
     const get = await core.handleWrite(new Request('https://example.com/parties/main/room'))
@@ -99,16 +99,14 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
   })
 
   it('fails closed: with auth set and no identity resolved, the write is rejected 401', async () => {
-    const { core, broadcasts } = host({ auth: () => null })
-    await core.init()
+    const { core, broadcasts } = await host({ auth: () => null })
     const res = await core.handleWrite(post(write('x', 'anon')))
     expect(res.status).toBe(401)
     expect(broadcasts).toHaveLength(0)
   })
 
   it('answers a constraint rejection 409, and stays serving after it', async () => {
-    const { core } = host()
-    await core.init()
+    const { core } = await host()
     await core.commit(write('dup', 'first'))
     const res = await core.handleWrite(post(write('dup', 'second')))
     expect(res.status).toBe(409)
