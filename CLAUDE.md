@@ -60,6 +60,24 @@ Vocabulary, used exactly this way everywhere:
 - **The wire is mode-invariant.** A client cannot tell which mode its room runs. Changing mode is a
   server-only migration.
 
+### Two kinds of contract — only one binds
+
+Two different things get called "the contract" in review. Keep them apart:
+
+- **The userspace contract** — everything app code touches: the exported API (`createPartyDb`,
+  `partyTransport`, `PartyDbServer`, `PartyDbCore` and its options), the TanStack DB behavior,
+  and the app's own tables. Preserve it, or flag the break loudly.
+- **Lockstep internals** — everything where party-db owns both ends and one package version ships
+  them together: the wire frames, the query markers, the seams between our own client pieces.
+  Change these freely when both halves change in the same commit. Do not add compatibility shims,
+  protocol version fields, or migration paths for them — there is no independently-versioned party
+  to protect. The one real skew, a stale browser tab running the old client against a redeployed
+  room, is accepted pre-1.0: the tab reloads.
+
+When an issue or plan says "no wire changes", read it as "no userspace-visible changes" unless it
+says otherwise. The `?proto=party-db` marker (PR #44) is the model: a wire addition, invisible to
+userspace, shipped without ceremony.
+
 ## Documentation map
 
 | Read this | For |

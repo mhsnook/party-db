@@ -18,12 +18,6 @@ doc once that milestone starts; until then a short design note lives at the bott
     resolves once per request (same request it already sees at the lobby). The lib
     stays out of validation — it just hands Zod the one thing the row can't carry: who
     is asking. See [cookbook 2](./cookbooks/02-server-validation.md).
-- **The traffic marker on a custom `Transport`.** `partyTransport` marks every
-  connect and write POST with `?proto=party-db`, and a composed host routes on it
-  with `isPartyDbRequest` (architecture §15). An app that builds its own `Transport`
-  instead of using `partyTransport` must send the same marker to work with a
-  composed host — the constants are exported from `src/protocol.ts`, but nothing
-  enforces it. Open: whether the `Transport` seam should carry the marker itself.
 - **Subscription / filtering.** Today the server broadcasts every channel and the
   client ignores unknowns. A `subscribe(channels[])` control message would let the
   server send only relevant batches + backlog. Matters as channel count grows.
