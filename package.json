@@ -1,6 +1,6 @@
 {
   "name": "party-db",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Multiplexed TanStack DB collection sync over a PartyKit transport",
   "type": "module",
   "license": "MIT",
