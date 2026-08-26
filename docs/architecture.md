@@ -454,44 +454,49 @@ This covers a write authored **inside the room's DO**. A write from outside it �
 worker, a cronjob, `psql` — still never reaches the oplog, and that remains the v2 WAL
 story (`postgres-todo.md`), not something `commit` can close.
 
-## 15. The core is a unit a host can hold, not only inherit
+## 15. The core is a module a host server composes
 
-`PartyDbServer` serves the host that can subclass it. The first real consumer could
-not: scribble-harness's Article Agent already extends `AIChatAgent` (agents SDK →
-partyserver `Server`), and single inheritance closes that door (#43). So the room's
-private half lives in **`PartyDbCore`** (`src/server/core.ts`), a unit any `Server`
-holds:
+`PartyDbCore` (`src/server/core.ts`) holds the core functionality of a room:
 
-- the adapter the host builds over its own storage
+- the adapter, which the host builds over its own storage
 - `connect(send, url)` — the `?since` cursor parse, `replaySince` vs `snapshot`,
   sent atomically through the write queue (§8, plan 004)
-- `handleWrite(req)` — the whole POST path: size/shape caps, the `auth` → `anonRole`
+- `handleWrite(req)` — the POST path: size/shape caps, the `auth` → `anonRole`
   identity gate (§10a), classification of database rejections
 - `commit(batches, identity?)` — the write → seq → broadcast section (§14)
 
-The host constructs the core in its `onStart`, calls `init()`, and forwards its own
-`onConnect` / `onRequest` events. `PartyDbServer` itself is now that thin subclass —
-about a hundred lines of field docs and wiring — which is the proof the extraction is
-complete. Everything a subclass could already do (`createAdapter`, `auth`, `anonRole`,
-the caps) is a constructor option on the core.
+`PartyDbServer` is a thin subclass over the core: its `onStart` builds the default
+adapter and the core, `onConnect` / `onRequest` forward to it, `commit` delegates.
+Every subclass knob (`createAdapter`, `auth`, `anonRole`, the caps) maps to a
+constructor option on the core.
 
-**The core never touches a socket.** It emits the same raw `SequencedBatch` frames
-every room emits, through two host callbacks: the per-connection `send` handed to
-`connect`, and the room-wide `broadcast` called inline inside the serialized commit
-section. Broadcast order equals seq order as long as the callback sends synchronously
-(a plain `conn.send` loop does; don't await in it).
+The core exists for the host that cannot subclass `PartyDbServer` — one that already
+extends another partyserver `Server`, such as an agents-SDK `AIChatAgent`
+(scribble-harness's Article Agent, the first consumer, #43). That host holds the core
+instead: it constructs the core in its `onStart` over its own storage, calls
+`init()`, and forwards its `onConnect` / `onRequest` events. The README section "A
+Server that can't subclass holds the core instead" has the worked example; `Composed`
+in `test/integration/worker.ts` is the tested copy.
 
-Which connections those callbacks reach is the host's routing decision, and that is
-the settled answer to the shared-socket question: **a multiplexing host gives party-db
-clients their own connections; frames are never namespaced onto a shared socket.**
-Namespacing would change the wire and the client — the party-db client connects with
-`?since` and reads bare frames — and the wire is mode- and host-invariant (§1, #43's
-non-goal). partyserver already carries the routing mechanism: tag party-db connects in
-`getConnectionTags` by whatever the host's own convention recognizes (a query marker,
-a path), scope `broadcast` to `getConnections('party-db')`, and route only those
-connects into `core.connect`. The host's own traffic (agents-SDK control frames, chat
-streams) stays on its other connections, untouched. `test/integration/worker.ts`'s
-`Composed` room is the working model.
+The core owns no sockets. It hands frames to two host callbacks: the per-connection
+`send` passed to `connect`, and the `broadcast` passed at construction. The frames
+are the normal wire — raw `SequencedBatch` JSON, never wrapped — so a client cannot
+tell a composed room from a subclassed one. Broadcast order equals seq order as long
+as the `broadcast` callback sends synchronously (a plain `conn.send` loop does; don't
+await in it).
+
+A composed host usually serves other traffic on the same room (agents-SDK control
+frames, chat streams). So the host can route without any app configuration, the
+client marks every party-db request — the connect and the write POST — with
+`?proto=party-db`, and the server exports `isPartyDbRequest(request | url)`. The host
+tags marked connects (`getConnectionTags` → `['party-db']`), scopes its `broadcast`
+callback to `getConnections('party-db')`, and hands marked POSTs to `handleWrite`.
+A subclassed room serves only party-db traffic and ignores the marker.
+
+We considered letting party-db frames share one socket with the host's own protocol,
+and rejected it: the frames would need a namespace, which changes the wire and the
+client for every mode. Routing whole connections by the marker gives the same
+multiplexing with no wire change.
 
 ## Layering
 

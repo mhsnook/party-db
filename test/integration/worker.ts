@@ -6,6 +6,7 @@ import { routePartykitRequest, Server, type Connection, type ConnectionContext }
 import {
   PartyDbServer,
   PartyDbCore,
+  isPartyDbRequest,
   D1Adapter,
   PgAdapter,
   SqliteAdapter,
@@ -260,13 +261,14 @@ export class Hosted extends Main {
   }
 }
 
-// The host issue #43 opens the core for: a room that CANNOT subclass
+// The host issue #43 opens the core for: a room that cannot subclass
 // PartyDbServer because it already extends another partyserver `Server` (the
-// stand-in here for an agents-SDK AIChatAgent). It HOLDS a `PartyDbCore`
-// instead: builds the adapter over its own storage, routes party-db clients by
-// its own convention (here a `?proto=party-db` connect marker, tagged so
-// hibernation keeps the routing), scopes the fan-out to that tag, and keeps its
-// own socket traffic — a greeting frame — off the party-db connections.
+// stand-in here for an agents-SDK AIChatAgent). It holds a `PartyDbCore`
+// instead: it builds the adapter over its own storage, routes party-db traffic
+// with `isPartyDbRequest` (the client marks every request with
+// `?proto=party-db`, so the app configures nothing), tags those connections so
+// hibernation keeps the routing, and scopes the fan-out to that tag. Its own
+// socket traffic — a greeting frame — and its own HTTP route stay separate.
 export class Composed extends Server {
   static options = { hibernate: true }
   private db!: PartyDbCore
@@ -296,26 +298,24 @@ export class Composed extends Server {
   }
 
   getConnectionTags(_conn: Connection, ctx: ConnectionContext): string[] {
-    return isPartyDbConnect(new URL(ctx.request.url)) ? ['party-db'] : []
+    return isPartyDbRequest(ctx.request) ? ['party-db'] : []
   }
 
   onConnect(conn: Connection, ctx: ConnectionContext): void | Promise<void> {
     // parse once: the same URL answers the routing question and carries `?since`.
     const url = new URL(ctx.request.url)
-    if (isPartyDbConnect(url)) return this.db.connect((message) => conn.send(message), url)
+    if (isPartyDbRequest(url)) return this.db.connect((message) => conn.send(message), url)
     // the host's own protocol on its own connections — never a party-db frame.
     conn.send('host: hello')
   }
 
   onRequest(req: Request): Promise<Response> | Response {
-    // the host's own HTTP surface rides alongside the party-db write path, split
-    // by the same kind of convention as the connects.
+    if (isPartyDbRequest(req)) return this.db.handleWrite(req)
+    // the host's own HTTP surface — party-db traffic never reaches it.
     if (new URL(req.url).searchParams.has('host-status')) return Response.json({ host: 'ok' })
-    return this.db.handleWrite(req)
+    return new Response('not found', { status: 404 })
   }
 }
-
-const isPartyDbConnect = (url: URL) => url.searchParams.get('proto') === 'party-db'
 
 export const SECRET = 's3cret'
 

@@ -100,7 +100,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 **Server**
 
 - `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onStart` / `.createAdapter` — `src/server/party-db-server.ts`, the thin subclass
-- `PartyDbCore.init` / `.connect` / `.handleWrite` / `.commit` / `.serialize` — `src/server/core.ts`, the held unit for a host that can't subclass (`docs/architecture.md` §15)
+- `PartyDbCore.init` / `.connect` / `.handleWrite` / `.commit` / `.serialize` / `isPartyDbRequest` — `src/server/core.ts`, the composable core for a host that can't subclass (`docs/architecture.md` §15)
 - `authHooks(authorize)` / `bearer(req)` / `getTokenFromRequest(req)` — `src/server/auth.ts`
 - `buildPlans` / `structuredStmt` / `blobStmt` / `resolveStructured` / `resolvedOpJsonExpr` / `oplogInsertStmt` / `toPg` — `src/server/statements.ts`
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`

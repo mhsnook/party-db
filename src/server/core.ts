@@ -1,29 +1,33 @@
-// The core of a party-db room as a unit a host can HOLD rather than inherit.
+// The core functionality of a party-db room: the adapter seam, the write queue,
+// `connect` (the `?since` replay), `handleWrite` (the POST path), and `commit`.
 //
-// `PartyDbServer` is the thin subclass over this core, and the common case:
-// extend it and you never see this file. The core exists for the host that
-// cannot subclass — one that already extends another partyserver `Server` (an
-// agents-SDK `AIChatAgent`, say), where single inheritance closes that door.
-// Such a host constructs a `PartyDbCore` over its own storage in its `onStart`,
-// calls `init()`, and forwards its `onConnect` / `onRequest` events. The worked
-// example lives in one place per audience: README §"A Server that can't
-// subclass holds the core instead", and the `Composed` room in
-// `test/integration/worker.ts` — the copy the integration suite keeps honest.
-//
-// The core never touches a socket. It emits the same wire frames every
-// `PartyDbServer` room emits — raw `SequencedBatch` JSON — through two host
-// callbacks: the per-connection `send` it is handed at `connect`, and the
-// room-wide `broadcast` after each commit. Which connections those are is the
-// host's routing decision: a host that multiplexes other traffic (agents-SDK
-// control frames, chat streams) gives party-db clients their own connections
-// and scopes `broadcast` to them. The frames are never namespaced for a shared
-// socket — that would change the wire and the client, and the wire is settled
-// (docs/architecture.md §15).
+// `PartyDbServer` is a thin subclass over this core, and the common case. The
+// core exists for the host that cannot subclass — one that already extends
+// another partyserver `Server` (an agents-SDK `AIChatAgent`, say). Such a host
+// constructs the core in its `onStart`, calls `init()`, and forwards its
+// `onConnect` / `onRequest` events, routing party-db traffic with
+// `isPartyDbRequest`. Worked example: README §"A Server that can't subclass
+// holds the core instead". Tested copy: `Composed` in
+// `test/integration/worker.ts`. Design record: docs/architecture.md §15.
 
-import type { SequencedBatch, WriteAck, WriteBatch, WriteReject } from '../protocol.ts'
+import { PROTO_PARAM, PROTO_VALUE, type SequencedBatch, type WriteAck, type WriteBatch, type WriteReject } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
 import { warnUnenforcedAccess } from './access.ts'
+
+// The write-identity hook: resolve the writer's verified identity from a POST.
+// Full semantics on `PartyDbServer.auth`, which is this same hook as a field.
+export type AuthHook = (req: Request) => WriteIdentity | null | Promise<WriteIdentity | null>
+
+// True when a request (or an already-parsed URL) is party-db traffic: the client
+// marks every connect and write POST with `?proto=party-db`. A host that serves
+// other traffic on the same room routes with this — tag marked connects in
+// `getConnectionTags`, hand marked POSTs to `handleWrite`. A `PartyDbServer`
+// room serves only party-db traffic and never checks it.
+export function isPartyDbRequest(source: Request | URL): boolean {
+  const url = source instanceof URL ? source : new URL(source.url)
+  return url.searchParams.get(PROTO_PARAM) === PROTO_VALUE
+}
 
 export interface PartyDbCoreOptions {
   // the same declaration a `PartyDbServer` subclass makes: name, key, shared schema.
@@ -36,12 +40,15 @@ export interface PartyDbCoreOptions {
   // inline inside the serialized commit section, so send order equals seq order
   // as long as the callback sends synchronously (a plain `conn.send` loop does).
   broadcast: (message: string) => void
-  // resolve the writer's verified identity from a POST — see the field of the
-  // same name on `PartyDbServer`, which is documented in full. Absent ⇒ writes
-  // carry no identity; present ⇒ anonymous writes are rejected 401 unless
-  // `anonRole` names the role they run as.
-  auth?: (req: Request) => WriteIdentity | null | Promise<WriteIdentity | null>
+  // read once per write: return the CURRENT identity hook, or undefined when
+  // writes are anonymous. A getter rather than the hook itself so presence stays
+  // live — whether a hook exists at write time decides fail-closed handling (no
+  // hook ⇒ anonymous writes pass; hook ⇒ they are rejected 401 unless `anonRole`
+  // names the role they run as). Hook semantics: `PartyDbServer.auth`.
+  auth?: () => AuthHook | undefined
   // the anonymous-write latch — see `PartyDbServer.anonRole`. Postgres only.
+  // Fixed at construction on purpose, unlike `auth`: `init()` probes the role
+  // once at boot (`verifyAnonRole`), and a later value would skip that probe.
   anonRole?: string
   // reject a write body over this many bytes (413). 0 disables. Default 1 MiB.
   maxWriteBytes?: number
@@ -59,7 +66,7 @@ export class PartyDbCore {
   private adapter: PersistenceAdapter
   private collections: PartyCollection<any>[]
   private broadcast: (message: string) => void
-  private auth?: (req: Request) => WriteIdentity | null | Promise<WriteIdentity | null>
+  private auth?: () => AuthHook | undefined
   private anonRole?: string
   private maxWriteBytes: number
   private maxWriteOps: number
@@ -170,13 +177,16 @@ export class PartyDbCore {
     }
 
     // resolve the writer's identity fresh for THIS POST, before opening any
-    // transaction, so it can be injected into the write (Postgres RLS). A verifier
+    // transaction, so it can be injected into the write (Postgres RLS). The hook
+    // itself is also read fresh, so its presence — which flips anonymous writes
+    // to fail-closed below — is judged at write time, not at boot. A verifier
     // that throws (malformed/expired token) is an auth failure → 401, not a 500;
     // the app's lobby gate may also have refused earlier, this is belt-and-braces.
+    const auth = this.auth?.()
     let identity: WriteIdentity | null = null
-    if (this.auth) {
+    if (auth) {
       try {
-        identity = await this.auth(req)
+        identity = await auth(req)
       } catch {
         return Response.json({ error: 'unauthorized' } satisfies WriteReject, { status: 401 })
       }
@@ -191,7 +201,7 @@ export class PartyDbCore {
     if (!identity?.claims && !identity?.role) {
       if (this.anonRole) {
         identity = { role: this.anonRole }
-      } else if (this.auth) {
+      } else if (auth) {
         return Response.json({ error: 'authentication required' } satisfies WriteReject, { status: 401 })
       }
       // else: no `auth` hook at all → anonymous is fine, `identity` stays null and

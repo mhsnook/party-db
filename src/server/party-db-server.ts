@@ -90,9 +90,13 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       collections: this.collections,
       adapter: this.createAdapter(),
       broadcast: (message) => this.broadcast(message),
-      // all options snapshot at onStart — like every other field, `auth` must be
-      // in place before then (assign it as a class field, as the docs show).
-      auth: this.auth?.bind(this),
+      // `auth` threads as a live read: the core asks for the hook on every
+      // write, so its presence — the fail-closed switch — is judged at write
+      // time, exactly like the field read it replaces. The other options are
+      // read once here: `anonRole` deliberately, because `onStart` probes the
+      // role at boot and a later value would skip the probe; the caps because
+      // a later field change simply isn't picked up.
+      auth: () => this.auth?.bind(this),
       anonRole: this.anonRole,
       maxWriteBytes: this.maxWriteBytes,
       maxWriteOps: this.maxWriteOps,

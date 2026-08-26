@@ -199,10 +199,16 @@ one, because only the oplog feeds the stream. See
 
 `PartyDbServer` is a thin subclass over `PartyDbCore`. If your Durable Object
 already extends another partyserver `Server` — an agents-SDK `AIChatAgent`, say —
-hold the core and forward your lifecycle events to it. Your class stays what it
-was; party-db rides along:
+you can't subclass `PartyDbServer` too. Hold the core instead: construct it in
+`onStart`, call `init()`, and forward `onConnect` / `onRequest` to it.
+
+The party-db client marks every connect and write POST with `?proto=party-db`,
+and the server exports `isPartyDbRequest`, so your server can route party-db
+traffic beside its own without any configuration:
 
 ```ts
+import { PartyDbCore, SqliteAdapter, isPartyDbRequest } from 'party-db/server'
+
 export class ArticleAgent extends AIChatAgent<Env> {
   db!: PartyDbCore
 
@@ -215,7 +221,7 @@ export class ArticleAgent extends AIChatAgent<Env> {
     this.db = new PartyDbCore({
       collections,
       adapter: new SqliteAdapter(engine, collections),
-      // you own the sockets: fan out only to the connections you tagged party-db
+      // you own the sockets: fan out only to the connections tagged party-db
       broadcast: (msg) => {
         for (const conn of this.getConnections('party-db')) conn.send(msg)
       },
@@ -223,29 +229,28 @@ export class ArticleAgent extends AIChatAgent<Env> {
     await this.db.init()
   }
 
-  // your convention decides which connects are party-db clients (a query marker,
-  // a path); tag them so the broadcast above finds them after hibernation.
+  // tag party-db connects so the broadcast above finds them after hibernation
   getConnectionTags(conn, ctx) {
-    return isPartyDbConnect(ctx.request) ? ['party-db'] : []
+    return isPartyDbRequest(ctx.request) ? ['party-db'] : []
   }
 
   onConnect(conn, ctx) {
-    if (isPartyDbConnect(ctx.request)) return this.db.connect((m) => conn.send(m), ctx.request.url)
+    if (isPartyDbRequest(ctx.request)) return this.db.connect((m) => conn.send(m), ctx.request.url)
     // ...your own socket traffic
   }
 
   onRequest(req) {
-    if (isPartyDbWrite(req)) return this.db.handleWrite(req)
+    if (isPartyDbRequest(req)) return this.db.handleWrite(req)
     // ...your own routes
   }
 }
 ```
 
-The core never namespaces its frames onto a shared socket — party-db clients get
-their own connections, and the wire stays exactly what a `PartyDbServer` room
-speaks ([architecture §15](./docs/architecture.md)). `commit()` works the same
-way here: `this.db.commit(batches)`. A working room built this way is
-`Composed` in `test/integration/worker.ts`.
+The core sends the same wire frames a `PartyDbServer` room sends, on the
+connections you route to it — nothing is namespaced onto a shared socket
+([architecture §15](./docs/architecture.md)). `commit()` works the same way
+here: `this.db.commit(batches)`. The tested copy of this pattern is `Composed`
+in `test/integration/worker.ts`.
 
 ## onAuthError callback
 
@@ -306,7 +311,7 @@ pnpm test:pg && pnpm test:integration
 | `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` — classified write & auth failures |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + `commit()`; the thin subclass over the core |
-| `src/server/core.ts` | `PartyDbCore` — the same room as a unit a host that can't subclass *holds* |
+| `src/server/core.ts` | `PartyDbCore` — the room's core functionality, for hosts that compose instead of subclass |
 | `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |
 | `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1 ↔ Postgres) |
 | `src/server/sqlite-adapter.ts` | `SqliteAdapter` — structured CRUD + `RETURNING`; blob fallback |

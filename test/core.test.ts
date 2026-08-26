@@ -7,19 +7,18 @@
 
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { PartyDbCore } from '../src/server/core.ts'
+import { PartyDbCore, type AuthHook } from '../src/server/core.ts'
 import { SqliteAdapter } from '../src/server/sqlite-adapter.ts'
 import { definePartyCollection } from '../src/schema.ts'
 import { memoryEngine } from './helpers/sql-engine.ts'
 import type { SequencedBatch, WriteAck, WriteBatch } from '../src/protocol.ts'
-import type { WriteIdentity } from '../src/server/persistence.ts'
 
 const todoSchema = z.object({ id: z.string(), text: z.string(), done: z.boolean().optional() })
 const collections = [definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })]
 
 // the host: it owns the storage and the "sockets" (here, an array of frames).
 // Initialized, as a real host's onStart leaves it — no test exercises pre-init.
-async function host(opts: { auth?: (req: Request) => WriteIdentity | null } = {}) {
+async function host(opts: { auth?: () => AuthHook | undefined } = {}) {
   const { engine, db } = memoryEngine()
   db.exec(`CREATE TABLE todos (id TEXT PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)`)
   const broadcasts: SequencedBatch[] = []
@@ -99,10 +98,18 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
   })
 
   it('fails closed: with auth set and no identity resolved, the write is rejected 401', async () => {
-    const { core, broadcasts } = await host({ auth: () => null })
+    const { core, broadcasts } = await host({ auth: () => () => null })
     const res = await core.handleWrite(post(write('x', 'anon')))
     expect(res.status).toBe(401)
     expect(broadcasts).toHaveLength(0)
+  })
+
+  it('reads auth presence per write: a hook that appears after boot gates from then on', async () => {
+    let hook: AuthHook | undefined
+    const { core } = await host({ auth: () => hook })
+    expect((await core.handleWrite(post(write('a', 'open')))).status).toBe(200)
+    hook = () => null
+    expect((await core.handleWrite(post(write('b', 'gated')))).status).toBe(401)
   })
 
   it('answers a constraint rejection 409, and stays serving after it', async () => {

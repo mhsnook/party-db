@@ -18,16 +18,12 @@ doc once that milestone starts; until then a short design note lives at the bott
     resolves once per request (same request it already sees at the lobby). The lib
     stays out of validation — it just hands Zod the one thing the row can't carry: who
     is asking. See [cookbook 2](./cookbooks/02-server-validation.md).
-- **A connect marker on `partyTransport`.** The core is now a unit a host can hold
-  (`PartyDbCore`, architecture §15, #43). A host that multiplexes other traffic
-  recognizes party-db connects by its own convention — a query marker, a path — but
-  `partyTransport` only sends `?since` and `?token`, so such an app must build its
-  own `Transport` today. The same gap covers the write path: the POST carries no
-  marker either, so a host with its own HTTP routes splits on path or query (the
-  `Composed` room in `test/integration/worker.ts` shows a query split). An optional
-  query passthrough on `partyTransport` (e.g. `query: { proto: 'party-db' }`) is
-  additive sugar; it is not designed yet because the first composed host
-  (scribble-harness) hasn't fixed its convention.
+- **The traffic marker on a custom `Transport`.** `partyTransport` marks every
+  connect and write POST with `?proto=party-db`, and a composed host routes on it
+  with `isPartyDbRequest` (architecture §15). An app that builds its own `Transport`
+  instead of using `partyTransport` must send the same marker to work with a
+  composed host — the constants are exported from `src/protocol.ts`, but nothing
+  enforces it. Open: whether the `Transport` seam should carry the marker itself.
 - **Subscription / filtering.** Today the server broadcasts every channel and the
   client ignores unknowns. A `subscribe(channels[])` control message would let the
   server send only relevant batches + backlog. Matters as channel count grows.

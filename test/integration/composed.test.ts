@@ -12,8 +12,12 @@ import type { SequencedBatch, WriteAck } from '../../src/protocol.ts'
 
 const url = (room: string, query: Record<string, string> = {}) => partyUrl('composed', room, query)
 
+// The literal `?proto=party-db` marker partyTransport puts on every connect and
+// write POST. Written out (not imported) so this suite pins the wire value.
+const marker = { proto: 'party-db' }
+
 async function post(room: string, body: unknown): Promise<Response> {
-  return SELF.fetch(url(room), {
+  return SELF.fetch(url(room, marker), {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...roomHeader(room) },
     body: JSON.stringify(body),
@@ -22,7 +26,7 @@ async function post(room: string, body: unknown): Promise<Response> {
 
 // Open a WebSocket to the composed room and collect every raw frame. The
 // `query` decides which side of the host's routing this connection lands on:
-// `{ proto: 'party-db' }` is a party-db subscriber, nothing is host traffic.
+// the marker is a party-db subscriber, nothing is host traffic.
 async function connect(room: string, query: Record<string, string> = {}) {
   const res = await SELF.fetch(url(room, query), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
   expect(res.status).toBe(101)
@@ -37,7 +41,7 @@ async function connect(room: string, query: Record<string, string> = {}) {
 describe('a Server that holds the core instead of subclassing', () => {
   it('serves the party-db round-trip: POST → resolved ack → fan-out to the party-db connection', async () => {
     const room = 'composed-roundtrip'
-    const sub = await connect(room, { proto: 'party-db' })
+    const sub = await connect(room, marker)
     await sub.waitFor(1) // the connect snapshot of the (empty) room
 
     const res = await post(room, insert('c1', 'via the held core'))
@@ -55,7 +59,7 @@ describe('a Server that holds the core instead of subclassing', () => {
   it("keeps the host's own connections off the party-db fan-out, and vice versa", async () => {
     const room = 'composed-routing'
     const own = await connect(room) // no marker → the host's own protocol
-    const sub = await connect(room, { proto: 'party-db' })
+    const sub = await connect(room, marker)
 
     await own.waitFor(1)
     expect(own.frames).toEqual(['host: hello'])
@@ -80,7 +84,7 @@ describe('a Server that holds the core instead of subclassing', () => {
     const first = (await (await post(room, insert('c3', 'one'))).json()) as WriteAck
     await post(room, insert('c4', 'two'))
 
-    const behind = await connect(room, { proto: 'party-db', since: String(first.accepted[0].seq) })
+    const behind = await connect(room, { ...marker, since: String(first.accepted[0].seq) })
     await behind.waitFor(1)
     expect(behind.frames).toHaveLength(1)
     expect((JSON.parse(behind.frames[0]) as SequencedBatch).ops[0].value).toMatchObject({ id: 'c4' })
