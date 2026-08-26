@@ -21,9 +21,11 @@ Every seam a write crosses, in order. Grep the named symbol to land in the right
    them through the transport — **`partyTransport`**, `src/client/party-db.ts`.
 3. The **lobby** gate runs in the Worker, before the Durable Object wakes — **`authHooks`**,
    `src/server/auth.ts`. One `authorize(req, ctx)` gates both doors: the WS connect and the POST.
-4. **`PartyDbServer.onRequest`** validates the body and resolves the writer's identity through
-   the `auth` hook, then hands the batches to `commit` — `src/server/party-db-server.ts`.
-5. **`PartyDbServer.commit`** serializes the write → seq → broadcast section. Host code running
+4. **`PartyDbCore.handleWrite`** validates the body and resolves the writer's identity through
+   the `auth` hook, then hands the batches to `commit` — `src/server/core.ts`. `PartyDbServer`
+   is the thin subclass that forwards `onRequest` to it; a host that can't subclass holds the
+   core itself (`docs/architecture.md` §15).
+5. **`PartyDbCore.commit`** serializes the write → seq → broadcast section. Host code running
    in the DO calls it directly for a row the server itself authors (`docs/architecture.md` §14).
 6. One **`PersistenceAdapter.write()`** commits the whole POST body in one transaction and returns
    each batch's resolved rows plus its `seq` — `src/server/persistence.ts`. `commit` broadcasts each
@@ -57,6 +59,24 @@ Vocabulary, used exactly this way everywhere:
   rejects it 401 unless the subclass names an `anonRole`.
 - **The wire is mode-invariant.** A client cannot tell which mode its room runs. Changing mode is a
   server-only migration.
+
+### Two kinds of contract — only one binds
+
+Two different things get called "the contract" in review. Keep them apart:
+
+- **The userspace contract** — everything app code touches: the exported API (`createPartyDb`,
+  `partyTransport`, `PartyDbServer`, `PartyDbCore` and its options), the TanStack DB behavior,
+  and the app's own tables. Preserve it, or flag the break loudly.
+- **Lockstep internals** — everything where party-db owns both ends and one package version ships
+  them together: the wire frames, the query markers, the seams between our own client pieces.
+  Change these freely when both halves change in the same commit. Do not add compatibility shims,
+  protocol version fields, or migration paths for them — there is no independently-versioned party
+  to protect. The one real skew, a stale browser tab running the old client against a redeployed
+  room, is accepted pre-1.0: the tab reloads.
+
+When an issue or plan says "no wire changes", read it as "no userspace-visible changes" unless it
+says otherwise. The `?proto=party-db` marker (PR #44) is the model: a wire addition, invisible to
+userspace, shipped without ceremony.
 
 ## Documentation map
 
@@ -97,7 +117,8 @@ Four files hold the whole contract. Read them before changing anything under `sr
 
 **Server**
 
-- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onStart` / `.createAdapter` / `.serialize` — `src/server/party-db-server.ts`
+- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onStart` / `.createAdapter` — `src/server/party-db-server.ts`, the thin subclass
+- `PartyDbCore.init` / `.connect` / `.handleWrite` / `.commit` / `.serialize` / `isPartyDbRequest` — `src/server/core.ts`, the composable core for a host that can't subclass (`docs/architecture.md` §15)
 - `authHooks(authorize)` / `bearer(req)` / `getTokenFromRequest(req)` — `src/server/auth.ts`
 - `buildPlans` / `structuredStmt` / `blobStmt` / `resolveStructured` / `resolvedOpJsonExpr` / `oplogInsertStmt` / `toPg` — `src/server/statements.ts`
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`

@@ -62,3 +62,11 @@ export type WriteReject = {
   channel?: string
   constraint?: string
 }
+
+// The traffic marker: `partyTransport` puts `?proto=party-db` on every connect
+// and every write POST. A host that serves other traffic on the same room routes
+// party-db requests by it (`isPartyDbRequest`, docs/architecture.md §15); a
+// `PartyDbServer` room ignores it. Fixed values — one room never speaks two
+// party-db protocols, so there is nothing to configure.
+export const PROTO_PARAM = 'proto'
+export const PROTO_VALUE = 'party-db'

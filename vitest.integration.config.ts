@@ -24,6 +24,8 @@ export default defineConfig({
           Authed: { className: 'Authed', useSQLite: true },
           // writes rows from its own host code through `commit()`, not a POST.
           Hosted: { className: 'Hosted', useSQLite: true },
+          // HOLDS a PartyDbCore instead of subclassing PartyDbServer (issue #43).
+          Composed: { className: 'Composed', useSQLite: true },
           // persists into D1 (env.DB) rather than its own SQLite; still a real DO.
           D1Room: { className: 'D1Room', useSQLite: true },
           // persists into a real Postgres (env.PG_URL) over cloudflare:sockets.

@@ -1,4 +1,5 @@
 export { PartyDbServer } from './party-db-server.ts'
+export { PartyDbCore, isPartyDbRequest, type PartyDbCoreOptions, type AuthHook } from './core.ts'
 export { definePartyCollection, type PartyCollection } from '../schema.ts'
 export { authHooks, bearer, getTokenFromRequest, type AuthContext, type AuthDecision, type AuthKind, type Authorize } from './auth.ts'
 export type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'

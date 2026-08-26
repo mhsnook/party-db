@@ -5,7 +5,7 @@ import PartySocket from 'partysocket'
 import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
-import type { SequencedBatch } from '../protocol.ts'
+import { PROTO_PARAM, PROTO_VALUE, type SequencedBatch } from '../protocol.ts'
 
 // WebSocket close code the server uses when a room-aware auth check rejects the
 // connection (docs/auth.md §2). Unlike 1006 (network) / 1011 (server) / normal,
@@ -34,10 +34,13 @@ export function partyTransport(opts: {
     room: opts.room,
     party,
     // re-evaluated on every (re)connect: ask only for what we missed, and carry
-    // the token in the query since a WS upgrade can't set headers.
+    // the token in the query since a WS upgrade can't set headers. The proto
+    // marker lets a host that serves other traffic on the same room recognize
+    // party-db requests (docs/architecture.md §15); a PartyDbServer ignores it.
     query: () => {
       const token = tokenOf()
       return {
+        [PROTO_PARAM]: PROTO_VALUE,
         ...(lastSeq === undefined ? {} : { since: String(lastSeq) }),
         ...(token ? { token } : {}),
       }
@@ -72,7 +75,7 @@ export function partyTransport(opts: {
       let res: Awaited<ReturnType<typeof PartySocket.fetch>>
       try {
         res = await PartySocket.fetch(
-          { host: opts.host, room: opts.room, party },
+          { host: opts.host, room: opts.room, party, query: { [PROTO_PARAM]: PROTO_VALUE } },
           {
             method: 'POST',
             headers: {

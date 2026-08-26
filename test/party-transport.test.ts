@@ -52,10 +52,12 @@ beforeEach(() => {
 })
 
 describe('partyTransport reconnect query (?since tracking)', () => {
-  it('asks for a full snapshot (no ?since) before any batch is seen', () => {
+  it('asks for a full snapshot (no ?since) before any batch is seen, marked as party-db traffic', () => {
     partyTransport({ host: 'example.com', room: 'r1' })
     const query = lastSocket().opts.query
-    expect(query()).toEqual({})
+    // the literal marker value is the wire contract a composed host routes on —
+    // pinned here so a rename shows up as a breaking change.
+    expect(query()).toEqual({ proto: 'party-db' })
   })
 
   it('asks for the delta since the highest applied seq after batches arrive', () => {
@@ -63,7 +65,7 @@ describe('partyTransport reconnect query (?since tracking)', () => {
     transport.subscribe(() => {})
 
     lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
-    expect(lastSocket().opts.query()).toEqual({ since: '7' })
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7' })
   })
 
   it('tracks the max seq, not the last — an out-of-order straggler cannot lower it', () => {
@@ -72,7 +74,7 @@ describe('partyTransport reconnect query (?since tracking)', () => {
 
     lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
     lastSocket().emit('message', message({ channel: 'todos', seq: 3, ops: [] }))
-    expect(lastSocket().opts.query()).toEqual({ since: '7' })
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7' })
   })
 
   it('delivers the parsed batch to the subscriber', () => {
@@ -109,7 +111,9 @@ describe('partyTransport send', () => {
     const ack = await transport.send([{ channel: 'todos', ops: [{ type: 'insert', value: { id: 'a' } }] }])
     expect(ack).toEqual({ accepted: [{ channel: 'todos', seq: 1 }] })
 
-    const [, init] = Fake.fetch.mock.calls[0]
+    const [info, init] = Fake.fetch.mock.calls[0]
+    // the write POST carries the same party-db marker as the connect
+    expect((info as any).query).toEqual({ proto: 'party-db' })
     expect((init as any).method).toBe('POST')
     expect(JSON.parse((init as any).body)).toEqual([
       { channel: 'todos', ops: [{ type: 'insert', value: { id: 'a' } }] },
