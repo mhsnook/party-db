@@ -63,20 +63,21 @@ REJECTED (with one-line rationale — finding fixed independently or approach ab
   `party-db-server.ts` (classifier seam vs. gates), and 011/013/017 all extend
   `PartyCollection` types: whoever lands second rebases, nobody forks.
 
-## Pilot feedback chunk: issues #45–#48 (post-v0.0.2)
+## Pilot feedback chunk: issues #45–#49 (post-v0.0.2)
 
 The scribble-harness pilot (mhsnook/scribble-harness#92) ran the composed core
-(#43, shipped in v0.0.2) and filed four findings. Sequenced 2026-08-28. Two
-lanes: the server lane has no file overlap with the client lane, so they run
-in parallel. The client lane is serialized because all three issues touch
-`src/client/sync-client.ts` and `src/client/party-db.ts`.
+(#43, shipped in v0.0.2) and filed these findings. Sequenced 2026-08-28; #49
+added to the chunk the same day. Three lanes with no file overlap between
+them, so they run in parallel. The client lane (B) is serialized because all
+three issues touch `src/client/sync-client.ts` and `src/client/party-db.ts`.
 
 | Order | Issue | Title (short) | Lane | Effort | Depends on | Status |
 |-------|-------|---------------|------|--------|------------|--------|
-| A1 | #45 | Zod v4 `kindOf` reads v3 internals | server | S | — | TODO |
-| B1 | #48 + plan 007 | Drop non-`SequencedBatch` frames; client test gaps | client | M | — | TODO |
-| B2 | #46 | `Transport.close?()` / client teardown | client | S | B1 | TODO |
+| A1 | #45 | Zod v4 `kindOf` reads v3 internals | server | S | — | DONE (PR #51) |
+| B1 | #48 + plan 007 | Drop non-`SequencedBatch` frames; client test gaps | client | M | — | DONE (PR #50) |
+| B2 | #46 | `Transport.close?()` / client teardown | client | S | B1 | TODO — next up |
 | B3 | #47 | Re-register after TanStack GC gets no snapshot | client | M | B2, **decision gate** | TODO |
+| C1 | #49 | Changed-columns-only updates + surface a no-row update | write path | M | — | TODO |
 
 ### Lane notes
 
@@ -105,8 +106,20 @@ in parallel. The client lane is serialized because all three issues touch
   Whatever the decision, document the pinning pattern now as the meanwhile.
   B3 runs last because it reshapes the same register/teardown seam B2 just
   touched — the executor rebases on B2, nobody forks.
-- **Release note**: tag v0.0.3 once A1 and B1–B2 land. B3 can trail into
+- **C1 (#49)** is two parts in one issue: (1) `toEvent` in
+  `src/client/collection.ts` sends `{ ...m.changes, [key]: keyValue }` for an
+  update instead of `m.modified` — the server side already SETs only the
+  columns present; (2) an UPDATE that hits no row becomes a verdict the writer
+  sees (the issue prefers a `WriteReject` mirroring constraint rejections),
+  not an echoed phantom op in the oplog. Files (`collection.ts`,
+  `src/server/statements.ts`, adapters' resolve path) are disjoint from lane
+  B, so C1 runs in parallel with B2/B3. Part 2 changes observable behavior —
+  a formerly "successful" missing-row update now rejects — which is the bug
+  fix the issue asks for; say so in the PR body.
+- **Release note**: tag v0.0.3 once B2 and C1 land. B3 can trail into
   v0.0.4 if the decision gate takes time.
+- Housekeeping 2026-08-28: #43 closed (shipped in v0.0.2, PR #44 + §15);
+  #31 closed (shipped with #35; pinned by #50's transport tests).
 
 ## Findings considered and rejected
 
