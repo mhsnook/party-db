@@ -70,3 +70,11 @@ export type WriteReject = {
 // party-db protocols, so there is nothing to configure.
 export const PROTO_PARAM = 'proto'
 export const PROTO_VALUE = 'party-db'
+
+// Checks that a frame is our shape, because composed hosts may not filter
+// dispatches cleanly.
+export function isSequencedBatch(value: unknown): value is SequencedBatch {
+  if (typeof value !== 'object' || value === null) return false
+  const frame = value as Partial<SequencedBatch>
+  return typeof frame.channel === 'string' && Array.isArray(frame.ops)
+}

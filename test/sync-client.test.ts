@@ -91,6 +91,27 @@ describe('SyncClient pending buffer', () => {
   })
 })
 
+describe('SyncClient drops frames that are not batches (issue #48)', () => {
+  it('never buffers a frame with no channel, and keeps routing real ones', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+
+    // a composed host sharing the socket can hand us frames of its own
+    const foreign = [{ type: 'cf_agent_stream', id: 'x' }, { seq: 9, ops: [] }, { channel: 'todos', seq: 9 }, null]
+    for (const frame of foreign) {
+      expect(() => t.push(frame as unknown as SequencedBatch)).not.toThrow()
+    }
+
+    // nothing was buffered: registering later replays only real batches
+    const { sink, ops } = recorder()
+    client.register('todos', sink)
+    expect(ops).toEqual([])
+
+    t.push(seqBatch('todos', 1, { id: 'a' }))
+    expect(ops).toEqual([{ id: 'a' }])
+  })
+})
+
 describe('SyncClient waitForSeq settlement', () => {
   it('resolves once the awaited seq is applied on the stream', async () => {
     const t = fakeTransport()

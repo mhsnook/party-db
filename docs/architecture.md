@@ -493,6 +493,13 @@ tags marked connects (`getConnectionTags` → `['party-db']`), scopes its `broad
 callback to `getConnections('party-db')`, and hands marked POSTs to `handleWrite`.
 A subclassed room serves only party-db traffic and ignores the marker.
 
+The host owns that routing, and it has windows the host cannot always close. A
+wrapper running before the host's `onConnect` can send a frame of its own to a
+connection party-db is about to claim — the scribble-harness pilot's chat stream
+does (mhsnook/scribble-harness#92). So the client drops any frame that is not a
+`SequencedBatch` instead of buffering it under a missing channel (#48), which
+makes a stray host frame noise rather than a leak.
+
 We considered letting party-db frames share one socket with the host's own protocol,
 and rejected it: the frames would need a namespace, which changes the wire and the
 client for every mode. Routing whole connections by the marker gives the same
