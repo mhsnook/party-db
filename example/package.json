@@ -18,7 +18,7 @@
     "@cloudflare/workers-types": "^4",
     "concurrently": "^9",
     "cross-env": "^7",
-    "typescript": "^5.7",
+    "typescript": "^7.0.2",
     "vite": "^6",
     "wrangler": "^4"
   }
