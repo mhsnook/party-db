@@ -31,9 +31,19 @@ describe('toEvent', () => {
 
 // makePersist only touches `send` + `waitForSeq`, so a two-method stub stands in
 // for the whole SyncClient.
-function mockClient(accepted: { channel: string; seq: number }[]) {
-  const send = vi.fn(async (_batches: WriteBatch[]) => ({ accepted }))
-  const waitForSeq = vi.fn(async (_channel: string, _seq: number) => {})
+// `rejects` turns one of the two methods into the failing path: `send` for a
+// server verdict, `waitOn` for a seq that never settles.
+function mockClient(
+  accepted: { channel: string; seq: number }[],
+  rejects: { send?: Error; waitOn?: [channel: string, error: Error] } = {},
+) {
+  const send = vi.fn(async (_batches: WriteBatch[]) => {
+    if (rejects.send) throw rejects.send
+    return { accepted }
+  })
+  const waitForSeq = vi.fn(async (channel: string, _seq: number) => {
+    if (rejects.waitOn?.[0] === channel) throw rejects.waitOn[1]
+  })
   return { client: { send, waitForSeq } as unknown as SyncClient, send, waitForSeq }
 }
 
@@ -44,23 +54,6 @@ const channelOf = new Map<any, string>([
   [todos, 'todos'],
   [lists, 'lists'],
 ])
-
-// Variants of the stub whose promises reject, for the rollback paths.
-function rejectingSend(error: Error) {
-  const send = vi.fn(async (_batches: WriteBatch[]): Promise<{ accepted: { channel: string; seq: number }[] }> => {
-    throw error
-  })
-  const waitForSeq = vi.fn(async (_channel: string, _seq: number) => {})
-  return { client: { send, waitForSeq } as unknown as SyncClient, send, waitForSeq }
-}
-
-function rejectingWait(accepted: { channel: string; seq: number }[], failOn: string, error: Error) {
-  const send = vi.fn(async (_batches: WriteBatch[]) => ({ accepted }))
-  const waitForSeq = vi.fn(async (channel: string, _seq: number) => {
-    if (channel === failOn) throw error
-  })
-  return { client: { send, waitForSeq } as unknown as SyncClient, send, waitForSeq }
-}
 
 describe('makePersist', () => {
   it('groups mutations by channel into one batch per collection', async () => {
@@ -151,7 +144,7 @@ describe('makePersist', () => {
 describe('makePersist rejection paths (what makes TanStack roll back)', () => {
   it('rejects with the server\'s own error instance, and never waits for a seq', async () => {
     const error = new Error('409: constraint')
-    const { client, waitForSeq } = rejectingSend(error)
+    const { client, waitForSeq } = mockClient([], { send: error })
     const persist = makePersist(client, channelOf)
 
     await expect(
@@ -162,13 +155,12 @@ describe('makePersist rejection paths (what makes TanStack roll back)', () => {
 
   it('rejects when one accepted seq never settles, after starting every wait', async () => {
     const error = new Error('write did not settle within 30000ms')
-    const { client, waitForSeq } = rejectingWait(
+    const { client, waitForSeq } = mockClient(
       [
         { channel: 'todos', seq: 7 },
         { channel: 'lists', seq: 8 },
       ],
-      'lists',
-      error,
+      { waitOn: ['lists', error] },
     )
     const persist = makePersist(client, channelOf)
 

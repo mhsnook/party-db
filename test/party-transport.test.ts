@@ -44,7 +44,19 @@ function lastSocket() {
   return Fake.instances[Fake.instances.length - 1]
 }
 
-const message = (batch: SequencedBatch) => ({ data: JSON.stringify(batch) })
+const message = (frame: unknown) => ({ data: JSON.stringify(frame) })
+// a raw frame: what the socket delivers when it isn't our JSON at all
+const raw = (data: unknown) => ({ data })
+// the init object of the i-th write POST (headers, method, body)
+const writeInit = (i = 0) => Fake.fetch.mock.calls[i][1] as any
+
+// a transport with a subscriber attached, which every frame test needs
+function subscribed() {
+  const transport = partyTransport({ host: 'example.com', room: 'r1' })
+  const seen: SequencedBatch[] = []
+  transport.subscribe((b) => seen.push(b))
+  return { transport, seen, socket: lastSocket() }
+}
 
 beforeEach(() => {
   Fake.instances.length = 0
@@ -238,8 +250,7 @@ describe('partyTransport token attachment', () => {
     expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', token: 'tok-1' })
 
     await transport.send([{ channel: 'todos', ops: [{ type: 'insert', value: { id: 'a' } }] }])
-    const init = Fake.fetch.mock.calls[0][1] as any
-    expect(init.headers.authorization).toBe('Bearer tok-1')
+    expect(writeInit().headers.authorization).toBe('Bearer tok-1')
   })
 
   it('re-reads a function token on every write and every reconnect query', async () => {
@@ -249,8 +260,8 @@ describe('partyTransport token attachment', () => {
 
     await transport.send([{ channel: 'todos', ops: [] }])
     await transport.send([{ channel: 'todos', ops: [] }])
-    expect((Fake.fetch.mock.calls[0][1] as any).headers.authorization).toBe('Bearer a')
-    expect((Fake.fetch.mock.calls[1][1] as any).headers.authorization).toBe('Bearer b')
+    expect(writeInit(0).headers.authorization).toBe('Bearer a')
+    expect(writeInit(1).headers.authorization).toBe('Bearer b')
     // the connect query reads the same source, so a refreshed token sticks
     expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', token: 'c' })
   })
@@ -260,7 +271,7 @@ describe('partyTransport token attachment', () => {
     expect(lastSocket().opts.query()).not.toHaveProperty('token')
 
     await transport.send([{ channel: 'todos', ops: [] }])
-    expect((Fake.fetch.mock.calls[0][1] as any).headers).not.toHaveProperty('authorization')
+    expect(writeInit().headers).not.toHaveProperty('authorization')
   })
 
   it('composes the token with ?since once a batch has been applied', () => {
@@ -273,52 +284,30 @@ describe('partyTransport token attachment', () => {
 })
 
 describe('partyTransport drops frames that are not ours', () => {
-  it('ignores a frame that is not JSON, without throwing out of the listener', () => {
-    const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    const seen: SequencedBatch[] = []
-    transport.subscribe((b) => seen.push(b))
+  it('drops a binary frame and text that is not JSON, then delivers the next real batch', () => {
+    const { seen, socket } = subscribed()
 
-    expect(() => lastSocket().emit('message', { data: 'not json' })).not.toThrow()
+    expect(() => socket.emit('message', raw('not json'))).not.toThrow()
+    expect(() => socket.emit('message', raw(new ArrayBuffer(4)))).not.toThrow()
     expect(seen).toEqual([])
-  })
 
-  it('ignores a non-string (binary) frame', () => {
-    const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    const seen: SequencedBatch[] = []
-    transport.subscribe((b) => seen.push(b))
-
-    expect(() => lastSocket().emit('message', { data: new ArrayBuffer(4) })).not.toThrow()
-    expect(seen).toEqual([])
-  })
-
-  it('ignores valid JSON that is not a batch — no channel, or no ops (issue #48)', () => {
-    const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    const seen: SequencedBatch[] = []
-    transport.subscribe((b) => seen.push(b))
-    const socket = lastSocket()
-
-    socket.emit('message', { data: JSON.stringify({ type: 'cf_agent_stream', seq: 99 }) })
-    socket.emit('message', { data: JSON.stringify({ channel: 'todos', seq: 99 }) }) // no ops
-    socket.emit('message', { data: JSON.stringify({ ops: [], seq: 99 }) }) // no channel
-    socket.emit('message', { data: JSON.stringify(null) })
-    socket.emit('message', { data: JSON.stringify(['todos']) })
-
-    expect(seen).toEqual([])
-    // and no foreign seq moved the reconnect cursor
-    expect(socket.opts.query()).toEqual({ proto: 'party-db' })
-  })
-
-  it('keeps delivering after a foreign frame — the stream survives it', () => {
-    const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    const seen: SequencedBatch[] = []
-    transport.subscribe((b) => seen.push(b))
-    const socket = lastSocket()
-
-    socket.emit('message', { data: 'not json' })
     const batch: SequencedBatch = { channel: 'todos', seq: 4, ops: [{ type: 'insert', value: { id: 'a' } }] }
     socket.emit('message', message(batch))
-
     expect(seen).toEqual([batch])
     expect(socket.opts.query()).toEqual({ proto: 'party-db', since: '4' })
   })
+
+  it('drops JSON that is not a batch — no channel, or no ops — without moving the cursor (issue #48)', () => {
+    const { seen, socket } = subscribed()
+
+    socket.emit('message', message({ type: 'cf_agent_stream', seq: 99 }))
+    socket.emit('message', message({ channel: 'todos', seq: 99 })) // no ops
+    socket.emit('message', message({ ops: [], seq: 99 })) // no channel
+    socket.emit('message', message(null))
+    socket.emit('message', message(['todos']))
+
+    expect(seen).toEqual([])
+    expect(socket.opts.query()).toEqual({ proto: 'party-db' })
+  })
 })
+

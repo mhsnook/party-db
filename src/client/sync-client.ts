@@ -50,9 +50,8 @@ export class SyncClient {
   }
 
   private route(batch: SequencedBatch) {
-    // a transport we don't own can hand us a frame that isn't ours (a composed
-    // host sharing the socket). It has no channel to route by, so buffering it
-    // would grow `pending` under `undefined` forever — drop it instead (#48).
+    // a transport we don't own can hand us a frame with no channel: it would
+    // buffer under `undefined` forever, so drop it (#48).
     if (!isSequencedBatch(batch)) return
     const sink = this.sinks.get(batch.channel)
     if (!sink) {

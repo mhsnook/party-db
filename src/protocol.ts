@@ -71,10 +71,10 @@ export type WriteReject = {
 export const PROTO_PARAM = 'proto'
 export const PROTO_VALUE = 'party-db'
 
-// Is this frame ours? A socket can carry traffic party-db did not send — a
-// composed host that shares the room, a proxy's keep-alive — and such a frame
-// has no channel to route by, so the client drops it (issue #48). Cheap shape
-// check, not validation: the ops themselves are the server's word.
+// A frame is ours if it carries a channel to route by and ops to apply. Checks
+// that shape only — the ops themselves are the authority's word. A composed host
+// shares the room's socket, so the client sees frames party-db did not send and
+// drops the ones this rejects (#48).
 export function isSequencedBatch(value: unknown): value is SequencedBatch {
   if (typeof value !== 'object' || value === null) return false
   const frame = value as Partial<SequencedBatch>

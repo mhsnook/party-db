@@ -92,31 +92,21 @@ describe('SyncClient pending buffer', () => {
 })
 
 describe('SyncClient drops frames that are not batches (issue #48)', () => {
-  it('does not buffer a frame with no channel or no ops', () => {
+  it('never buffers a frame with no channel, and keeps routing real ones', () => {
     const t = fakeTransport()
     const client = new SyncClient(t.transport)
 
-    // a composed host sharing the socket can hand us its own frame
-    t.push({ type: 'cf_agent_stream', id: 'x' } as unknown as SequencedBatch)
-    t.push({ seq: 9, ops: [] } as unknown as SequencedBatch) // no channel
-    t.push({ channel: 'todos', seq: 9 } as unknown as SequencedBatch) // no ops
+    // a composed host sharing the socket can hand us frames of its own
+    const foreign = [{ type: 'cf_agent_stream', id: 'x' }, { seq: 9, ops: [] }, { channel: 'todos', seq: 9 }, null]
+    for (const frame of foreign) {
+      expect(() => t.push(frame as unknown as SequencedBatch)).not.toThrow()
+    }
 
     // nothing was buffered: registering later replays only real batches
     const { sink, ops } = recorder()
     client.register('todos', sink)
     expect(ops).toEqual([])
 
-    t.push(seqBatch('todos', 1, { id: 'a' }))
-    expect(ops).toEqual([{ id: 'a' }])
-  })
-
-  it('keeps routing real batches after a foreign frame', () => {
-    const t = fakeTransport()
-    const client = new SyncClient(t.transport)
-    const { sink, ops } = recorder()
-    client.register('todos', sink)
-
-    expect(() => t.push(null as unknown as SequencedBatch)).not.toThrow()
     t.push(seqBatch('todos', 1, { id: 'a' }))
     expect(ops).toEqual([{ id: 'a' }])
   })

@@ -493,13 +493,12 @@ tags marked connects (`getConnectionTags` → `['party-db']`), scopes its `broad
 callback to `getConnections('party-db')`, and hands marked POSTs to `handleWrite`.
 A subclassed room serves only party-db traffic and ignores the marker.
 
-Routing is the host's, so it has edge windows the host cannot always close: a
-wrapper that runs before the host's `onConnect` can send a frame of its own to a
-connection party-db is about to claim (the scribble-harness pilot's chat stream
-does, mhsnook/scribble-harness#92). The client drops what it cannot route — a
-frame that is not a `SequencedBatch`, or not JSON at all — instead of buffering it
-under a missing channel (#48). So a stray host frame is noise, not a leak, and the
-host does not have to be perfect for the marker split to hold.
+The host owns that routing, and it has windows the host cannot always close. A
+wrapper running before the host's `onConnect` can send a frame of its own to a
+connection party-db is about to claim — the scribble-harness pilot's chat stream
+does (mhsnook/scribble-harness#92). So the client drops any frame that is not a
+`SequencedBatch` instead of buffering it under a missing channel (#48), which
+makes a stray host frame noise rather than a leak.
 
 We considered letting party-db frames share one socket with the host's own protocol,
 and rejected it: the frames would need a namespace, which changes the wire and the
