@@ -63,6 +63,51 @@ REJECTED (with one-line rationale — finding fixed independently or approach ab
   `party-db-server.ts` (classifier seam vs. gates), and 011/013/017 all extend
   `PartyCollection` types: whoever lands second rebases, nobody forks.
 
+## Pilot feedback chunk: issues #45–#48 (post-v0.0.2)
+
+The scribble-harness pilot (mhsnook/scribble-harness#92) ran the composed core
+(#43, shipped in v0.0.2) and filed four findings. Sequenced 2026-08-28. Two
+lanes: the server lane has no file overlap with the client lane, so they run
+in parallel. The client lane is serialized because all three issues touch
+`src/client/sync-client.ts` and `src/client/party-db.ts`.
+
+| Order | Issue | Title (short) | Lane | Effort | Depends on | Status |
+|-------|-------|---------------|------|--------|------------|--------|
+| A1 | #45 | Zod v4 `kindOf` reads v3 internals | server | S | — | TODO |
+| B1 | #48 + plan 007 | Drop non-`SequencedBatch` frames; client test gaps | client | M | — | TODO |
+| B2 | #46 | `Transport.close?()` / client teardown | client | S | B1 | TODO |
+| B3 | #47 | Re-register after TanStack GC gets no snapshot | client | M | B2, **decision gate** | TODO |
+
+### Lane notes
+
+- **A1 (#45)** touches only `src/server/columns.ts` (`kindOf` and its unwrap
+  loop) plus new unit tests. Check `_def.typeName` first, fall back to Zod v4's
+  `_def.type`. Pin with one v4 schema per kind: boolean, object, array,
+  optional-wrapped. Fully parallel with the client lane.
+- **B1 runs plan 007 with #48 folded in.** Plan 007's Step 4 guards the frame
+  that does not parse (bad JSON, binary). #48 guards the frame that parses but
+  is not protocol (no string `channel`, no `ops` array). Same handler, same
+  test file: extend Step 4's guard with #48's shape check and add its test
+  cases. The executor marks plan 007 DONE and closes #48 in one PR. This also
+  builds the client test scaffolding B2 and B3 assume.
+- **B2 (#46)** has its shape in the issue: `Transport.close?()` on the
+  interface, implemented by `partyTransport` (close the `PartySocket`, stop
+  reconnects), called through by `SyncClient.close()` after what it does
+  today. No design gate. Runs after B1 so the two PRs don't collide in
+  `party-db.ts`.
+- **B3 (#47) stops at a decision gate before implementation.** The issue names
+  three directions: (a) re-request a snapshot on re-register, (b) cache last
+  applied state per channel and replay it, (c) document the pinning pattern as
+  the contract. Recommendation: (a), as a per-channel snapshot-request frame —
+  a lockstep internal like the `?proto=party-db` marker, invisible to
+  userspace, so it ships without ceremony; (b) duplicates every synced row in
+  client memory for the life of the tab; (c) leaves the blank-panel footgun.
+  Whatever the decision, document the pinning pattern now as the meanwhile.
+  B3 runs last because it reshapes the same register/teardown seam B2 just
+  touched — the executor rebases on B2, nobody forks.
+- **Release note**: tag v0.0.3 once A1 and B1–B2 land. B3 can trail into
+  v0.0.4 if the decision gate takes time.
+
 ## Findings considered and rejected
 
 (So nobody re-audits these.)
