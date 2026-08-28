@@ -91,18 +91,23 @@ fan-out never reloads the graph per message.
 
 ```ts
 // server.ts
-import { PartyDbServer, getTokenFromRequest } from 'party-db/server'
+import { PartyDbServer, getTokenFromRequest, type WriteIdentity } from 'party-db/server'
 import { verifyJwt } from './jwt.ts'
 import { collections, type Viewer } from './collections.ts'
 
 export class Main extends PartyDbServer {
   collections = collections
 
-  // who is this request? (recipe 5, unchanged) — gates owner writes, seeds the viewer
-  auth = (req: Request) => verifyJwt(getTokenFromRequest(req))?.sub ?? null
+  // ✅ who is this request? (recipe 5, unchanged) — gates owner writes, seeds the
+  // viewer. Returns the verified claims; the uid is `sub`.
+  auth = (req: Request): WriteIdentity | null => {
+    const payload = verifyJwt(getTokenFromRequest(req))
+    return payload?.sub ? { claims: { sub: payload.sub } } : null
+  }
 
-  // what may they see? the ONE place the friends list is fetched. Cached per
-  // connection; the read predicate just consumes `viewer.friends`.
+  // 🚧 what may they see? the ONE place the friends list is fetched. Cached per
+  // connection; the read predicate just consumes `viewer.friends`. party-db hands it
+  // the `sub` claim `auth` resolved.
   loadViewer = async (uid: string | null): Promise<Viewer> => ({
     uid,
     friends: uid ? await this.friendsOf(uid) : [],
@@ -119,9 +124,9 @@ export class Main extends PartyDbServer {
 }
 ```
 
-Two getters, cleanly split: **`auth`** answers *who are you* (cheap, on every write, to gate
-owner rules), **`loadViewer`** answers *what may you see* (loaded once, cached, for the read
-predicate). The collection declares the rule; the server declares how to feed it.
+Two hooks, cleanly split: **`auth`** answers *who are you* (cheap, on every write, to gate
+owner rules — and it ships today), **`loadViewer`** answers *what may you see* (loaded once,
+cached, for the read predicate — proposed). The collection declares the rule; the server declares how to feed it.
 
 ## Keeping the cache fresh
 

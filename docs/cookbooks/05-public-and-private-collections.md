@@ -9,8 +9,9 @@ A language-learning app has two kinds of data living in the same room:
   learning a language) and `user_flashcards` (your status on each phrase).
 
 The whole access model is one field per collection — `access` — over one idea: `auth`
-on the server turns a request into a uid, and each collection says who may read, insert,
-update, and delete. No `authorize`, no per-row callbacks, no second copy of the truth.
+on the server turns a request into the caller's verified identity, and each collection
+says who may read, insert, update, and delete. The uid the rules compare against is that
+identity's `sub` claim. No `authorize`, no per-row callbacks, no second copy of the truth.
 That's a deliberately tiny subset of RLS ([`postgres-todo.md`](../postgres-todo.md) §5),
 but it's enough to run this whole app — even on SQLite in a Durable Object.
 
@@ -98,12 +99,13 @@ verb down.
 ## The server — `auth` on the class
 
 Import the shared `collections`, and add the one thing the server owns: how to turn a
-request into a stable user id.
+request into a verified identity. The hook itself is **shipped** — it is the same
+`auth` recipe 8 uses; what this recipe proposes is what the framework *does* with it.
 
 ```ts
 // server.ts
 import { routePartykitRequest } from 'partyserver'
-import { PartyDbServer } from 'party-db/server'
+import { PartyDbServer, type WriteIdentity } from 'party-db/server'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
 import { getTokenFromRequest } from 'party-db/server' // reads our Bearer-header / ?token= convention; you still verify the JWT
 import { collections } from './collections.ts'
@@ -114,16 +116,18 @@ const JWKS = createRemoteJWKSet(new URL('https://issuer.example.com/.well-known/
 export class Main extends PartyDbServer {
   collections = collections
 
-  // The entire auth model: turn a request into a stable user id (or null for anon).
-  // party-db resolves this ONCE at connect (pins the uid to the socket) and once per
-  // write, then enforces `owner === uid` at the three read choke points — snapshot,
-  // `?since` backlog, per-socket fan-out — and at the write gate. That's the RLS.
-  auth = async (req: Request) => {
+  // The entire auth model: turn a request into the caller's verified claims (or null
+  // for anon). ✅ The hook ships today and already runs on every write.
+  // 🚧 Proposed is what the framework does with it: resolve it ONCE at connect
+  // (pinning the uid to the socket) as well as per write, then enforce `owner === uid`
+  // at the three read choke points — snapshot, `?since` backlog, per-socket fan-out —
+  // and at the write gate. That's the RLS. The uid is the `sub` claim.
+  auth = async (req: Request): Promise<WriteIdentity | null> => {
     const token = getTokenFromRequest(req)
     if (!token) return null // anon: sees public rows, owns nothing
     try {
       const { payload } = await jwtVerify(token, JWKS)
-      return payload.sub ?? null // your uid
+      return payload.sub ? { claims: { sub: payload.sub } } : null
     } catch {
       return null
     }
@@ -140,6 +144,10 @@ export default {
     routePartykitRequest(req, env as never).then((r) => r ?? new Response('not found', { status: 404 })),
 }
 ```
+
+One part of this bites already, ahead of the read rules: because `auth` is set, an
+anonymous **write** is rejected `401` today (name an `anonRole` to allow them). Reads are
+untouched — an anon socket still receives every public row.
 
 Notice what's **not** here: no `authHooks`, no `authorize`, no `if (kind === …)`. The
 catalog is public because it has no `ownerColumn`; the deck and flashcards are private
@@ -319,8 +327,8 @@ the deltas so you can pull them back toward the plan if you'd rather:
    collections still cost zero or one word, so the matrix only shows up where you actually
    need it. **This is the one to sanity-check** — it's the biggest departure from §5's
    `read`/`write` shape, and the place I'd expect you to have an opinion.
-2. **`auth` returns `uid | null`, and that's the whole identity story** — no separate
-   `authorize` needed for the public/private split. §5 keeps the lobby gate and adds owner
+2. **`auth` returns the caller's claims, and that's the whole identity story** — the uid
+   is its `sub`, so no separate `authorize` is needed for the public/private split. §5 keeps the lobby gate and adds owner
    rules behind it; I let the owner rule *be* the read filter so anon connect is fine (you
    just see public data). The lobby `authHooks` still composes on top when you want a
    coarse "logged-in to connect at all" gate — it's additive, not replaced.
