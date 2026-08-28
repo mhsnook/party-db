@@ -37,9 +37,9 @@ export function columnsOf(schema: StandardSchemaV1 | undefined): ColumnSpec[] | 
   }))
 }
 
-// Zod (v3) exposes its object shape as `.shape`; tolerate the lazy `_def.shape()`
-// form too. Anything without a shape (a non-object schema, or a non-Zod
-// StandardSchema) returns null → blob fallback.
+// Zod's object shape. `.shape` is public and spelled the same in v3 and v4; the
+// `_def.shape()` fallback is v3's private lazy form. Anything without a shape (a
+// non-object schema, or a non-Zod StandardSchema) returns null → blob fallback.
 function zodShape(schema: unknown): Record<string, unknown> | null {
   const s = schema as any
   if (!s) return null
@@ -47,34 +47,45 @@ function zodShape(schema: unknown): Record<string, unknown> | null {
   return shape && typeof shape === 'object' ? shape : null
 }
 
-// Peel Optional/Nullable/Default/Effects wrappers to reach the base type, then
-// classify it for the codec. Unknown types are treated as scalar (bound as-is).
+// Zod v3 tags a node with `_def.typeName` ('ZodBoolean'); Zod v4 renamed that to
+// `_def.type` ('boolean'). Normalize both to v4's lowercase spelling. This is
+// private Zod surface — we touch it because nothing public tells us a SQLite
+// INTEGER column meant a boolean. Returns undefined for anything that isn't a Zod
+// node, and the caller then calls it a scalar.
+//
+// Stripping 'Zod' and lowercasing agrees with v4 for every tag we branch on below,
+// but not in general: v3's ZodDiscriminatedUnion gives 'discriminatedunion' where
+// v4 says 'union'. Check both spellings before adding a tag anywhere here.
+function typeTag(node: unknown): string | undefined {
+  const def = (node as any)?._def
+  if (!def) return undefined
+  // v3's ZodBranded also has a `_def.type`, but it holds the inner SCHEMA, not a
+  // tag — hence the string check before we trust it.
+  if (typeof def.type === 'string') return def.type
+  const name = def.typeName
+  return typeof name === 'string' && name.startsWith('Zod') ? name.slice(3).toLowerCase() : undefined
+}
+
+// `unknown` so an undefined tag is just a miss, with no truthiness guard at the
+// call site.
+const JSON_TAGS: ReadonlySet<unknown> = new Set(['object', 'array', 'record', 'tuple', 'map', 'set'])
+
+// Peel Optional/Nullable/Default and the transform wrapper to reach the base type,
+// then classify it. Unknown types are scalar (bound as-is). v3's ZodEffects is v4's
+// two-sided pipe: `.transform()` leaves the base type on `in`, `z.preprocess()` on
+// `out`, so we follow the side that is not the transform.
 function kindOf(field: unknown): ColumnKind {
-  let cur = field as any
-  while (cur?._def) {
-    const tn = cur._def.typeName
-    if (tn === 'ZodOptional' || tn === 'ZodNullable' || tn === 'ZodDefault') {
-      cur = cur._def.innerType
-      continue
-    }
-    if (tn === 'ZodEffects') {
-      cur = cur._def.schema
-      continue
-    }
-    break
+  let cur: any = field
+  while (true) {
+    const tag = typeTag(cur)
+    if (tag === 'optional' || tag === 'nullable' || tag === 'default') cur = cur._def.innerType
+    else if (tag === 'effects') cur = cur._def.schema
+    else if (tag === 'pipe') cur = typeTag(cur._def.in) === 'transform' ? cur._def.out : cur._def.in
+    else break
   }
-  const tn = cur?._def?.typeName
-  if (tn === 'ZodBoolean') return 'boolean'
-  if (
-    tn === 'ZodObject' ||
-    tn === 'ZodArray' ||
-    tn === 'ZodRecord' ||
-    tn === 'ZodTuple' ||
-    tn === 'ZodMap' ||
-    tn === 'ZodSet'
-  ) {
-    return 'json'
-  }
+  const tag = typeTag(cur)
+  if (tag === 'boolean') return 'boolean'
+  if (JSON_TAGS.has(tag)) return 'json'
   return 'scalar'
 }
 
