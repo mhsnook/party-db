@@ -71,10 +71,8 @@ export type WriteReject = {
 export const PROTO_PARAM = 'proto'
 export const PROTO_VALUE = 'party-db'
 
-// A frame is ours if it carries a channel to route by and ops to apply. Checks
-// that shape only — the ops themselves are the authority's word. A composed host
-// shares the room's socket, so the client sees frames party-db did not send and
-// drops the ones this rejects (#48).
+// Checks that a frame is our shape, because composed hosts may not filter
+// dispatches cleanly.
 export function isSequencedBatch(value: unknown): value is SequencedBatch {
   if (typeof value !== 'object' || value === null) return false
   const frame = value as Partial<SequencedBatch>

@@ -91,7 +91,7 @@ describe('SyncClient pending buffer', () => {
   })
 })
 
-describe('SyncClient drops frames that are not batches (issue #48)', () => {
+describe('SyncClient drops frames that are not batches', () => {
   it('never buffers a frame with no channel, and keeps routing real ones', () => {
     const t = fakeTransport()
     const client = new SyncClient(t.transport)

@@ -51,7 +51,7 @@ export class SyncClient {
 
   private route(batch: SequencedBatch) {
     // a transport we don't own can hand us a frame with no channel: it would
-    // buffer under `undefined` forever, so drop it (#48).
+    // buffer under `undefined` forever, so drop it.
     if (!isSequencedBatch(batch)) return
     const sink = this.sinks.get(batch.channel)
     if (!sink) {

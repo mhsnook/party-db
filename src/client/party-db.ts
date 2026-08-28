@@ -15,8 +15,6 @@ const CLOSE_POLICY_VIOLATION = 1008
 // Decode one socket frame, or null if it isn't ours. A composed host shares the
 // room's socket (docs/architecture.md §15), so the stream carries frames party-db
 // did not send: binary, text that isn't JSON, or JSON with no channel to route by.
-// Dropping them here keeps a foreign frame from moving the cursor (#48). We skip
-// the parse on a binary frame rather than pay for the SyntaxError it would throw.
 function parseFrame(data: unknown): SequencedBatch | null {
   if (typeof data !== 'string') return null
   try {
