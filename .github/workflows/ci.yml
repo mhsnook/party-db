@@ -60,3 +60,48 @@ jobs:
       - run: pnpm test:pg
 
       - run: pnpm publish --dry-run --no-git-checks
+
+  # The examples are the only userspace check we have. They import party-db from
+  # ../../src exactly the way an app imports the package, so they exercise the public
+  # surface — which the library's own suites, sitting inside that surface, cannot.
+  #
+  # This job exists because v0.0.2 shipped a broken example-react-polyglot: the release
+  # turned `auth` into a real hook returning a `WriteIdentity`, the example still
+  # returned a bare uid string, and every write in it came back 401. Nothing in CI
+  # typechecked an example, so nothing caught it.
+  examples:
+    runs-on: ubuntu-latest
+
+    strategy:
+      # one broken example shouldn't hide the state of the other three
+      fail-fast: false
+      matrix:
+        example: [example, example-react, example-react-polyglot, example-react-rdbms]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm version comes from package.json's `packageManager` field.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            ${{ matrix.example }}/pnpm-lock.yaml
+
+      # BOTH installs are load-bearing, and the reason is easy to miss: each example is
+      # its own pnpm workspace, so `partyserver` and `@tanstack/db` resolve from the
+      # EXAMPLE's node_modules — but the library sources it imports (../../src) resolve
+      # theirs from the ROOT node_modules, walking up from src/. Drop either install and
+      # tsc fails on modules it cannot find.
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: ${{ matrix.example }}
+
+      # each example runs both halves: the browser config and the workers config
+      - run: pnpm typecheck
+        working-directory: ${{ matrix.example }}
