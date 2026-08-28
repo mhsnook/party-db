@@ -28,11 +28,15 @@ Some rules aren't a function of the row — e.g. "you can only create your own t
 (`author_id === the requester's uid`). A static schema can't see the uid; it's on the
 request, not in the row.
 
-The proposed shape: a write schema that's a function of a small per-request context,
-plus an `auth` getter on the server that fills in `ctx.uid`.
+The proposed shape: a write schema that's a function of a small per-request context.
+Half of it already exists — the server's `auth` hook resolves the caller's verified
+identity on every write ([recipe 8](./08-postgres-rls.md)), and `ctx.uid` is just that
+identity's `sub` claim. Only `writeSchema` and the `ctx` it receives are unbuilt.
 
 ```ts
-// PROPOSED — not built yet
+import { PartyDbServer, getTokenFromRequest, type WriteIdentity } from 'party-db/server'
+
+// 🚧 PROPOSED — `writeSchema` and its `ctx` are not built yet
 definePartyCollection({
   name: 'todos',
   key: 'id',
@@ -45,10 +49,20 @@ definePartyCollection({
 })
 
 export class Main extends PartyDbServer {
-  auth = (req: Request) => verifyUid(req) // -> string | undefined, becomes ctx.uid
   collections = [todos]
+
+  // ✅ SHIPPED — the same hook recipe 8 uses. Return the caller's verified claims,
+  // or null for anon. `ctx.uid` above would be this identity's `sub`.
+  auth = async (req: Request): Promise<WriteIdentity | null> => {
+    const claims = await verifyToken(getTokenFromRequest(req)) // your verification, your call
+    return claims?.sub ? { claims } : null
+  }
 }
 ```
+
+One thing to know before you set `auth`: it is fail-closed. With the hook in place, a
+write that resolves no identity is rejected `401` unless you name an `anonRole`
+([recipe 8](./08-postgres-rls.md)). Reads are untouched.
 
 Still just Zod validating — party-db only hands it the one thing the row can't carry:
 who's asking. Weigh in at [`../unspecified.md`](../unspecified.md).

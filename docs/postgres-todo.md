@@ -243,11 +243,13 @@ as defense-in-depth is a P2 note below.)
       analogous to `key` — e.g. `userId: (row) => row.user_id`) plus its rule:
       `read: 'public' | 'owner'`, `write: 'owner'` (public-global and team-wide
       stay the no-config defaults; see `collection-types.md` part 2).
-- [ ] **Resolving `uid`.** The server takes an `auth: (req) => uid | null`
-      getter (the request-context idea from `unspecified.md` — resolved once per
-      request); typically "verify the JWT, read the subject claim". The lobby
-      already verified the token; the DO re-derives the uid from the same
-      credential (stateless, no lobby→DO trust channel needed).
+- [x] *(shipped for writes; connect-time resolution still owed)* **Resolving
+      `uid`.** The server's `auth` hook — `(req) => WriteIdentity | null`, resolved
+      fresh on every write — already carries it: the uid is the `sub` claim.
+      Typically "verify the JWT, return its claims". The lobby already verified the
+      token; the DO re-derives the identity from the same credential (stateless, no
+      lobby→DO trust channel needed). What §5 still owes is resolving the same hook
+      at *connect* and pinning the uid to the socket, which the read gates below need.
 - [ ] **Write gate.** Every op on an owner-write collection must satisfy
       `userId(row) === uid` — inserts and the *new* value of updates carry your
       own uid; updates/deletes must target a row you own (check the stored row,

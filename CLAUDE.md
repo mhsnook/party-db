@@ -135,10 +135,24 @@ Four files hold the whole contract. Read them before changing anything under `sr
 | `pnpm test:pg` | Postgres driver lane (`test/pg/`) — skips unless `PG_URL` is set |
 | `pnpm typecheck` | three tsconfigs: client, server, integration |
 | `pnpm build` | client and server builds into `dist/` |
+| `cd <example> && pnpm typecheck` | one example's two halves: browser tsconfig + workers tsconfig |
+| `cd <example> && pnpm build` | that example's site (vite) — run before `build:worker`, which needs `dist/` |
+| `cd <example> && pnpm build:worker` | bundles that example's worker exactly as a deploy would, without deploying |
 
 There is no lint gate yet (plan 012 is TODO). The `test:pg` lane and `test/integration/pg-connect.test.ts`
 need a real Postgres at `PG_URL`; without it they skip, so `pnpm test` stays green with no Docker.
 The README's Testing section has the `docker run` line CI uses.
+
+**The examples are the userspace gate.** Nothing in `test/` sits outside the public surface,
+so the four example apps are the only thing that compiles party-db the way an app does —
+importing it from `../../src`. CI typechecks AND builds all four (the `examples` job);
+v0.0.2 shipped a broken `example-react-polyglot` because it did neither. Typecheck catches
+the source; the two builds catch what tsc never reads — `vite.config.ts`, `wrangler.jsonc`,
+and how a dependency resolves for the browser and for the workers runtime. Two rules when you touch them: run BOTH
+installs (root first, then the example — an example resolves its own deps, but the `../../src`
+files it imports resolve theirs from the ROOT `node_modules`), and keep every example inside
+the library's declared `peerDependencies`. An example pinned outside that range is an example
+built against a party-db nobody can install.
 
 ## Writing style for Humans
 
