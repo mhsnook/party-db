@@ -297,7 +297,7 @@ describe('partyTransport drops frames that are not ours', () => {
     expect(socket.opts.query()).toEqual({ proto: 'party-db', since: '4' })
   })
 
-  it('drops JSON that is not a batch — no channel, or no ops — without moving the cursor', () => {
+  it('drops JSON that is not a batch — no channel, or no ops — without moving the cursor (issue #48)', () => {
     const { seen, socket } = subscribed()
 
     socket.emit('message', message({ type: 'cf_agent_stream', seq: 99 }))
