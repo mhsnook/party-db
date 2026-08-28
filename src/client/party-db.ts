@@ -5,7 +5,7 @@ import PartySocket from 'partysocket'
 import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
-import { PROTO_PARAM, PROTO_VALUE, type SequencedBatch } from '../protocol.ts'
+import { isSequencedBatch, PROTO_PARAM, PROTO_VALUE } from '../protocol.ts'
 
 // WebSocket close code the server uses when a room-aware auth check rejects the
 // connection (docs/auth.md §2). Unlike 1006 (network) / 1011 (server) / normal,
@@ -61,7 +61,19 @@ export function partyTransport(opts: {
   return {
     subscribe(onBatch) {
       const handler = (e: MessageEvent) => {
-        const batch = JSON.parse(e.data) as SequencedBatch
+        // the socket is not guaranteed to carry only our frames: a composed host
+        // shares the room, and a proxy can inject its own. Anything that isn't a
+        // parseable party-db batch is dropped here, before it can move the cursor
+        // or reach the sinks (issue #48).
+        if (typeof e.data !== 'string') return
+        let frame: unknown
+        try {
+          frame = JSON.parse(e.data)
+        } catch {
+          return
+        }
+        if (!isSequencedBatch(frame)) return
+        const batch = frame
         if (typeof batch.seq === 'number') lastSeq = Math.max(lastSeq ?? 0, batch.seq)
         onBatch(batch)
       }

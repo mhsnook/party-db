@@ -45,6 +45,23 @@ const channelOf = new Map<any, string>([
   [lists, 'lists'],
 ])
 
+// Variants of the stub whose promises reject, for the rollback paths.
+function rejectingSend(error: Error) {
+  const send = vi.fn(async (_batches: WriteBatch[]): Promise<{ accepted: { channel: string; seq: number }[] }> => {
+    throw error
+  })
+  const waitForSeq = vi.fn(async (_channel: string, _seq: number) => {})
+  return { client: { send, waitForSeq } as unknown as SyncClient, send, waitForSeq }
+}
+
+function rejectingWait(accepted: { channel: string; seq: number }[], failOn: string, error: Error) {
+  const send = vi.fn(async (_batches: WriteBatch[]) => ({ accepted }))
+  const waitForSeq = vi.fn(async (channel: string, _seq: number) => {
+    if (channel === failOn) throw error
+  })
+  return { client: { send, waitForSeq } as unknown as SyncClient, send, waitForSeq }
+}
+
 describe('makePersist', () => {
   it('groups mutations by channel into one batch per collection', async () => {
     const { client, send } = mockClient([
@@ -128,5 +145,70 @@ describe('makePersist', () => {
     expect(waitForSeq).toHaveBeenCalledTimes(2)
     expect(waitForSeq).toHaveBeenCalledWith('todos', 7)
     expect(waitForSeq).toHaveBeenCalledWith('lists', 8)
+  })
+})
+
+describe('makePersist rejection paths (what makes TanStack roll back)', () => {
+  it('rejects with the server\'s own error instance, and never waits for a seq', async () => {
+    const error = new Error('409: constraint')
+    const { client, waitForSeq } = rejectingSend(error)
+    const persist = makePersist(client, channelOf)
+
+    await expect(
+      persist({ transaction: { mutations: [{ collection: todos, type: 'insert', modified: { id: 't1' } }] } }),
+    ).rejects.toBe(error)
+    expect(waitForSeq).not.toHaveBeenCalled()
+  })
+
+  it('rejects when one accepted seq never settles, after starting every wait', async () => {
+    const error = new Error('write did not settle within 30000ms')
+    const { client, waitForSeq } = rejectingWait(
+      [
+        { channel: 'todos', seq: 7 },
+        { channel: 'lists', seq: 8 },
+      ],
+      'lists',
+      error,
+    )
+    const persist = makePersist(client, channelOf)
+
+    await expect(
+      persist({
+        transaction: {
+          mutations: [
+            { collection: todos, type: 'insert', modified: { id: 't1' } },
+            { collection: lists, type: 'insert', modified: { id: 'l1' } },
+          ],
+        },
+      }),
+    ).rejects.toBe(error)
+    // Promise.all semantics: both waits were issued before the first rejection won
+    expect(waitForSeq).toHaveBeenCalledTimes(2)
+    expect(waitForSeq).toHaveBeenCalledWith('todos', 7)
+    expect(waitForSeq).toHaveBeenCalledWith('lists', 8)
+  })
+
+  it('awaits every accepted seq even when the transaction also carries unmanaged mutations', async () => {
+    const { client, send, waitForSeq } = mockClient([
+      { channel: 'todos', seq: 3 },
+      { channel: 'lists', seq: 4 },
+    ])
+    const persist = makePersist(client, channelOf)
+    const foreign = { name: 'foreign' } as any
+
+    await persist({
+      transaction: {
+        mutations: [
+          { collection: todos, type: 'insert', modified: { id: 't1' } },
+          { collection: foreign, type: 'insert', modified: { id: 'f1' } },
+          { collection: lists, type: 'insert', modified: { id: 'l1' } },
+        ],
+      },
+    })
+
+    expect((send.mock.calls[0][0] as WriteBatch[]).map((b) => b.channel)).toEqual(['todos', 'lists'])
+    expect(waitForSeq).toHaveBeenCalledTimes(2)
+    expect(waitForSeq).toHaveBeenCalledWith('todos', 3)
+    expect(waitForSeq).toHaveBeenCalledWith('lists', 4)
   })
 })

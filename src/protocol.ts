@@ -70,3 +70,13 @@ export type WriteReject = {
 // party-db protocols, so there is nothing to configure.
 export const PROTO_PARAM = 'proto'
 export const PROTO_VALUE = 'party-db'
+
+// Is this frame ours? A socket can carry traffic party-db did not send — a
+// composed host that shares the room, a proxy's keep-alive — and such a frame
+// has no channel to route by, so the client drops it (issue #48). Cheap shape
+// check, not validation: the ops themselves are the server's word.
+export function isSequencedBatch(value: unknown): value is SequencedBatch {
+  if (typeof value !== 'object' || value === null) return false
+  const frame = value as Partial<SequencedBatch>
+  return typeof frame.channel === 'string' && Array.isArray(frame.ops)
+}

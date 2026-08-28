@@ -231,3 +231,94 @@ describe('partyTransport isConnecting', () => {
     expect(transport.isConnecting?.()).toBe(true)
   })
 })
+
+describe('partyTransport token attachment', () => {
+  it('carries a static token on the connect query and as a bearer header on the write', async () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1', token: 'tok-1' })
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', token: 'tok-1' })
+
+    await transport.send([{ channel: 'todos', ops: [{ type: 'insert', value: { id: 'a' } }] }])
+    const init = Fake.fetch.mock.calls[0][1] as any
+    expect(init.headers.authorization).toBe('Bearer tok-1')
+  })
+
+  it('re-reads a function token on every write and every reconnect query', async () => {
+    const token = vi.fn<() => string>()
+    token.mockReturnValueOnce('a').mockReturnValueOnce('b').mockReturnValue('c')
+    const transport = partyTransport({ host: 'example.com', room: 'r1', token })
+
+    await transport.send([{ channel: 'todos', ops: [] }])
+    await transport.send([{ channel: 'todos', ops: [] }])
+    expect((Fake.fetch.mock.calls[0][1] as any).headers.authorization).toBe('Bearer a')
+    expect((Fake.fetch.mock.calls[1][1] as any).headers.authorization).toBe('Bearer b')
+    // the connect query reads the same source, so a refreshed token sticks
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', token: 'c' })
+  })
+
+  it('sends no token key and no authorization header when the room is not gated', async () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    expect(lastSocket().opts.query()).not.toHaveProperty('token')
+
+    await transport.send([{ channel: 'todos', ops: [] }])
+    expect((Fake.fetch.mock.calls[0][1] as any).headers).not.toHaveProperty('authorization')
+  })
+
+  it('composes the token with ?since once a batch has been applied', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1', token: 'tok-1' })
+    transport.subscribe(() => {})
+
+    lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7', token: 'tok-1' })
+  })
+})
+
+describe('partyTransport drops frames that are not ours', () => {
+  it('ignores a frame that is not JSON, without throwing out of the listener', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: SequencedBatch[] = []
+    transport.subscribe((b) => seen.push(b))
+
+    expect(() => lastSocket().emit('message', { data: 'not json' })).not.toThrow()
+    expect(seen).toEqual([])
+  })
+
+  it('ignores a non-string (binary) frame', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: SequencedBatch[] = []
+    transport.subscribe((b) => seen.push(b))
+
+    expect(() => lastSocket().emit('message', { data: new ArrayBuffer(4) })).not.toThrow()
+    expect(seen).toEqual([])
+  })
+
+  it('ignores valid JSON that is not a batch — no channel, or no ops (issue #48)', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: SequencedBatch[] = []
+    transport.subscribe((b) => seen.push(b))
+    const socket = lastSocket()
+
+    socket.emit('message', { data: JSON.stringify({ type: 'cf_agent_stream', seq: 99 }) })
+    socket.emit('message', { data: JSON.stringify({ channel: 'todos', seq: 99 }) }) // no ops
+    socket.emit('message', { data: JSON.stringify({ ops: [], seq: 99 }) }) // no channel
+    socket.emit('message', { data: JSON.stringify(null) })
+    socket.emit('message', { data: JSON.stringify(['todos']) })
+
+    expect(seen).toEqual([])
+    // and no foreign seq moved the reconnect cursor
+    expect(socket.opts.query()).toEqual({ proto: 'party-db' })
+  })
+
+  it('keeps delivering after a foreign frame — the stream survives it', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: SequencedBatch[] = []
+    transport.subscribe((b) => seen.push(b))
+    const socket = lastSocket()
+
+    socket.emit('message', { data: 'not json' })
+    const batch: SequencedBatch = { channel: 'todos', seq: 4, ops: [{ type: 'insert', value: { id: 'a' } }] }
+    socket.emit('message', message(batch))
+
+    expect(seen).toEqual([batch])
+    expect(socket.opts.query()).toEqual({ proto: 'party-db', since: '4' })
+  })
+})

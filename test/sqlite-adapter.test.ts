@@ -191,6 +191,49 @@ describe('SqliteAdapter — blob fallback (schema-less collection)', () => {
     const logs = snap.find((b) => b.channel === 'logs')!
     expect(logs.ops[0].value).toEqual({ id: 'l1', anything: { nested: true }, n: 5 })
   })
+
+  it('treats an update as an upsert, and echoes the sent row as resolved', async () => {
+    const { adapter } = setup()
+    await adapter.write([ins('logs', { id: 'l1', level: 'info', n: 1 })])
+    const [batch] = await adapter.write([
+      { channel: 'logs', ops: [{ type: 'update', value: { id: 'l1', level: 'warn', n: 2 } }] },
+    ])
+
+    // blob mode has no columns to read back: the resolved row is the sent row
+    expect(batch.ops).toEqual([{ type: 'update', value: { id: 'l1', level: 'warn', n: 2 } }])
+    const snap = await adapter.snapshot()
+    const logs = snap.find((b) => b.channel === 'logs')!
+    expect(logs.ops.map((o) => o.value)).toEqual([{ id: 'l1', level: 'warn', n: 2 }])
+  })
+
+  it('deletes the row from the snapshot while the oplog keeps both ops', async () => {
+    const { adapter } = setup()
+    await adapter.write([ins('logs', { id: 'l1', level: 'info' })])
+    await adapter.write([{ channel: 'logs', ops: [{ type: 'delete', value: { id: 'l1' } }] }])
+
+    const snap = await adapter.snapshot()
+    expect(snap.find((b) => b.channel === 'logs')!.ops).toEqual([])
+
+    const delta = await adapter.replaySince(0)
+    expect(delta).not.toBeNull()
+    expect(delta!.map((b) => b.seq)).toEqual([1, 2])
+    expect(delta!.map((b) => b.ops[0].type)).toEqual(['insert', 'delete'])
+  })
+
+  it('replays only the blob writes after the cursor, values intact', async () => {
+    const { adapter } = setup()
+    await adapter.write([ins('logs', { id: 'l1', payload: { a: 1 } })]) // seq 1
+    await adapter.write([ins('logs', { id: 'l2', payload: { b: [2, 3] } })]) // seq 2
+    await adapter.write([ins('logs', { id: 'l3', payload: null })]) // seq 3
+
+    const delta = await adapter.replaySince(1)
+    expect(delta).not.toBeNull()
+    expect(delta!.map((b) => b.seq)).toEqual([2, 3])
+    expect(delta!.map((b) => b.ops[0].value)).toEqual([
+      { id: 'l2', payload: { b: [2, 3] } },
+      { id: 'l3', payload: null },
+    ])
+  })
 })
 
 describe('SqliteAdapter — injection safety', () => {
