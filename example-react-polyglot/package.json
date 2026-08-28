@@ -7,6 +7,7 @@
     "dev:worker": "mkdir -p dist && cross-env CLOUDFLARE_CF_FETCH_ENABLED=false wrangler dev",
     "dev:client": "vite",
     "build": "vite build",
+    "build:worker": "wrangler deploy --dry-run",
     "deploy:cf": "vite build && wrangler deploy",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json"
   },
