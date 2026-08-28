@@ -105,3 +105,19 @@ jobs:
       # each example runs both halves: the browser config and the workers config
       - run: pnpm typecheck
         working-directory: ${{ matrix.example }}
+
+      # Then BUILD both halves, which is the deployable artifact a user actually gets.
+      # This covers everything tsc never reads: vite.config.ts, wrangler.jsonc, and how
+      # a dependency's export conditions resolve for the browser and the workers
+      # runtime. Point a room's `class_name` at a Durable Object that isn't exported
+      # and typecheck stays green while `build:worker` fails, which is the gap.
+      #
+      # Site before worker, and that order is load-bearing: the polyglot and rdbms
+      # rooms serve their build as Worker assets (`assets.directory: ./dist`), so
+      # wrangler needs dist/ to exist by the time it bundles.
+      - run: pnpm build
+        working-directory: ${{ matrix.example }}
+
+      # bundles the worker exactly as a deploy would, then exits without deploying
+      - run: pnpm build:worker
+        working-directory: ${{ matrix.example }}
