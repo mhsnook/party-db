@@ -84,23 +84,6 @@ collections — the API-first scaffold for [cookbook 05](./docs/cookbooks/05-pub
 
 (Yes, it really is that simple; we're not messing around about "near-zero config".)
 
-## Zod v4
-
-A schema is optional — party-db takes any StandardSchema, and a collection without
-one falls back to the blob store. If you do pass Zod, it must be **v4**. The server
-reads a Zod object's shape to build the column allowlist and the value codec for
-structured CRUD, and it reads v4's node layout only; a v3 schema throws at boot with
-the version named, rather than quietly storing your rows as blobs.
-
-Prefer **4.5 or newer**: Zod 4.5 moved schema methods onto a memoizing prototype and
-[cut retained heap per schema by up to 9.8x](https://zod.dev/blog/reducing-memory-footprint)
-— a 10-key object went from 82kb to 11kb. Every Durable Object instance holds your
-schemas for the life of the room, so that is heap you get back per room.
-
-```sh
-npm install zod@^4
-```
-
 ## Client
 
 ```ts

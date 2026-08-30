@@ -32,8 +32,8 @@ export function assertIdent(name: string): string {
 // call site.
 const JSON_TAGS: ReadonlySet<unknown> = new Set(['object', 'array', 'record', 'tuple', 'map', 'set'])
 
-export function columnsOf(schema: StandardSchemaV1 | undefined, collection?: string): ColumnSpec[] | null {
-  const shape = zodShape(schema, collection)
+export function columnsOf(schema: StandardSchemaV1 | undefined): ColumnSpec[] | null {
+  const shape = zodShape(schema)
   if (!shape) return null
   return Object.entries(shape).map(([name, field]) => ({
     name: assertIdent(name),
@@ -59,26 +59,9 @@ function typeTag(node: unknown): string | undefined {
 
 // A Zod v4 object's shape. Anything else (a non-object schema, or a StandardSchema
 // from another library) returns null → blob fallback.
-function zodShape(schema: unknown, collection?: string): Record<string, unknown> | null {
-  if (!schema) return null
-  assertNotZod3(schema, collection)
+function zodShape(schema: unknown): Record<string, unknown> | null {
   const shape = zodDef(schema)?.shape
   return shape && typeof shape === 'object' ? shape : null
-}
-
-// party-db reads Zod v4 only. A v3 schema would otherwise slip past `zodDef` as
-// just another opaque StandardSchema and drop the collection into the blob store —
-// a silent change of storage mode and row shape. Name the cause and stop instead.
-// v3 tags its nodes `_def.typeName` ('ZodObject') and has no `_zod`.
-function assertNotZod3(schema: unknown, collection?: string): void {
-  const s = schema as any
-  if (s._zod) return
-  const typeName = s._def?.typeName
-  if (typeof typeName !== 'string' || !typeName.startsWith('Zod')) return
-  const where = collection ? ` for collection "${collection}"` : ''
-  throw new Error(
-    `party-db reads Zod v4 schemas; the schema${where} is Zod v3 (${typeName}). Upgrade with \`npm install zod@^4\`.`,
-  )
 }
 
 // Peel Optional/Nullable/Default and the transform wrapper to reach the base type,

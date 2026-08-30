@@ -57,24 +57,6 @@ describe('columnsOf (schema → injection-safe allowlist + codec)', () => {
     ])
   })
 
-  // A v3 schema has no `_zod`, so it would otherwise look like any other opaque
-  // StandardSchema and drop the collection into the blob store (issue #45 in
-  // reverse). Fail at boot with the version named instead. Zod 3 is no longer a
-  // devDependency, so this is a hand-built stand-in for its node layout.
-  it('rejects a zod v3 schema by name instead of falling back to blob', () => {
-    const v3Object = {
-      _def: {
-        typeName: 'ZodObject',
-        shape: () => ({ id: { _def: { typeName: 'ZodString' } } }),
-      },
-      get shape() {
-        return this._def.shape()
-      },
-    } as any
-    expect(() => columnsOf(v3Object)).toThrow(/Zod v3 \(ZodObject\)/)
-    expect(() => columnsOf(v3Object, 'todos')).toThrow(/collection "todos"/)
-  })
-
   it('returns null for a schema it cannot introspect (→ blob fallback)', () => {
     expect(columnsOf(undefined)).toBeNull()
     // a StandardSchema that is not a zod object (no .shape)

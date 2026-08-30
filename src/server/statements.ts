@@ -42,7 +42,7 @@ export function buildPlans(collections: PartyCollection<any>[]): Map<string, Pla
   for (const c of collections) {
     const name = assertIdent(c.name)
     const key = assertIdent(c.key)
-    const cols = columnsOf(c.schema, name)
+    const cols = columnsOf(c.schema)
     plans.set(
       name,
       cols
