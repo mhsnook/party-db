@@ -58,9 +58,8 @@ export type WriteAck = {
 // are best-effort context pulled from the failure. The client surfaces this and
 // rolls its optimistic mutation back.
 //
-// `code` names a verdict the app branches on where the status alone is ambiguous.
-// Today there is exactly one: `missing-row`, an update that matched no row — a 409
-// like a constraint verdict, and told apart from one by this (§16).
+// `code` tells apart two verdicts that share a status: a 409 from a constraint, and
+// a 409 from an update that matched no row (§16).
 export type WriteReject = {
   error: string
   channel?: string

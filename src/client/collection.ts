@@ -22,11 +22,7 @@ export { definePartyCollection, type PartyCollection }
 export type PartyCollectionConfig<T extends object> = PartyCollection<T>
 
 // exported for unit tests: a single TanStack mutation → one wire WriteEvent.
-//
-// An update sends `m.changes` — TanStack's own record of the fields this mutation
-// touched, which its docs hand to an API patch call the same way — plus the key
-// that locates the row. Insert and delete carry the whole row: an insert has no
-// prior row to preserve, and a delete is keyed. See docs/architecture.md §16.
+// An update sends the fields it changed plus the key, never the whole row (§16).
 export function toEvent(m: any, key: string): WriteEvent {
   if (m.type === 'delete') return { type: 'delete', value: m.original }
   if (m.type === 'update') {

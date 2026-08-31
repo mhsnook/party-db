@@ -218,13 +218,12 @@ export class PartyDbCore {
       // server-side and keep the response generic, or we'd echo schema internals
       // to any writer and mislabel 500-class faults as data rejections.
       //
-      // A missed update (§16) is OUR verdict, not the engine's, so it carries its
-      // own rejection. Otherwise the adapter classifies if it can (Postgres reads
-      // SQLSTATE + constraint name off the error); adapters without their own
-      // classifier (embedded + D1) fall through to the SQLite-message regex,
-      // unchanged. The rejection picks the status too — 409 for an integrity
-      // conflict (default), 403 for an RLS/authorization denial — stripped from
-      // the client body.
+      // A missed update (§16) carries its own rejection; otherwise the adapter
+      // classifies if it can (Postgres reads SQLSTATE + constraint name off the
+      // error), and adapters without a classifier (embedded + D1) fall through to
+      // the SQLite-message regex. The rejection picks the status too — 409 for an
+      // integrity conflict (default), 403 for an RLS denial — stripped from the
+      // client body.
       const rejection = e instanceof MissedUpdateError ? e.rejection : this.adapter.classifyError?.(e)
       if (rejection) {
         const { status = 409, ...reject } = rejection

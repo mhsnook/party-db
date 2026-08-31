@@ -16,11 +16,7 @@
 //
 // Injection-safety is unchanged from the embedded adapter: every value is bound
 // with `?`, every identifier comes from the schema allowlist (assertIdent), never
-// from the payload's keys. Keeping every SQL string in one auditable module is why
-// two things live here that the header's "shared, pure" description doesn't cover:
-// the blob builders, which only the embedded adapter calls (blob mode is
-// embedded-only), and `resolveStructured`, which raises the one verdict SQL cannot
-// (§16) rather than returning it.
+// from the payload's keys.
 
 import type { WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
@@ -108,9 +104,8 @@ export function toPg(sql: string): string {
   return sql.replace(/\?/g, () => `$${++i}`)
 }
 
-// v0 blob store: one JSON row per PK. The resolved row equals the sent row. An
-// update reaches this as the MERGED document — `SqliteAdapter.applyBlobOp` reads
-// the stored one first, since an update carries only its changed keys (§16).
+// v0 blob store: one JSON row per PK. The caller passes the whole document —
+// `SqliteAdapter.applyBlobOp` merges an update's changed keys before calling here.
 export function blobStmt(plan: BlobPlan, op: WriteEvent): Statement {
   const row = op.value as Record<string, unknown>
   const key = String(row[plan.key])
@@ -146,16 +141,13 @@ export function resolveStructured(
   return { type: 'insert', value: dec(rows[0], plan.kinds) }
 }
 
-// D1's way of reaching §16's verdict. No engine errors on an update that matches
-// nothing, and D1 has no interactive transaction to decide it in JS, so the
-// precondition travels as SQL: this statement runs immediately ahead of its own
-// UPDATE, inside the same `batch()`.
+// Aborts D1's batch when an update's row doesn't exist (§16), since D1 has no
+// interactive transaction to check it in JS. Run this immediately before the
+// UPDATE, in the same `batch()`.
 //
-// It inserts NOTHING while the row exists (the WHERE yields no row, so no `_oplog`
-// seq is burned), and violates `_oplog.channel NOT NULL` when it does not, which
-// aborts and rolls back the whole batch. `_oplog` is our table and every other
-// write to it binds a real channel, so that violation has exactly one cause —
-// `D1Adapter.write` reads it back as a missed update.
+// It inserts nothing while the row exists — the WHERE yields no row, so no seq is
+// burned — and violates `_oplog.channel NOT NULL` when it doesn't, rolling the
+// batch back. Every real write binds a channel, so that violation has one cause.
 export function updateGuardStmt(plan: StructuredPlan, op: WriteEvent): Statement {
   const row = op.value as Record<string, unknown>
   return {
@@ -164,8 +156,7 @@ export function updateGuardStmt(plan: StructuredPlan, op: WriteEvent): Statement
   }
 }
 
-// The message SQLite gives that violation. D1 wraps it in its own `D1_ERROR: …`,
-// so match, don't compare.
+// D1 wraps SQLite's message in its own `D1_ERROR: …`, so match, don't compare.
 export const MISSED_UPDATE_GUARD_ERROR = 'NOT NULL constraint failed: _oplog.channel'
 
 // The SQL mirror of `decode` for one column, as a `json_object` value expression:
@@ -186,9 +177,9 @@ function columnJsonExpr(col: ColumnSpec): string {
 // expression text plus its binds, to be dropped into a `json_array(...)`.
 //
 // insert/update read the row back from the table by key and shape it with the
-// schema's columns; delete's value is the sent row, known up front. Both read-backs
-// find their row — the insert just wrote it, and the guard aborted a missing update
-// — so the COALESCE to the sent op is a well-formedness backstop, not a semantic.
+// schema's columns; delete's value is the sent row, known up front. The read-back
+// always finds its row (the insert just wrote it; `updateGuardStmt` aborted a
+// missing update), so the COALESCE is a well-formedness backstop, not a semantic.
 //
 // The outer json() is load-bearing: the JSON subtype does not survive the
 // scalar-subquery boundary, so each element is re-parsed. Bind order matches the

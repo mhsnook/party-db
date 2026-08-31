@@ -66,9 +66,8 @@ export class D1Adapter implements PersistenceAdapter {
         )
       }
     }
-    // `channel TEXT NOT NULL` is load-bearing beyond hygiene: it is what the update
-    // guard violates to abort a batch (`updateGuardStmt`). Relaxing it would turn
-    // every missed update back into a phantom `_oplog` row.
+    // `channel TEXT NOT NULL` is what `updateGuardStmt` violates to abort a batch.
+    // Relaxing it turns every missed update back into a phantom `_oplog` row.
     await this.d1.exec(`CREATE TABLE IF NOT EXISTS _oplog (seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, ops TEXT NOT NULL)`)
   }
 
@@ -80,15 +79,12 @@ export class D1Adapter implements PersistenceAdapter {
     // JSON in SQL), then one compaction DELETE. We remember where each op's CRUD
     // result and each batch's oplog result land so we can map them back after commit.
     //
-    // Each update is preceded by its own existence guard (`updateGuardStmt`, §16).
-    // Immediately preceded: the guards cannot be hoisted to the front of the batch,
-    // or a POST that inserts a row and then updates it would fail its own insert's
-    // guard. That interleaving is what `crudAt` indexes around.
+    // Each update sits immediately behind its own `updateGuardStmt`. Don't hoist
+    // the guards: a POST that inserts a row then updates it would fail its own
+    // insert's guard. `crudAt` indexes around that interleaving.
     const stmts: D1PreparedStatement[] = []
     const layout: { channel: string; plan: StructuredPlan; batch: WriteBatch; crudAt: number[]; oplogAt: number }[] = []
-    // what a fired guard could not tell us: which update it was. Collected here,
-    // where the keys are already in hand, so the rejection can name one.
-    const updates: { channel: string; key: unknown }[] = []
+    const updates: { channel: string; key: unknown }[] = [] // for missedUpdate()
 
     for (const batch of batches) {
       const plan = this.plans.get(batch.channel)
@@ -172,11 +168,10 @@ export class D1Adapter implements PersistenceAdapter {
   }
 }
 
-// A fired guard rolls its batch back without saying which statement raised it, so
-// name the miss from what the POST itself makes unambiguous: the channel when every
-// update was in one, the key when there was only one update. Querying for the exact
-// row would cost a round trip on a rejection the client already has to roll back —
-// and it branches on `code`, not on this text.
+// A fired guard doesn't say which statement raised it, so name what the POST makes
+// unambiguous: the channel if every update was in one, the key if there was one
+// update. Querying for the exact row would cost a round trip on a rejection the
+// client rolls back anyway, and it branches on `code`, not on this text.
 function missedUpdate(updates: { channel: string; key: unknown }[]): MissedUpdateError {
   const channels = new Set(updates.map((u) => u.channel))
   return new MissedUpdateError(

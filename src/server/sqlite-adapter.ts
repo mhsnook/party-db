@@ -105,9 +105,9 @@ export class SqliteAdapter implements PersistenceAdapter {
     return { channel: batch.channel, ops: resolved, seq }
   }
 
-  // Run one op's shared CRUD statement and resolve it. Structured ops decode the
-  // returned row, read via toArray() so a delete's empty result is tolerated (an
-  // update's is the §16 rejection). Blob ops write the sent document straight in.
+  // Run one op's shared CRUD statement and resolve it. Read the result via
+  // toArray(): a delete returns no rows, and an update that returns none is the
+  // §16 rejection.
   private applyOp(plan: Plan, op: WriteEvent): WriteEvent {
     if (plan.kind === 'blob') return this.applyBlobOp(plan, op)
     const { sql, binds } = structuredStmt(plan, op)
@@ -115,11 +115,9 @@ export class SqliteAdapter implements PersistenceAdapter {
     return resolveStructured(plan, op, rows)
   }
 
-  // A blob update carries only its changed keys (§16), and the store holds one
-  // opaque document — so merge here, where the interactive transaction makes the
-  // read and the write one step, and resolve to the MERGED document (structured
-  // mode resolves to the committed row for the same reason). No stored document
-  // means the update matched no row.
+  // The store holds one opaque document per key, so an update merges its changed
+  // keys (§16) over the stored one and resolves to the merged result. No stored
+  // document means the update matched no row.
   private applyBlobOp(plan: BlobPlan, op: WriteEvent): WriteEvent {
     let value = op.value as Record<string, unknown>
     if (op.type === 'update') {

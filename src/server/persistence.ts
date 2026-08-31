@@ -37,21 +37,12 @@ export type WriteIdentity = {
 // unauthorized write reads as a normal client rejection, not a conflict.
 export type WriteRejection = WriteReject & { status?: number }
 
-// An UPDATE whose key matched no row — the row was deleted, never existed, or an
-// RLS policy makes it invisible to this writer.
+// An UPDATE whose key matched no row. Every SQL dialect treats that as a silent
+// success, so the adapters raise this instead, and it rolls the POST back like a
+// constraint rejection. Why, and how each adapter detects it: architecture §16.
 //
-// This is the one verdict no engine raises for us: every SQL dialect treats a
-// zero-row UPDATE as a silent success. So the adapters raise it themselves, it
-// rolls the whole POST back like any constraint rejection, and the writer reads it
-// off the 409's `code`. The alternative — the behavior this replaced — logged an op
-// for a row that does not exist, fanned it out, and settled as success. Full
-// reasoning, and how each adapter detects it: docs/architecture.md §16.
-//
-// It carries its own `rejection` so the code, the status and the channel are
-// declared here, once, rather than assembled again in the HTTP layer.
-//
-// `channel`/`key` name the op when the adapter can (D1 learns of a miss from a
-// rolled-back batch, which does not say which statement raised it).
+// `rejection` is what the writer gets back; `channel`/`key` are absent when the
+// adapter cannot tell which op missed (D1's rolled-back batch).
 export class MissedUpdateError extends Error {
   readonly rejection: WriteRejection
 
