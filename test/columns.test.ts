@@ -1,55 +1,61 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { z as z4 } from 'zod/v4'
+import * as zm from 'zod/mini'
 import { assertIdent, columnsOf, decode, decodeRow, encode } from '../src/server/columns.ts'
 
 describe('columnsOf (schema → injection-safe allowlist + codec)', () => {
-  // v3 and v4 build these schemas with the same calls; only the private `_def`
-  // shape differs, and reading the wrong one classifies every column as `scalar` —
-  // a boolean comes back as 0/1 and a json column as unparsed text (issue #45).
-  // The cast is load-bearing: a bare union of the two namespaces is not callable.
-  const versions: [string, typeof z4][] = [
-    ['v3', z as unknown as typeof z4],
-    ['v4', z4],
-  ]
-
-  for (const [label, zz] of versions) {
-    it(`reads a zod ${label} object into column names + codec kinds, unwrapping modifiers`, () => {
-      const schema = zz.object({
-        id: zz.string(),
-        text: zz.string(),
-        done: zz.boolean(),
-        meta: zz.object({ a: zz.number() }).optional(),
-        tags: zz.array(zz.string()),
-        dict: zz.record(zz.string(), zz.number()).nullable(),
-        pair: zz.tuple([zz.string(), zz.number()]),
-        flag: zz.boolean().default(false),
-        n: zz.number().int().nullable().default(0),
-      })
-      expect(columnsOf(schema)).toEqual([
-        { name: 'id', kind: 'scalar' },
-        { name: 'text', kind: 'scalar' },
-        { name: 'done', kind: 'boolean' },
-        { name: 'meta', kind: 'json' },
-        { name: 'tags', kind: 'json' },
-        { name: 'dict', kind: 'json' },
-        { name: 'pair', kind: 'json' },
-        { name: 'flag', kind: 'boolean' },
-        { name: 'n', kind: 'scalar' },
-      ])
+  it('reads a zod object into column names + codec kinds, unwrapping modifiers', () => {
+    const schema = z.object({
+      id: z.string(),
+      text: z.string(),
+      done: z.boolean(),
+      meta: z.object({ a: z.number() }).optional(),
+      tags: z.array(z.string()),
+      dict: z.record(z.string(), z.number()).nullable(),
+      pair: z.tuple([z.string(), z.number()]),
+      flag: z.boolean().default(false),
+      n: z.number().int().nullable().default(0),
     })
+    expect(columnsOf(schema)).toEqual([
+      { name: 'id', kind: 'scalar' },
+      { name: 'text', kind: 'scalar' },
+      { name: 'done', kind: 'boolean' },
+      { name: 'meta', kind: 'json' },
+      { name: 'tags', kind: 'json' },
+      { name: 'dict', kind: 'json' },
+      { name: 'pair', kind: 'json' },
+      { name: 'flag', kind: 'boolean' },
+      { name: 'n', kind: 'scalar' },
+    ])
+  })
 
-    // `.transform()` leaves the base type on the pipe's input side, `z.preprocess()`
-    // on its output side. Either way we want the base type, not the transform.
-    it(`unwraps a zod ${label} transform pipe from either side`, () => {
-      expect(columnsOf(zz.object({ a: zz.boolean().transform((v) => v) }))).toEqual([
-        { name: 'a', kind: 'boolean' },
-      ])
-      expect(columnsOf(zz.object({ a: zz.preprocess((v) => v, zz.array(zz.string())) }))).toEqual([
-        { name: 'a', kind: 'json' },
-      ])
+  // `.transform()` leaves the base type on the pipe's input side, `z.preprocess()`
+  // on its output side. Either way we want the base type, not the transform.
+  it('unwraps a transform pipe from either side', () => {
+    expect(columnsOf(z.object({ a: z.boolean().transform((v) => v) }))).toEqual([
+      { name: 'a', kind: 'boolean' },
+    ])
+    expect(columnsOf(z.object({ a: z.preprocess((v) => v, z.array(z.string())) }))).toEqual([
+      { name: 'a', kind: 'json' },
+    ])
+  })
+
+  // zod/mini builds the same `_zod.def` nodes, so it reads identically. We do not
+  // advertise it; this is here so a mini user is not silently dropped to blob.
+  it('reads a zod/mini object the same way', () => {
+    const schema = zm.object({
+      id: zm.string(),
+      done: zm.boolean(),
+      tags: zm.array(zm.string()),
+      flag: zm.optional(zm.boolean()),
     })
-  }
+    expect(columnsOf(schema)).toEqual([
+      { name: 'id', kind: 'scalar' },
+      { name: 'done', kind: 'boolean' },
+      { name: 'tags', kind: 'json' },
+      { name: 'flag', kind: 'boolean' },
+    ])
+  })
 
   it('returns null for a schema it cannot introspect (→ blob fallback)', () => {
     expect(columnsOf(undefined)).toBeNull()
