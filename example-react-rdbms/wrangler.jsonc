@@ -9,7 +9,12 @@
   },
   // partyserver uses the DO's own SQLite for its hibernatable WebSocket bookkeeping,
   // so the DO always has SQLite storage.
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Main"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Main"] }],
+  // party-db is imported from ../../src, so its own `partyserver` import resolves
+  // from the REPO ROOT's node_modules — which a builder that installs only this
+  // directory (Cloudflare Workers Builds) never creates. Point it at the copy this
+  // example installs itself, so the worker bundles either way.
+  "alias": { "partyserver": "./node_modules/partyserver" }
   // By default the example uses that same DO SQLite for the app data too. To keep the
   // app data in a standalone D1 database instead (one other services can read),
   // uncomment the block below, run `wrangler d1 create party-db-example-rdbms`, and
