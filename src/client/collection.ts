@@ -39,7 +39,7 @@ export function makePersist(
   client: Pick<SyncClient, 'send' | 'waitForSeq'>,
   // each managed collection's own config: `name` is the channel, `key` the column
   // an update sends alongside its changed ones.
-  configOf: Map<Collection<any>, PartyCollection<any>>,
+  configOf: WeakMap<Collection<any>, PartyCollection<any>>,
 ) {
   return async ({ transaction }: any) => {
     const byChannel = new Map<string, WriteEvent[]>()
@@ -60,7 +60,9 @@ export function makePersist(
 // internal: wire N collection configs onto one SyncClient. Returns the
 // collections plus the shared `persist` mutationFn.
 export function wireCollections(client: SyncClient, configs: PartyCollectionConfig<any>[]) {
-  const configOf = new Map<Collection<any>, PartyCollection<any>>()
+  // weak: we only ever look a collection up by identity, so this must not be the
+  // thing keeping every collection (and its rows) alive.
+  const configOf = new WeakMap<Collection<any>, PartyCollection<any>>()
   const persist = makePersist(client, configOf)
   const db: Record<string, Collection<any>> = {}
   for (const cfg of configs) {

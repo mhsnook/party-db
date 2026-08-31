@@ -116,7 +116,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `makePersist(client, channelOf)` / `wireCollections(client, configs)` / `toEvent(mutation)` — `src/client/collection.ts`
 - `applyBatch(sink, batch)` — `src/client/apply.ts`, the only place a batch reaches a collection
 - `SeqTracker.observe` / `.waitFor` / `.rejectAll` — `src/client/seq-tracker.ts`, settlement with no transport attached
-- `WriteError` / `TransportError` / `AuthError` / `toWriteReject` — `src/client/errors.ts`
+- `WriteError` / `TransportError` / `AuthError` / `ClosedError` / `toWriteReject` — `src/client/errors.ts`
 
 **Server**
 

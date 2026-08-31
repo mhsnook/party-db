@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { NonRetriableError, TanStackDBError } from '@tanstack/db'
-import { WriteError, TransportError, toWriteReject } from '../src/client/errors.ts'
+import { WriteError, TransportError, ClosedError, toWriteReject } from '../src/client/errors.ts'
 
 const res = (status: number, text: string) => ({ status, text: async () => text })
 
@@ -53,5 +53,14 @@ describe('TransportError', () => {
     expect(e).toBeInstanceOf(TanStackDBError)
     expect(e).not.toBeInstanceOf(NonRetriableError) // a retry-aware layer may re-send
     expect(e.cause).toBe(cause)
+  })
+})
+
+describe('ClosedError', () => {
+  it('is non-retriable, so a retry layer does not replay a write with nowhere to land', () => {
+    const e = new ClosedError()
+    expect(e.name).toBe('ClosedError')
+    expect(e).toBeInstanceOf(TanStackDBError)
+    expect(e).toBeInstanceOf(NonRetriableError)
   })
 })

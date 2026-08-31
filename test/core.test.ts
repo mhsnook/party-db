@@ -1,9 +1,9 @@
 // PartyDbCore composed, not subclassed: a bare host object holds the core and
 // hands it lifecycle events — no partyserver `Server` anywhere in this file.
-// This is the seam issue #43 opens for a host that already extends another
-// `Server` (an agents-SDK AIChatAgent) and therefore cannot extend
-// `PartyDbServer`. The deep write/replay semantics are pinned by the adapter and
-// integration suites; this suite pins the composed surface itself.
+// This is the seam for a host that already extends another `Server` (an
+// agents-SDK AIChatAgent) and therefore cannot extend `PartyDbServer` — see
+// docs/architecture.md §15. The deep write/replay semantics are pinned by the
+// adapter and integration suites; this suite pins the composed surface itself.
 
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'

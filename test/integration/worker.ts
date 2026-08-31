@@ -261,11 +261,11 @@ export class Hosted extends Main {
   }
 }
 
-// The host issue #43 opens the core for: a room that cannot subclass
-// PartyDbServer because it already extends another partyserver `Server` (the
-// stand-in here for an agents-SDK AIChatAgent). It holds a `PartyDbCore`
-// instead: it builds the adapter over its own storage, routes party-db traffic
-// with `isPartyDbRequest` (the client marks every request with
+// The host the core exists for (docs/architecture.md §15): a room that cannot
+// subclass PartyDbServer because it already extends another partyserver
+// `Server` (the stand-in here for an agents-SDK AIChatAgent). It holds a
+// `PartyDbCore` instead: it builds the adapter over its own storage, routes
+// party-db traffic with `isPartyDbRequest` (the client marks every request with
 // `?proto=party-db`, so the app configures nothing), tags those connections so
 // hibernation keeps the routing, and scopes the fan-out to that tag. Its own
 // socket traffic — a greeting frame — and its own HTTP route stay separate.

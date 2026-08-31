@@ -72,7 +72,7 @@ describe('SeqTracker.rejectAll', () => {
   it('rejects every pending waiter (stream closed for good)', async () => {
     const t = new SeqTracker()
     const p = t.waitFor('c', 1)
-    t.rejectAll('closed')
+    t.rejectAll(new Error('closed'))
     await expect(p).rejects.toThrow(/closed/)
   })
 })

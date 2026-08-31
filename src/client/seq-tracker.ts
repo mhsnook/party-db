@@ -81,11 +81,12 @@ export class SeqTracker {
   }
 
   // Reject every pending waiter — e.g. the stream closed for good, so nothing will
-  // settle. Callers get a rejection (→ rollback/retry) rather than a silent hang.
-  rejectAll(reason: string): void {
+  // settle. Callers get a rejection (→ rollback/retry) rather than a silent hang,
+  // and pass the error themselves so one cause reaches the app as one class.
+  rejectAll(error: Error): void {
     for (const w of this.waiters) {
       if (w.timer) clearTimeout(w.timer)
-      w.reject(new Error(reason))
+      w.reject(error)
     }
     this.waiters.clear()
   }

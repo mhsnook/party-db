@@ -4,7 +4,7 @@
 
 import { applyBatch, type ChannelSink } from './apply.ts'
 import { SeqTracker, type CursorCompare } from './seq-tracker.ts'
-import type { AuthError } from './errors.ts'
+import { ClosedError, type AuthError } from './errors.ts'
 import { isSequencedBatch } from '../protocol.ts'
 import type { Cursor, SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
 
@@ -18,6 +18,10 @@ export type Transport = {
   // we don't auto-reconnect when the down-stream is closed for auth (1008); this
   // hands that verdict to the app instead. Returns an unsubscribe.
   onAuthError?: (listener: (error: AuthError) => void) => () => void
+  // hang up the down-stream, reconnect included. Optional like the two above:
+  // `subscribe` + `send` is the whole seam, and everything else is a capability
+  // a transport may not have.
+  close?: () => void
 }
 
 export type SyncClientOptions = {
@@ -39,11 +43,13 @@ export class SyncClient {
   private tracker: SeqTracker
   private settleTimeoutMs: number
   private unsubscribe?: () => void
+  // dropped on close: it is the closed flag, and letting it go releases the dead
+  // socket. A collection outlives us holding the cleanup closure `register`
+  // returns, so anything we still point at stays alive with it.
+  private transport?: Transport
 
-  constructor(
-    private transport: Transport,
-    opts: SyncClientOptions = {},
-  ) {
+  constructor(transport: Transport, opts: SyncClientOptions = {}) {
+    this.transport = transport
     this.tracker = new SeqTracker(opts.compareCursor)
     this.settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
     this.unsubscribe = transport.subscribe((batch) => this.route(batch))
@@ -80,6 +86,9 @@ export class SyncClient {
   // (carries each assigned seq). One batch for a single-collection write, many
   // for a cross-collection atomic transaction.
   send(batches: WriteBatch[]) {
+    // a closed client has no down-stream, so the seq this write earns could never
+    // arrive: fail now rather than POST and time out 30s from now.
+    if (!this.transport) return Promise.reject(new ClosedError())
     return this.transport.send(batches)
   }
 
@@ -88,12 +97,19 @@ export class SyncClient {
   // survives the ack->stream gap, then drops cleanly onto the synced row. Rejects
   // if it doesn't settle within the configured timeout (so the mutation can't hang).
   waitForSeq(channel: string, seq: Cursor): Promise<void> {
+    if (!this.transport) return Promise.reject(new ClosedError())
     return this.tracker.waitFor(channel, seq, this.settleTimeoutMs)
   }
 
+  // One-way: a closed client never reopens, so build a new one.
   close() {
+    if (!this.transport) return
     this.unsubscribe?.()
-    // nothing more will stream in — fail any in-flight waiters instead of hanging.
-    this.tracker.rejectAll('sync client closed')
+    this.unsubscribe = undefined // captures the socket handler — let it go too
+    this.tracker.rejectAll(new ClosedError())
+    this.sinks.clear()
+    this.pending.clear()
+    this.transport.close?.()
+    this.transport = undefined
   }
 }

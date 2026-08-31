@@ -112,6 +112,12 @@ export function partyTransport(opts: {
       authListeners.add(listener)
       return () => authListeners.delete(listener)
     },
+    // PartySocket.close() stops the re-dial as well as the connection. The auth
+    // listeners go with it: a socket we hung up has no server verdict to report.
+    close() {
+      authListeners.clear()
+      socket.close()
+    },
   }
 }
 
@@ -136,6 +142,9 @@ export function createPartyDb<C extends PartyCollectionConfig<any>[]>(
     // (and an inert unsubscribe) for a transport without an auth-gated down path.
     onAuthError(listener: (error: AuthError) => void): () => void {
       return transport.onAuthError?.(listener) ?? (() => {})
+    },
+    close() {
+      client.close()
     },
   }
 }

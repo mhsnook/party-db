@@ -28,6 +28,13 @@ const hoisted = vi.hoisted(() => {
     removeEventListener(type: string, h: (e: any) => void) {
       this.listeners[type] = (this.listeners[type] ?? []).filter((x) => x !== h)
     }
+    // the real PartySocket.close() stops the re-dial and dispatches the close
+    // event synchronously, with code 1000 unless told otherwise.
+    close = vi.fn((code = 1000, reason = '') => {
+      this.readyState = 3
+      this.emit('close', { code, reason })
+    })
+
     emit(type: string, e: any) {
       for (const h of this.listeners[type] ?? []) h(e)
     }
@@ -49,6 +56,8 @@ const message = (frame: unknown) => ({ data: JSON.stringify(frame) })
 const raw = (data: unknown) => ({ data })
 // the init object of the i-th write POST (headers, method, body)
 const writeInit = (i = 0) => Fake.fetch.mock.calls[i][1] as any
+// a close event as the socket delivers it
+const closeEvent = (code: number, reason = '') => ({ code, reason })
 
 // a transport with a subscriber attached, which every frame test needs
 function subscribed() {
@@ -173,8 +182,6 @@ describe('partyTransport send', () => {
 })
 
 describe('partyTransport 1008 (policy violation) is terminal', () => {
-  const closeEvent = (code: number, reason = '') => ({ code, reason })
-
   it('does not reconnect on a 1008 close (shouldReconnectOnClose returns false)', () => {
     partyTransport({ host: 'example.com', room: 'r1' })
     const { shouldReconnectOnClose } = lastSocket().opts
@@ -228,6 +235,28 @@ describe('partyTransport 1008 (policy violation) is terminal', () => {
     off?.()
 
     lastSocket().emit('close', closeEvent(1008))
+    expect(seen).toEqual([])
+  })
+})
+
+describe('partyTransport close', () => {
+  it('closes the underlying socket, so it stops reconnecting', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const socket = lastSocket()
+
+    transport.close?.()
+
+    expect(socket.close).toHaveBeenCalledOnce()
+  })
+
+  it('drops auth listeners, so a late 1008 on a closed socket stays quiet', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: AuthError[] = []
+    transport.onAuthError?.((e) => seen.push(e))
+
+    transport.close?.()
+    lastSocket().emit('close', closeEvent(1008, 'too late'))
+
     expect(seen).toEqual([])
   })
 })
