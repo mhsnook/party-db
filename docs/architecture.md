@@ -368,8 +368,9 @@ Two consequences make this real, not decorative:
   satisfy; `classifyError` maps it to **403** (distinct from the `23…` integrity class →
   409), and the server answers 403 at the wire so the client rolls its optimistic
   mutation back like any other reject. One honest asymmetry: an UPDATE/DELETE of a row a
-  policy makes *invisible* is a 0-row no-op, not a 42501 — you can't be refused a row you
-  can't see, and that is safe.
+  policy makes *invisible* raises no 42501 — you can't be refused a row you can't see. It
+  matches 0 rows, so an update of one is the **missing-row** rejection (§16, 409) and a
+  delete of one stays a no-op.
 - **The anonymous case is fail-closed.** When `auth` is set but a POST resolves no
   identity (`auth` → `null`), the write is *not* run identity-less — which on a privileged
   connection would bypass RLS. The server rejects it **401** before any transaction opens.
@@ -504,6 +505,49 @@ We considered letting party-db frames share one socket with the host's own proto
 and rejected it: the frames would need a namespace, which changes the wire and the
 client for every mode. Routing whole connections by the marker gives the same
 multiplexing with no wire change.
+
+## 16. An update carries only the columns it changed, and must hit a row
+
+Two halves of one decision: a client owns the columns it writes, and nothing else.
+
+**Only the changed columns travel.** `toEvent` builds an update's `value` from
+TanStack's own `mutation.changes` plus the key — never `mutation.modified`. The server
+already SETs exactly the columns present in `value` (`structuredStmt`), so a
+one-column update leaves every other column alone. Sending the whole modified row
+instead meant that a writer touching `status` also wrote back its own copy of every
+other column, reverting whatever a concurrent writer had changed there — a clobber
+nobody asked for, from a client that never read the column it overwrote.
+
+What this does NOT change: we still do not compare `previousValue` server-side. Two
+writers touching the SAME column still resolve last-write-wins, and that stays the
+documented semantics. This narrows the blast radius to the columns you actually wrote.
+
+The blob store (§5a) has no columns to SET, so it does the same thing in JS: read the
+stored document, merge the changed keys over it, write it back. The resolved op is the
+merged document, exactly as structured mode returns the resolved row.
+
+**An update that matches no row is a rejection.** No engine errors on a zero-row
+UPDATE — it is a silent success everywhere — so the adapters raise `MissedUpdateError`
+themselves and the whole POST rolls back. The writer gets **409** with
+`code: 'missing-row'` (`WriteError.code` on the client), and no op for a row that does
+not exist enters the `_oplog` or reaches a subscriber. Before this, such a write got a
+seq, logged a phantom op, fanned it out, and settled as success — so a client whose row
+had been deleted underneath it could never find out.
+
+Three engines, one verdict, two mechanisms:
+
+- **Embedded SQLite and Postgres** decide in JS, inside the transaction they already
+  hold: an empty `RETURNING` result throws, and the transaction rolls back.
+- **D1** has no interactive transaction — nothing can be decided mid-`batch()` — so the
+  precondition travels as SQL. `updateGuardStmt` runs ahead of each UPDATE in the same
+  batch: it writes nothing while the row exists, and violates `_oplog.channel NOT NULL`
+  when it doesn't, which aborts the whole batch. `_oplog` is our table and every other
+  write to it binds a real channel, so that violation has exactly one cause; `D1Adapter`
+  reads it back, re-checks the keys to name the miss, and raises the same error.
+
+A delete is unaffected: deleting a row that is already gone is the state you asked for.
+An update of a row your RLS policy makes invisible is a miss like any other (§10a) —
+alice learns her write went nowhere, rather than believing it landed.
 
 ## Layering
 

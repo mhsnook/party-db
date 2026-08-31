@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { SqliteAdapter } from '../src/server/sqlite-adapter.ts'
+import { MissedUpdateError } from '../src/server/persistence.ts'
 import { definePartyCollection } from '../src/schema.ts'
 import { memoryEngine } from './helpers/sql-engine.ts'
 
@@ -109,13 +110,26 @@ describe('SqliteAdapter — structured CRUD against typed columns', () => {
     expect(row).toEqual({ text: 'orig', done: 1 })
   })
 
-  it('treats an update of a nonexistent row as a no-op (returns the sent value)', async () => {
+  it('rejects an update of a nonexistent row, logging nothing', async () => {
     const { db, adapter } = setup()
-    const [batch] = await adapter.write([
-      { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }] },
-    ])
-    expect(batch.ops[0].value).toEqual({ id: 'ghost', done: true }) // sent value, no crash
+    await expect(
+      adapter.write([
+        { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }] },
+      ]),
+    ).rejects.toThrow(MissedUpdateError)
     expect(db.prepare(`SELECT COUNT(*) c FROM todos`).get()).toEqual({ c: 0 }) // nothing created
+    expect(db.prepare(`SELECT COUNT(*) c FROM _oplog`).get()).toEqual({ c: 0 }) // and no phantom op logged
+  })
+
+  it('rolls the whole POST back when one of its updates matches no row', async () => {
+    const { db, adapter } = setup()
+    await expect(
+      adapter.write([
+        ins('todos', { id: 'a', text: 'x', done: false }), // valid…
+        { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true } }] }, // …but this misses
+      ]),
+    ).rejects.toThrow(MissedUpdateError)
+    expect(db.prepare(`SELECT COUNT(*) c FROM todos`).get()).toEqual({ c: 0 })
   })
 
   it('deletes the row by key', async () => {
@@ -192,18 +206,27 @@ describe('SqliteAdapter — blob fallback (schema-less collection)', () => {
     expect(logs.ops[0].value).toEqual({ id: 'l1', anything: { nested: true }, n: 5 })
   })
 
-  it('treats an update as an upsert, and echoes the sent row as resolved', async () => {
+  it('merges an update over the stored document and resolves the merged row', async () => {
     const { adapter } = setup()
     await adapter.write([ins('logs', { id: 'l1', level: 'info', n: 1 })])
     const [batch] = await adapter.write([
-      { channel: 'logs', ops: [{ type: 'update', value: { id: 'l1', level: 'warn', n: 2 } }] },
+      { channel: 'logs', ops: [{ type: 'update', value: { id: 'l1', level: 'warn' } }] },
     ])
 
-    // blob mode has no columns to read back: the resolved row is the sent row
-    expect(batch.ops).toEqual([{ type: 'update', value: { id: 'l1', level: 'warn', n: 2 } }])
+    // `n` was never sent, so it survives — and the resolved row is the merged doc
+    expect(batch.ops).toEqual([{ type: 'update', value: { id: 'l1', level: 'warn', n: 1 } }])
     const snap = await adapter.snapshot()
     const logs = snap.find((b) => b.channel === 'logs')!
-    expect(logs.ops.map((o) => o.value)).toEqual([{ id: 'l1', level: 'warn', n: 2 }])
+    expect(logs.ops.map((o) => o.value)).toEqual([{ id: 'l1', level: 'warn', n: 1 }])
+  })
+
+  it('rejects an update of a document that does not exist', async () => {
+    const { adapter } = setup()
+    await expect(
+      adapter.write([{ channel: 'logs', ops: [{ type: 'update', value: { id: 'ghost', level: 'warn' } }] }]),
+    ).rejects.toThrow(MissedUpdateError)
+    const snap = await adapter.snapshot()
+    expect(snap.find((b) => b.channel === 'logs')!.ops).toEqual([]) // no row conjured
   })
 
   it('deletes the row from the snapshot while the oplog keeps both ops', async () => {

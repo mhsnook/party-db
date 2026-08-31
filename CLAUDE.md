@@ -55,6 +55,9 @@ Vocabulary, used exactly this way everywhere:
   `src/server/columns.ts`), never from a payload's keys.
 - **`access` and `ownerColumn` are declared surface, not enforcement** (issue #33). `warnUnenforcedAccess`
   warns loudly at boot. Do not treat them as security.
+- **An update writes only the columns it changed, and must hit a row.** `toEvent` sends
+  `mutation.changes` + the key; a zero-row UPDATE is a `MissedUpdateError` → 409
+  `code: 'missing-row'`, never a phantom op in the `_oplog` (`docs/architecture.md` §16).
 - **Anonymous writes fail closed.** If `auth` is set and the POST resolves no identity, the server
   rejects it 401 unless the subclass names an `anonRole`.
 - **The wire is mode-invariant.** A client cannot tell which mode its room runs. Changing mode is a

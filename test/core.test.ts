@@ -112,6 +112,22 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
     expect((await core.handleWrite(post(write('b', 'gated')))).status).toBe(401)
   })
 
+  it('answers a missed update 409 with code missing-row, broadcasting nothing', async () => {
+    const { core, broadcasts } = await host()
+    const res = await core.handleWrite(
+      post([{ channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true } }] }]),
+    )
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      error: 'update matched no row (channel "todos", key "ghost")',
+      channel: 'todos',
+      code: 'missing-row',
+    })
+    expect(broadcasts).toHaveLength(0)
+    // and the room keeps serving
+    expect((await core.handleWrite(post(write('next', 'still serving')))).status).toBe(200)
+  })
+
   it('answers a constraint rejection 409, and stays serving after it', async () => {
     const { core } = await host()
     await core.commit(write('dup', 'first'))

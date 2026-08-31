@@ -153,14 +153,19 @@ describe.skipIf(!PG_URL)('Postgres-native RLS (real Postgres, RLS-subject connec
     expect(adapter.classifyError(err)!.status).toBe(403)
   })
 
-  it("update of another user's row is a safe no-op — the policy makes it invisible (not a 403)", async () => {
+  it("update of another user's row is refused as a missing row, not a 403 — the policy makes it invisible", async () => {
     const adapter = await setup()
     await adapter.write([insert('shared', 'bobs', 'bob')], bob) // bob owns it
     // alice tries to overwrite it; USING filters bob's row out → 0 rows matched.
-    const [batch] = await adapter.write([{ channel: 'docs', ops: [{ type: 'update', value: { id: 'shared', body: 'hacked' }, previousValue: { id: 'shared' } }] }], alice)
-    // echoes the sent value (update-of-missing shape), but the stored row is untouched
-    expect(batch.ops[0].value).toEqual({ id: 'shared', body: 'hacked' })
-    expect(await docRows()).toEqual([{ id: 'shared', owner: 'bob', body: 'bobs' }])
+    // You can't be REFUSED a row you can't see, so this is the missing-row verdict
+    // (409), not the forged-write one (403) — and alice learns her write went nowhere.
+    await expect(
+      adapter.write(
+        [{ channel: 'docs', ops: [{ type: 'update', value: { id: 'shared', body: 'hacked' }, previousValue: { id: 'shared' } }] }],
+        alice,
+      ),
+    ).rejects.toThrow(/update matched no row/)
+    expect(await docRows()).toEqual([{ id: 'shared', owner: 'bob', body: 'bobs' }]) // untouched
   })
 
   it("delete of another user's row is a safe no-op — invisible rows can't be deleted", async () => {

@@ -20,6 +20,7 @@
 
 import type { WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
+import { MissedUpdateError } from './persistence.ts'
 import { assertIdent, columnsOf, decodeRow, encode, type ColumnKind, type ColumnSpec } from './columns.ts'
 
 export type StructuredPlan = {
@@ -103,7 +104,12 @@ export function toPg(sql: string): string {
   return sql.replace(/\?/g, () => `$${++i}`)
 }
 
-// v0 blob store: one JSON row per PK. The resolved row equals the sent row.
+// v0 blob store: one JSON row per PK. Insert upserts the whole document; delete is
+// keyed. An update is NOT here — it is a read-merge-write (`blobSelectStmt` then
+// `blobWriteStmt`), because an update now carries only its changed keys: writing
+// that document straight in would drop every key the writer never touched.
+// Blob mode is embedded-only, and the embedded adapter has the interactive
+// transaction that a read-merge-write needs.
 export function blobStmt(plan: BlobPlan, op: WriteEvent): Statement {
   const row = op.value as Record<string, unknown>
   const key = String(row[plan.key])
@@ -116,15 +122,31 @@ export function blobStmt(plan: BlobPlan, op: WriteEvent): Statement {
   }
 }
 
-// Turn the rows a structured statement returned into the resolved op. insert and a
-// row-hitting update decode the RETURNING row (defaults/serials applied); an update
-// that hit no row and a delete echo the sent value. This is the JS side of what
-// `resolvedOpJsonExpr` reproduces in SQL — the two must agree (parity test).
+// Read one blob document by PK — the first half of an update's read-merge-write,
+// and the existence check that turns an update of a missing row into a rejection.
+export function blobSelectStmt(plan: BlobPlan, key: unknown): Statement {
+  return { sql: `SELECT data FROM "${plan.name}" WHERE k = ?`, binds: [String(key)] }
+}
+
+// Write a merged blob document back over an existing row. Keyed UPDATE, not an
+// upsert: the row's existence was proved by the preceding read.
+export function blobWriteStmt(plan: BlobPlan, key: unknown, doc: Record<string, unknown>): Statement {
+  return { sql: `UPDATE "${plan.name}" SET data = ? WHERE k = ?`, binds: [JSON.stringify(doc), String(key)] }
+}
+
+// Turn the rows a structured statement returned into the resolved op. insert and
+// update decode the RETURNING row (defaults/serials applied); a delete echoes the
+// sent value.
+//
+// An update that returned NO row matched nothing, and that is a verdict, not a
+// success: it throws `MissedUpdateError`, which rolls the whole POST back and
+// reaches the writer as a 409 (docs/architecture.md §16). The alternative — echoing
+// the sent value — put an op for a row that does not exist into the `_oplog` and
+// told the writer their write landed.
 //
 // `dec` decodes a RETURNING row → its schema shape; the default is the SQLite
 // `decodeRow`. The PG adapter passes `pgDecodeRow` (native booleans, json already
-// parsed by the driver). insert/update decode the returned row; a missed update
-// and a delete echo the sent value with no decode.
+// parsed by the driver).
 export function resolveStructured(
   plan: StructuredPlan,
   op: WriteEvent,
@@ -135,10 +157,35 @@ export function resolveStructured(
   if (op.type === 'delete') return { type: 'delete', value: row }
   if (op.type === 'update') {
     const resolved = rows[0]
-    return { type: 'update', value: resolved ? dec(resolved, plan.kinds) : row, previousValue: op.previousValue }
+    if (!resolved) throw new MissedUpdateError(plan.name, row[plan.key])
+    return { type: 'update', value: dec(resolved, plan.kinds), previousValue: op.previousValue }
   }
   return { type: 'insert', value: dec(rows[0], plan.kinds) }
 }
+
+// The existence precondition an UPDATE cannot express in SQL: no engine errors on
+// an update that matches nothing, so D1 — which has no interactive transaction and
+// therefore cannot decide anything mid-batch — sends this statement ahead of each
+// update in the same `batch()`. SQLite dialect only — the two adapters that hold a
+// transaction (embedded, Postgres) decide in JS instead, from the empty RETURNING
+// result.
+//
+// It inserts NOTHING while the row exists (the WHERE yields no row, so no `_oplog`
+// seq is burned), and violates `_oplog.channel NOT NULL` when it does not, which
+// aborts and rolls back the whole batch. `_oplog` is our table and every other
+// write to it binds a real channel, so that violation has exactly one cause —
+// `D1Adapter.write` reads it back as a missed update.
+export function updateGuardStmt(plan: StructuredPlan, op: WriteEvent): Statement {
+  const row = op.value as Record<string, unknown>
+  return {
+    sql: `INSERT INTO _oplog (channel, ops) SELECT NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM "${plan.name}" WHERE "${plan.key}" = ?)`,
+    binds: [encode(row[plan.key])],
+  }
+}
+
+// The message SQLite gives the guard's violation. D1 surfaces it inside its own
+// `D1_ERROR: …` wrapper, so match, don't compare.
+export const MISSED_UPDATE_GUARD_ERROR = 'NOT NULL constraint failed: _oplog.channel'
 
 // The SQL mirror of `decode` for one column, as a `json_object` value expression:
 //   - boolean: the stored 0/1 (or NULL) → a JSON true/false/null via json(); a bare
@@ -158,12 +205,17 @@ function columnJsonExpr(col: ColumnSpec): string {
 // expression text plus its binds, to be dropped into a `json_array(...)`.
 //
 // insert/update read the row back from the table by key and shape it with the
-// schema's columns; a COALESCE fallback to the pre-serialized sent op covers the
-// update-of-a-missing-row no-op (empty subquery → echo the sent value). delete's
-// value is the sent row, known up front. The outer json() is load-bearing: the
-// JSON subtype does not survive the scalar-subquery boundary, so each element is
-// re-parsed. Bind order matches the `?`s left-to-right: [previousValue?, key,
-// fallback] for insert/update; [sentOp] for delete.
+// schema's columns; delete's value is the sent row, known up front. Both read-backs
+// are guaranteed to find their row: the insert just wrote it, and `updateGuardStmt`
+// aborted the batch if the update's key matched nothing. The COALESCE to the
+// pre-serialized sent op is the backstop for that guarantee — it keeps the logged op
+// well-formed rather than a `null` array element if a read-back ever comes up empty.
+// It is not a semantic: a missed update is a rejection (§16), not an echo.
+//
+// The outer json() is load-bearing: the JSON subtype does not survive the
+// scalar-subquery boundary, so each element is re-parsed. Bind order matches the
+// `?`s left-to-right: [previousValue?, key, fallback] for insert/update; [sentOp]
+// for delete.
 export function resolvedOpJsonExpr(plan: StructuredPlan, op: WriteEvent): { expr: string; binds: unknown[] } {
   const row = op.value as Record<string, unknown>
 

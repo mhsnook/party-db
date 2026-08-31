@@ -31,6 +31,12 @@ describe('WriteError', () => {
     expect([e.status, e.constraint, e.channel]).toEqual([409, 'UNIQUE: todos.id', 'todos'])
   })
 
+  it('carries the verdict code an app branches on (a missed update)', () => {
+    const err = new WriteError(409, { error: 'update matched no row (channel "todos", key "t1")', channel: 'todos', code: 'missing-row' })
+    expect(err.code).toBe('missing-row')
+    expect(err.status).toBe(409)
+  })
+
   it('slots into the TanStack DB error hierarchy (so apps catching it still work)', () => {
     const e = new WriteError(401, { error: 'unauthorized' })
     expect(e).toBeInstanceOf(Error)

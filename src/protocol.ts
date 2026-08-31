@@ -54,14 +54,22 @@ export type WriteAck = {
 }
 
 // Reply when the POST is rejected, so the mutating client gets the database's
-// verdict — not a bare 500. `error` is always set; `channel`/`constraint` are
-// best-effort context pulled from the failure. The client surfaces this and rolls
-// its optimistic mutation back.
+// verdict — not a bare 500. `error` is always set; `channel`/`constraint`/`code`
+// are best-effort context pulled from the failure. The client surfaces this and
+// rolls its optimistic mutation back.
+//
+// `code` names a verdict the app is expected to branch on, where the HTTP status
+// alone is ambiguous. Today there is exactly one: `missing-row`, an update whose
+// key matched no row (409, same status as a constraint verdict — see
+// docs/architecture.md §16).
 export type WriteReject = {
   error: string
   channel?: string
   constraint?: string
+  code?: WriteRejectCode
 }
+
+export type WriteRejectCode = 'missing-row'
 
 // The traffic marker: `partyTransport` puts `?proto=party-db` on every connect
 // and every write POST. A host that serves other traffic on the same room routes

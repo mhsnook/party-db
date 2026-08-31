@@ -17,7 +17,7 @@
 // instance — so `catch (e) { if (e instanceof WriteError) … }` works.
 
 import { NonRetriableError, TanStackDBError } from '@tanstack/db'
-import type { WriteReject } from '../protocol.ts'
+import type { WriteReject, WriteRejectCode } from '../protocol.ts'
 
 // The server's verdict on a write (401 → log in, 409 → constraint, 400 → bad
 // request). `message` is its human reason; the optimistic mutation already rolled
@@ -26,6 +26,10 @@ export class WriteError extends NonRetriableError {
   readonly status: number
   readonly channel?: string
   readonly constraint?: string
+  // the verdict to branch on when the status alone is ambiguous. `missing-row`
+  // is an update whose key matched no row — the row was deleted, or never
+  // existed, or your RLS policy makes it invisible (docs/architecture.md §16).
+  readonly code?: WriteRejectCode
 
   constructor(status: number, reject: WriteReject) {
     super(reject.error)
@@ -33,6 +37,7 @@ export class WriteError extends NonRetriableError {
     this.status = status
     this.channel = reject.channel
     this.constraint = reject.constraint
+    this.code = reject.code
   }
 }
 

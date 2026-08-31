@@ -12,7 +12,7 @@
 
 import { PROTO_PARAM, PROTO_VALUE, type SequencedBatch, type WriteAck, type WriteBatch, type WriteReject } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
-import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
+import { MissedUpdateError, type PersistenceAdapter, type WriteIdentity } from './persistence.ts'
 import { warnUnenforcedAccess } from './access.ts'
 
 // The write-identity hook: resolve the writer's verified identity from a POST.
@@ -212,6 +212,16 @@ export class PartyDbCore {
     try {
       sequenced = await this.commit(body, identity ?? undefined)
     } catch (e) {
+      // an update that matched no row is OUR verdict, not the engine's: every
+      // adapter raises the same error for it, so it is classified here rather
+      // than per-dialect. Same 409 as a constraint rejection, plus the `code` the
+      // app branches on (docs/architecture.md §16).
+      if (e instanceof MissedUpdateError) {
+        return Response.json({ error: e.message, channel: e.channel, code: 'missing-row' } satisfies WriteReject, {
+          status: 409,
+        })
+      }
+
       // a constraint rejection is the database's verdict on the DATA — hand it
       // back faithfully (409) so the client can roll back and report it. Anything
       // else (missing table, adapter bug) is an internal fault: log the detail

@@ -37,6 +37,28 @@ export type WriteIdentity = {
 // unauthorized write reads as a normal client rejection, not a conflict.
 export type WriteRejection = WriteReject & { status?: number }
 
+// An UPDATE whose key matched no row. Not a database error — every engine treats
+// a zero-row UPDATE as a silent success — so the adapters raise it themselves, and
+// it rolls the whole POST back like any constraint rejection: the writer gets a
+// 409 carrying `code: 'missing-row'`, and no phantom op reaches the `_oplog` or the
+// subscribers. See docs/architecture.md §16.
+//
+// `key` is the key the writer sent; it is absent only when the adapter knows a
+// miss happened but cannot name which op (the D1 batch path, see `D1Adapter`).
+export class MissedUpdateError extends Error {
+  constructor(
+    readonly channel: string,
+    readonly key?: unknown,
+  ) {
+    super(
+      key === undefined
+        ? `update matched no row (channel "${channel}")`
+        : `update matched no row (channel "${channel}", key ${JSON.stringify(key)})`,
+    )
+    this.name = 'MissedUpdateError'
+  }
+}
+
 export interface PersistenceAdapter {
   // ensure our own infrastructure exists (the _oplog; the blob tables we own for
   // schema-less collections). It does NOT create your tables.

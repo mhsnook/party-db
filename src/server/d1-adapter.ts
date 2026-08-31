@@ -7,7 +7,8 @@
 // statement list built entirely up front — you cannot read a RETURNING row, decode
 // it in JS, and then INSERT the resolved-op JSON, because those would be separate
 // statements outside any transaction. So the whole POST becomes ONE `batch()`:
-//   batch₁ CRUD…, batch₁ oplog INSERT, batch₂ CRUD…, batch₂ oplog INSERT, …, compaction
+//   batch₁ CRUD… (each update behind its existence guard), batch₁ oplog INSERT,
+//   batch₂ CRUD…, batch₂ oplog INSERT, …, compaction
 // and the oplog INSERT assembles its resolved-op JSON *in SQL* (`resolvedOpJsonExpr`),
 // reading back the rows the earlier statements in the same batch just wrote. The
 // data, the log, and the AUTOINCREMENT seqs commit together or not at all — nothing
@@ -20,9 +21,18 @@
 
 import type { SequencedBatch, WriteBatch } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
-import type { PersistenceAdapter } from './persistence.ts'
+import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
-import { buildPlans, oplogInsertStmt, resolveStructured, structuredStmt, type Plan, type StructuredPlan } from './statements.ts'
+import {
+  buildPlans,
+  oplogInsertStmt,
+  resolveStructured,
+  structuredStmt,
+  updateGuardStmt,
+  MISSED_UPDATE_GUARD_ERROR,
+  type Plan,
+  type StructuredPlan,
+} from './statements.ts'
 
 export type D1AdapterOptions = {
   // keep at most this many _oplog rows; older entries are compacted away after each
@@ -64,10 +74,14 @@ export class D1Adapter implements PersistenceAdapter {
 
     // Build the whole POST as one statement list: each channel-batch's CRUD
     // statements, then its oplog INSERT (which reads those rows back into resolved
-    // JSON in SQL), then one compaction DELETE. We remember where each batch's CRUD
-    // results and its oplog result land so we can map them back after commit.
+    // JSON in SQL), then one compaction DELETE. We remember where each op's CRUD
+    // result and each batch's oplog result land so we can map them back after commit.
+    //
+    // Each update is preceded by its existence guard (`updateGuardStmt`): with no
+    // interactive transaction there is nothing to decide mid-batch, so the
+    // precondition has to travel as SQL that aborts the batch itself.
     const stmts: D1PreparedStatement[] = []
-    const layout: { channel: string; plan: StructuredPlan; batch: WriteBatch; crudStart: number; oplogAt: number }[] = []
+    const layout: { channel: string; plan: StructuredPlan; batch: WriteBatch; crudAt: number[]; oplogAt: number }[] = []
 
     for (const batch of batches) {
       const plan = this.plans.get(batch.channel)
@@ -75,15 +89,20 @@ export class D1Adapter implements PersistenceAdapter {
       // init() guarantees structured; guard the type and the (unreachable) blob case.
       if (plan.kind !== 'structured') throw new Error(`channel ${batch.channel} is not structured`)
 
-      const crudStart = stmts.length
+      const crudAt: number[] = []
       for (const op of batch.ops) {
+        if (op.type === 'update') {
+          const guard = updateGuardStmt(plan, op)
+          stmts.push(this.d1.prepare(guard.sql).bind(...guard.binds))
+        }
         const { sql, binds } = structuredStmt(plan, op)
+        crudAt.push(stmts.length)
         stmts.push(this.d1.prepare(sql).bind(...binds))
       }
       const oplog = oplogInsertStmt(batch.channel, batch.ops, plan)
       const oplogAt = stmts.length
       stmts.push(this.d1.prepare(oplog.sql).bind(...oplog.binds))
-      layout.push({ channel: batch.channel, plan, batch, crudStart, oplogAt })
+      layout.push({ channel: batch.channel, plan, batch, crudAt, oplogAt })
     }
 
     if (this.retention) {
@@ -94,17 +113,52 @@ export class D1Adapter implements PersistenceAdapter {
 
     // one atomic commit for the entire POST — data, log, seqs. A constraint
     // rejection rolls the lot back (verified in the integration suite: the _oplog
-    // gains no entries either).
-    const results = await this.d1.batch<Record<string, unknown>>(stmts)
+    // gains no entries either), and so does an update guard that found no row.
+    let results: D1Result<Record<string, unknown>>[]
+    try {
+      results = await this.d1.batch<Record<string, unknown>>(stmts)
+    } catch (e) {
+      if (!isGuardViolation(e)) throw e
+      throw await this.missedUpdate(batches)
+    }
 
-    return layout.map(({ channel, plan, batch, crudStart, oplogAt }) => {
+    return layout.map(({ channel, plan, batch, crudAt, oplogAt }) => {
       // each op's resolved value comes from its CRUD statement's RETURNING rows —
-      // read the results array (never a single-row assumption): a delete and an
-      // update-of-a-missing-row return no rows and fall back to the sent value.
-      const ops = batch.ops.map((op, i) => resolveStructured(plan, op, results[crudStart + i].results))
+      // read the results array (never a single-row assumption): a delete returns no
+      // rows and echoes the sent value.
+      const ops = batch.ops.map((op, i) => resolveStructured(plan, op, results[crudAt[i]].results))
       const seq = Number((results[oplogAt].results[0] as { seq: number }).seq)
       return { channel, ops, seq }
     })
+  }
+
+  // Name the update that missed, for the rejection the writer reads. The batch it
+  // aborted told us only THAT a guard fired — SQLite's error carries no binds — so
+  // this re-checks every update key in one read pass over the rolled-back state.
+  // The failure path only: a committed write never runs it.
+  private async missedUpdate(batches: WriteBatch[]): Promise<MissedUpdateError> {
+    const updates: { channel: string; key: unknown }[] = []
+    const probes: D1PreparedStatement[] = []
+    for (const batch of batches) {
+      const plan = this.plans.get(batch.channel)
+      if (plan?.kind !== 'structured') continue
+      for (const op of batch.ops) {
+        if (op.type !== 'update') continue
+        const key = (op.value as Record<string, unknown>)[plan.key]
+        updates.push({ channel: batch.channel, key })
+        // the guard's own binds, so the probe encodes the key exactly as it did
+        const { binds } = updateGuardStmt(plan, op)
+        probes.push(this.d1.prepare(`SELECT 1 AS hit FROM "${plan.name}" WHERE "${plan.key}" = ?`).bind(...binds))
+      }
+    }
+    const found = await this.d1.batch<{ hit: number }>(probes)
+    const missed = updates.find((_, i) => !found[i].results.length)
+    // no key missing any more means the row arrived between the abort and this
+    // read — a write from outside the room. Report the miss without naming a key
+    // rather than inventing one.
+    return missed
+      ? new MissedUpdateError(missed.channel, missed.key)
+      : new MissedUpdateError(updates[0]?.channel ?? 'unknown')
   }
 
   async snapshot(): Promise<SequencedBatch[]> {
@@ -137,4 +191,10 @@ export class D1Adapter implements PersistenceAdapter {
       .all<{ seq: number; channel: string; ops: string }>()
     return res.results.map((r) => ({ channel: r.channel, seq: Number(r.seq), ops: JSON.parse(r.ops) }))
   }
+}
+
+// The update guard aborts its batch by violating `_oplog.channel NOT NULL`. D1
+// wraps SQLite's message in its own `D1_ERROR: …`, so match on the substring.
+function isGuardViolation(e: unknown): boolean {
+  return (e instanceof Error ? e.message : String(e)).includes(MISSED_UPDATE_GUARD_ERROR)
 }
