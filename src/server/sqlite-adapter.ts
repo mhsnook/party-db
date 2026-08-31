@@ -16,16 +16,7 @@ import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
-import {
-  blobSelectStmt,
-  blobStmt,
-  blobWriteStmt,
-  buildPlans,
-  resolveStructured,
-  structuredStmt,
-  type BlobPlan,
-  type Plan,
-} from './statements.ts'
+import { blobStmt, buildPlans, resolveStructured, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
 
 // The narrow slice of a SQLite handle the adapter needs. In the DO it's
 // `ctx.storage.sql` + `ctx.storage.transactionSync`; in tests it's a node:sqlite
@@ -115,9 +106,8 @@ export class SqliteAdapter implements PersistenceAdapter {
   }
 
   // Run one op's shared CRUD statement and resolve it. Structured ops decode the
-  // returned row (read via toArray(), which tolerates the empty result a delete
-  // yields, and which `resolveStructured` turns into a rejection for an update);
-  // blob updates merge, other blob ops echo the sent value.
+  // returned row, read via toArray() so a delete's empty result is tolerated (an
+  // update's is the §16 rejection). Blob ops write the sent document straight in.
   private applyOp(plan: Plan, op: WriteEvent): WriteEvent {
     if (plan.kind === 'blob') return this.applyBlobOp(plan, op)
     const { sql, binds } = structuredStmt(plan, op)
@@ -125,27 +115,22 @@ export class SqliteAdapter implements PersistenceAdapter {
     return resolveStructured(plan, op, rows)
   }
 
-  // The blob store's op. Insert and delete write the sent document straight in.
-  // An update carries only its changed keys, so it reads the stored document,
-  // merges the change over it, and writes the whole thing back — the resolved op
-  // is the MERGED document, which is what structured mode returns too (the row the
-  // database now holds, not the fragment the writer sent). No stored document means
-  // the update matched no row: a rejection, which rolls the POST back (§16).
+  // A blob update carries only its changed keys (§16), and the store holds one
+  // opaque document — so merge here, where the interactive transaction makes the
+  // read and the write one step, and resolve to the MERGED document (structured
+  // mode resolves to the committed row for the same reason). No stored document
+  // means the update matched no row.
   private applyBlobOp(plan: BlobPlan, op: WriteEvent): WriteEvent {
-    const sent = op.value as Record<string, unknown>
-    if (op.type !== 'update') {
-      const { sql, binds } = blobStmt(plan, op)
-      this.engine.exec(sql, ...binds)
-      return op
+    let value = op.value as Record<string, unknown>
+    if (op.type === 'update') {
+      const key = value[plan.key]
+      const [stored] = this.engine.exec(`SELECT data FROM "${plan.name}" WHERE k = ?`, String(key)).toArray()
+      if (!stored) throw new MissedUpdateError(plan.name, key)
+      value = { ...(JSON.parse(stored.data as string) as Record<string, unknown>), ...value }
     }
-    const key = sent[plan.key]
-    const read = blobSelectStmt(plan, key)
-    const [current] = this.engine.exec(read.sql, ...read.binds).toArray()
-    if (!current) throw new MissedUpdateError(plan.name, key)
-    const merged = { ...(JSON.parse(current.data as string) as Record<string, unknown>), ...sent }
-    const write = blobWriteStmt(plan, key, merged)
-    this.engine.exec(write.sql, ...write.binds)
-    return { type: 'update', value: merged, previousValue: op.previousValue }
+    const { sql, binds } = blobStmt(plan, { ...op, value })
+    this.engine.exec(sql, ...binds)
+    return { ...op, value }
   }
 
   async snapshot(): Promise<SequencedBatch[]> {

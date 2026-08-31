@@ -58,10 +58,9 @@ export type WriteAck = {
 // are best-effort context pulled from the failure. The client surfaces this and
 // rolls its optimistic mutation back.
 //
-// `code` names a verdict the app is expected to branch on, where the HTTP status
-// alone is ambiguous. Today there is exactly one: `missing-row`, an update whose
-// key matched no row (409, same status as a constraint verdict — see
-// docs/architecture.md §16).
+// `code` names a verdict the app branches on where the status alone is ambiguous.
+// Today there is exactly one: `missing-row`, an update that matched no row — a 409
+// like a constraint verdict, and told apart from one by this (§16).
 export type WriteReject = {
   error: string
   channel?: string

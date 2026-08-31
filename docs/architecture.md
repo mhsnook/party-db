@@ -506,17 +506,23 @@ and rejected it: the frames would need a namespace, which changes the wire and t
 client for every mode. Routing whole connections by the marker gives the same
 multiplexing with no wire change.
 
-## 16. An update carries only the columns it changed, and must hit a row
+## 16. An update sends TanStack's `changes`, and must hit a row
 
 Two halves of one decision: a client owns the columns it writes, and nothing else.
 
+Neither half moves us off TanStack's own vocabulary. The wire type is still
+`Omit<ChangeMessage, 'key'>` (§2), unchanged; `mutation.changes` is TanStack's own
+record of what a mutation touched, and its docs hand exactly that to an API patch
+call. Down the stream we still send the whole resolved row, which is valid under
+either `rowUpdateMode` (their default, `partial`, merges it; `full` replaces).
+
 **Only the changed columns travel.** `toEvent` builds an update's `value` from
-TanStack's own `mutation.changes` plus the key — never `mutation.modified`. The server
-already SETs exactly the columns present in `value` (`structuredStmt`), so a
-one-column update leaves every other column alone. Sending the whole modified row
-instead meant that a writer touching `status` also wrote back its own copy of every
-other column, reverting whatever a concurrent writer had changed there — a clobber
-nobody asked for, from a client that never read the column it overwrote.
+`mutation.changes` plus the key — never `mutation.modified`. The server already SETs
+exactly the columns present in `value` (`structuredStmt`), so a one-column update
+leaves every other column alone. Sending the whole modified row instead meant that a
+writer touching `status` also wrote back its own copy of every other column,
+reverting whatever a concurrent writer had changed there — a clobber nobody asked
+for, from a client that never read the column it overwrote.
 
 What this does NOT change: we still do not compare `previousValue` server-side. Two
 writers touching the SAME column still resolve last-write-wins, and that stays the
@@ -542,12 +548,22 @@ Three engines, one verdict, two mechanisms:
   precondition travels as SQL. `updateGuardStmt` runs ahead of each UPDATE in the same
   batch: it writes nothing while the row exists, and violates `_oplog.channel NOT NULL`
   when it doesn't, which aborts the whole batch. `_oplog` is our table and every other
-  write to it binds a real channel, so that violation has exactly one cause; `D1Adapter`
-  reads it back, re-checks the keys to name the miss, and raises the same error.
+  write to it binds a real channel, so that violation has exactly one cause;
+  `D1Adapter` reads it back and raises the same error. A rolled-back batch does not
+  say which statement raised it, so the rejection names the channel when every update
+  in the POST was in one, and the key when there was only one update — the client
+  branches on `code`, not on that text.
 
-A delete is unaffected: deleting a row that is already gone is the state you asked for.
+**A delete is unaffected.** Deleting a row that is already gone is the state you asked
+for, so it stays a success: the op is logged, fans out, and every client's
+`syncedData.delete(key)` is a no-op on a key it no longer holds. The writer's
+optimistic removal settles instead of rolling back and putting the row on screen again.
+
 An update of a row your RLS policy makes invisible is a miss like any other (§10a) —
-alice learns her write went nowhere, rather than believing it landed.
+alice learns her write went nowhere, rather than believing it landed. Note what this
+does NOT cover: a row that becomes invisible to OTHER readers (an unpublish, an
+archive) still needs per-connection fan-out, which we don't have — see
+[`unspecified.md`](./unspecified.md) → subscription/filtering.
 
 ## Layering
 

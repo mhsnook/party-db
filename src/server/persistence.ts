@@ -37,25 +37,32 @@ export type WriteIdentity = {
 // unauthorized write reads as a normal client rejection, not a conflict.
 export type WriteRejection = WriteReject & { status?: number }
 
-// An UPDATE whose key matched no row. Not a database error — every engine treats
-// a zero-row UPDATE as a silent success — so the adapters raise it themselves, and
-// it rolls the whole POST back like any constraint rejection: the writer gets a
-// 409 carrying `code: 'missing-row'`, and no phantom op reaches the `_oplog` or the
-// subscribers. See docs/architecture.md §16.
+// An UPDATE whose key matched no row — the row was deleted, never existed, or an
+// RLS policy makes it invisible to this writer.
 //
-// `key` is the key the writer sent; it is absent only when the adapter knows a
-// miss happened but cannot name which op (the D1 batch path, see `D1Adapter`).
+// This is the one verdict no engine raises for us: every SQL dialect treats a
+// zero-row UPDATE as a silent success. So the adapters raise it themselves, it
+// rolls the whole POST back like any constraint rejection, and the writer reads it
+// off the 409's `code`. The alternative — the behavior this replaced — logged an op
+// for a row that does not exist, fanned it out, and settled as success. Full
+// reasoning, and how each adapter detects it: docs/architecture.md §16.
+//
+// It carries its own `rejection` so the code, the status and the channel are
+// declared here, once, rather than assembled again in the HTTP layer.
+//
+// `channel`/`key` name the op when the adapter can (D1 learns of a miss from a
+// rolled-back batch, which does not say which statement raised it).
 export class MissedUpdateError extends Error {
+  readonly rejection: WriteRejection
+
   constructor(
-    readonly channel: string,
+    readonly channel?: string,
     readonly key?: unknown,
   ) {
-    super(
-      key === undefined
-        ? `update matched no row (channel "${channel}")`
-        : `update matched no row (channel "${channel}", key ${JSON.stringify(key)})`,
-    )
+    const where = [channel && `channel "${channel}"`, key !== undefined && `key ${JSON.stringify(key)}`].filter(Boolean)
+    super(`update matched no row${where.length ? ` (${where.join(', ')})` : ''}`)
     this.name = 'MissedUpdateError'
+    this.rejection = { error: this.message, channel, code: 'missing-row', status: 409 }
   }
 }
 

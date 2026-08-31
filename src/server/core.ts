@@ -212,28 +212,20 @@ export class PartyDbCore {
     try {
       sequenced = await this.commit(body, identity ?? undefined)
     } catch (e) {
-      // an update that matched no row is OUR verdict, not the engine's: every
-      // adapter raises the same error for it, so it is classified here rather
-      // than per-dialect. Same 409 as a constraint rejection, plus the `code` the
-      // app branches on (docs/architecture.md §16).
-      if (e instanceof MissedUpdateError) {
-        return Response.json({ error: e.message, channel: e.channel, code: 'missing-row' } satisfies WriteReject, {
-          status: 409,
-        })
-      }
-
       // a constraint rejection is the database's verdict on the DATA — hand it
       // back faithfully (409) so the client can roll back and report it. Anything
       // else (missing table, adapter bug) is an internal fault: log the detail
       // server-side and keep the response generic, or we'd echo schema internals
       // to any writer and mislabel 500-class faults as data rejections.
       //
-      // The adapter classifies first if it can (Postgres reads SQLSTATE +
-      // constraint name off the error); adapters without their own classifier
-      // (embedded + D1) fall through to the SQLite-message regex, unchanged. The
-      // adapter picks the status too — 409 for an integrity conflict (default),
-      // 403 for an RLS/authorization denial — stripped from the client body.
-      const rejection = this.adapter.classifyError?.(e)
+      // A missed update (§16) is OUR verdict, not the engine's, so it carries its
+      // own rejection. Otherwise the adapter classifies if it can (Postgres reads
+      // SQLSTATE + constraint name off the error); adapters without their own
+      // classifier (embedded + D1) fall through to the SQLite-message regex,
+      // unchanged. The rejection picks the status too — 409 for an integrity
+      // conflict (default), 403 for an RLS/authorization denial — stripped from
+      // the client body.
+      const rejection = e instanceof MissedUpdateError ? e.rejection : this.adapter.classifyError?.(e)
       if (rejection) {
         const { status = 409, ...reject } = rejection
         return Response.json(reject satisfies WriteReject, { status })

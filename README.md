@@ -275,8 +275,12 @@ try {
 ```
 
 The POST rolls back whole (409), so nothing is committed and no subscriber sees an op
-for a row that does not exist. A **delete** of a row that is already gone stays a
-no-op — that is the state you asked for.
+for a row that does not exist.
+
+A **delete** of a row that is already gone still succeeds — that is the state you asked
+for. Your optimistic removal settles instead of rolling back, and the delete that fans
+out is a no-op for every client that no longer holds the row. Nothing flickers back
+onto the screen.
 
 ## onAuthError callback
 

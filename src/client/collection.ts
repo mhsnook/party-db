@@ -21,20 +21,12 @@ import { definePartyCollection, type PartyCollection } from '../schema.ts'
 export { definePartyCollection, type PartyCollection }
 export type PartyCollectionConfig<T extends object> = PartyCollection<T>
 
-// What `persist` needs to know about a collection it manages: the channel (= the
-// table name) its mutations belong to, and the key column, which an update sends
-// alongside its changed columns so the server can locate the row.
-export type ChannelBinding = { channel: string; key: string }
-
 // exported for unit tests: a single TanStack mutation → one wire WriteEvent.
 //
-// An update travels as CHANGED COLUMNS ONLY (`m.changes`) plus the key. TanStack
-// tracks which fields the mutation touched, and the server SETs exactly the columns
-// present in `value` (`structuredStmt`), so a one-column update leaves every other
-// column alone — where sending `m.modified` would write the client's whole copy
-// back and revert any column a concurrent writer had changed. Insert and delete
-// carry the whole row: an insert has no prior row to preserve, and a delete is
-// keyed. See docs/architecture.md §16.
+// An update sends `m.changes` — TanStack's own record of the fields this mutation
+// touched, which its docs hand to an API patch call the same way — plus the key
+// that locates the row. Insert and delete carry the whole row: an insert has no
+// prior row to preserve, and a delete is keyed. See docs/architecture.md §16.
 export function toEvent(m: any, key: string): WriteEvent {
   if (m.type === 'delete') return { type: 'delete', value: m.original }
   if (m.type === 'update') {
@@ -49,16 +41,18 @@ export function toEvent(m: any, key: string): WriteEvent {
 // needs `send` + `waitForSeq`, so tests don't stand up a real transport.
 export function makePersist(
   client: Pick<SyncClient, 'send' | 'waitForSeq'>,
-  bindingOf: Map<Collection<any>, ChannelBinding>,
+  // each managed collection's own config: `name` is the channel, `key` the column
+  // an update sends alongside its changed ones.
+  configOf: Map<Collection<any>, PartyCollection<any>>,
 ) {
   return async ({ transaction }: any) => {
     const byChannel = new Map<string, WriteEvent[]>()
     for (const m of transaction.mutations) {
-      const binding = bindingOf.get(m.collection)
-      if (!binding) continue // a mutation on a collection we don't manage
-      const ops = byChannel.get(binding.channel) ?? []
-      ops.push(toEvent(m, binding.key))
-      byChannel.set(binding.channel, ops)
+      const cfg = configOf.get(m.collection)
+      if (!cfg) continue // a mutation on a collection we don't manage
+      const ops = byChannel.get(cfg.name) ?? []
+      ops.push(toEvent(m, cfg.key))
+      byChannel.set(cfg.name, ops)
     }
     const batches: WriteBatch[] = [...byChannel].map(([channel, ops]) => ({ channel, ops }))
     if (!batches.length) return
@@ -70,8 +64,8 @@ export function makePersist(
 // internal: wire N collection configs onto one SyncClient. Returns the
 // collections plus the shared `persist` mutationFn.
 export function wireCollections(client: SyncClient, configs: PartyCollectionConfig<any>[]) {
-  const bindingOf = new Map<Collection<any>, ChannelBinding>()
-  const persist = makePersist(client, bindingOf)
+  const configOf = new Map<Collection<any>, PartyCollection<any>>()
+  const persist = makePersist(client, configOf)
   const db: Record<string, Collection<any>> = {}
   for (const cfg of configs) {
     const collection = createCollection({
@@ -82,7 +76,7 @@ export function wireCollections(client: SyncClient, configs: PartyCollectionConf
       onUpdate: persist,
       onDelete: persist,
     })
-    bindingOf.set(collection, { channel: cfg.name, key: cfg.key })
+    configOf.set(collection, cfg)
     db[cfg.name] = collection
   }
   return { db, persist }

@@ -69,7 +69,7 @@ doc once that milestone starts; until then a short design note lives at the bott
   while client and server import the same schema.
 - **Offline write queues.** Still open.
 - **Column-level diffs on the way DOWN.** An update now travels UP as changed columns
-  only ([architecture §16](./architecture.md#16-an-update-carries-only-the-columns-it-changed-and-must-hit-a-row)),
+  only ([architecture §16](./architecture.md#16-an-update-sends-tanstacks-changes-and-must-hit-a-row)),
   but what fans out is always the full resolved row. Narrowing the down-stream to
   changed columns would need the client to merge rather than replace; not needed while
   rows are small.

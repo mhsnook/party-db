@@ -26,9 +26,8 @@ export class WriteError extends NonRetriableError {
   readonly status: number
   readonly channel?: string
   readonly constraint?: string
-  // the verdict to branch on when the status alone is ambiguous. `missing-row`
-  // is an update whose key matched no row — the row was deleted, or never
-  // existed, or your RLS policy makes it invisible (docs/architecture.md §16).
+  // the verdict to branch on where the status alone is ambiguous — today only
+  // `missing-row`, an update that matched no row (docs/architecture.md §16).
   readonly code?: WriteRejectCode
 
   constructor(status: number, reject: WriteReject) {
