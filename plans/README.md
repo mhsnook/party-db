@@ -88,6 +88,15 @@ REJECTED (with one-line rationale — finding fixed independently or approach ab
 - **Auth default-open when no `authorize` is configured** — documented v0 posture
   (`docs/architecture.md` §10: the library validates nothing about your auth);
   not a finding.
+- **TanStack DB 0.8 (SSR release) adoption** — reviewed 2026-08-31: nothing
+  blocking, nothing urgent. Its `exportSyncMeta`/`importSyncMeta` + `hydrate`
+  hooks are a sanctioned client-side socket for our `seq` cursor (SSR'd rows,
+  then connect with `?since` instead of a full `reset` snapshot) — the server
+  side already exists, so adopt the hooks whenever something else forces the
+  peer range past `^0.6.10`; not worth the bump alone. `loadSubset` maturing
+  (0.8.4–0.8.5) shaves only the client half of the read-slicing design in
+  `docs/unspecified.md`; the server move-in/move-out work is unchanged. 0.8.6
+  fixes Workers module-eval, which we don't hit (the DO imports types only).
 
 ## Direction items surfaced but not planned (maintainer's backlog, grounded in repo docs)
 
