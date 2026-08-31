@@ -11,6 +11,8 @@
 //   AuthError       — the down-stream (WebSocket) was closed 1008 (policy
 //                     violation) by a room-aware auth check. The write path's
 //                     verdict for the *down* path: terminal, no reconnect.
+//   ClosedError     — the client was closed. Nothing streams down any more, so
+//                     a write could never settle. Non-retriable on this client.
 //
 // Both reach the app intact: the transport throws from the write mutationFn, and
 // TanStack rejects the transaction's `isPersisted.promise` with that very
@@ -53,6 +55,18 @@ export class AuthError extends NonRetriableError {
     super(message)
     this.name = 'AuthError'
     this.code = code
+  }
+}
+
+// The app called `close()` on this client, so the down-stream is detached and
+// the socket hung up. A write from here can never settle — its seq would have
+// nowhere to arrive — so we say so immediately instead of letting the mutation
+// hang until the settle timeout. Non-retriable: a closed client never reopens,
+// the app builds a new one.
+export class ClosedError extends NonRetriableError {
+  constructor(message = 'party-db client is closed') {
+    super(message)
+    this.name = 'ClosedError'
   }
 }
 

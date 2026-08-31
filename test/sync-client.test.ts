@@ -1,13 +1,15 @@
 import { describe, it, expect, vi } from 'vitest'
 import { SyncClient, type Transport } from '../src/client/sync-client.ts'
+import { ClosedError } from '../src/client/errors.ts'
 import type { ChannelSink } from '../src/client/apply.ts'
 import type { SequencedBatch } from '../src/protocol.ts'
 
 // A transport whose down-stream we drive by hand: `push` delivers a batch as if
 // it had arrived on the wire.
-function fakeTransport() {
+function fakeTransport(opts: { closable?: boolean } = {}) {
   let onBatch: ((b: SequencedBatch) => void) | undefined
   const send = vi.fn(async () => ({ accepted: [] as { channel: string; seq: number }[] }))
+  const close = vi.fn()
   const transport: Transport = {
     subscribe(cb) {
       onBatch = cb
@@ -16,10 +18,13 @@ function fakeTransport() {
       }
     },
     send,
+    // a transport that does not own its stream leaves close off entirely
+    ...(opts.closable === false ? {} : { close }),
   }
   return {
     transport,
     send,
+    close,
     push: (b: SequencedBatch) => onBatch?.(b),
   }
 }
@@ -194,6 +199,51 @@ describe('SyncClient send + close', () => {
     const ack = await client.send([{ channel: 'todos', ops: [{ type: 'insert', value: { id: 'a' } }] }])
     expect(t.send).toHaveBeenCalledOnce()
     expect(ack.accepted).toEqual([{ channel: 'todos', seq: 1 }])
+  })
+
+  it('closes the transport, so the socket stops reconnecting', () => {
+    const t = fakeTransport()
+    new SyncClient(t.transport).close()
+    expect(t.close).toHaveBeenCalledOnce()
+  })
+
+  it('is idempotent — a second close does not close the transport twice', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    client.close()
+    client.close()
+    expect(t.close).toHaveBeenCalledOnce()
+  })
+
+  it('closes a transport that has no close (a shared stream it does not own)', () => {
+    const t = fakeTransport({ closable: false })
+    expect(() => new SyncClient(t.transport).close()).not.toThrow()
+  })
+
+  it('rejects a send after close with a ClosedError, without hitting the transport', async () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    client.close()
+
+    await expect(client.send([{ channel: 'todos', ops: [] }])).rejects.toBeInstanceOf(ClosedError)
+    expect(t.send).not.toHaveBeenCalled()
+  })
+
+  it('rejects a waitForSeq after close instead of waiting out the settle timeout', async () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    client.close()
+
+    await expect(client.waitForSeq('todos', 1)).rejects.toBeInstanceOf(ClosedError)
+  })
+
+  it('rejects a waiter that was already in flight when close came', async () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    const pending = client.waitForSeq('todos', 1)
+    client.close()
+
+    await expect(pending).rejects.toThrow(/closed/)
   })
 
   it('unsubscribes from the transport on close', () => {

@@ -571,7 +571,7 @@ archive) still needs per-connection fan-out, which we don't have — see
 | --- | --- |
 | Theirs (TanStack DB) | `Collection`, `createTransaction`, `mutate`, `isPersisted`, optimistic state |
 | Ours (irreducible) | the `sync` down-binding + `persist` up-binding (wire + seq settlement) |
-| Sugar | `createPartyDb` — bundles N collections + transport + `isConnecting` |
+| Sugar | `createPartyDb` — bundles N collections + transport + `isConnecting` + `close` |
 
 ## Roadmap
 

@@ -303,6 +303,33 @@ onAuthError((err) => {
 The write (up) path already surfaces its own verdict: `transport.send` throws a
 `WriteError` carrying the `401` on a rejected POST.
 
+## Closing a client
+
+`createPartyDb(...)` returns a `close()`. It detaches the down-stream, fails
+anything still awaiting a seq, and closes the socket — including the reconnect,
+so the client is spent. Any write after it rejects with a `ClosedError`.
+
+One room for the whole app never needs this: the socket lives as long as the tab.
+An app with **one room per document** does. It builds a client per room the user
+opens, and without `close()` every one of them keeps a live, reconnecting socket
+for the life of the tab.
+
+```ts
+function openArticle(id: string) {
+  const transport = partyTransport({ host: HOST, room: `article-${id}` })
+  return createPartyDb(transport, [paragraphs])
+}
+
+const article = openArticle('a1')
+// ...later, when the user leaves it:
+article.close()
+```
+
+Closing is one-way. To reopen the room, build a new client — a fresh client
+connects with no cursor, so the server replays a full snapshot. That is the
+trade: caching an open client per room keeps its `?since` cursor warm, closing
+one frees the socket. Cache the rooms a user moves between, close the rest.
+
 ## Testing
 
 | Command | Runs |
@@ -338,7 +365,7 @@ pnpm test:pg && pnpm test:integration
 | `src/client/seq-tracker.ts` | pure settlement: per-channel high-water mark, waiters, timeout |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
-| `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` — classified write & auth failures |
+| `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` / `ClosedError` — classified write, auth & lifecycle failures |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + `commit()`; the thin subclass over the core |
 | `src/server/core.ts` | `PartyDbCore` — the room's core functionality, for hosts that compose instead of subclass |

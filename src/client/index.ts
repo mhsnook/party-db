@@ -6,4 +6,4 @@ export {
   type PartyCollectionConfig,
 } from './collection.ts'
 export { createPartyDb, partyTransport } from './party-db.ts'
-export { WriteError, TransportError, AuthError } from './errors.ts'
+export { WriteError, TransportError, AuthError, ClosedError } from './errors.ts'

@@ -28,6 +28,12 @@ const hoisted = vi.hoisted(() => {
     removeEventListener(type: string, h: (e: any) => void) {
       this.listeners[type] = (this.listeners[type] ?? []).filter((x) => x !== h)
     }
+    // the real PartySocket.close() stops the re-dial and dispatches the close
+    // event synchronously, with code 1000 unless told otherwise.
+    close = vi.fn((code = 1000, reason = '') => {
+      this.readyState = 3
+      this.emit('close', { code, reason })
+    })
     emit(type: string, e: any) {
       for (const h of this.listeners[type] ?? []) h(e)
     }
@@ -228,6 +234,38 @@ describe('partyTransport 1008 (policy violation) is terminal', () => {
     off?.()
 
     lastSocket().emit('close', closeEvent(1008))
+    expect(seen).toEqual([])
+  })
+})
+
+describe('partyTransport close', () => {
+  it('closes the underlying socket, so it stops reconnecting', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const socket = lastSocket()
+
+    transport.close?.()
+
+    expect(socket.close).toHaveBeenCalledOnce()
+  })
+
+  it('does not report an AuthError for our own close', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: AuthError[] = []
+    transport.onAuthError?.((e) => seen.push(e))
+
+    transport.close?.() // dispatches a 1000 close, not 1008
+
+    expect(seen).toEqual([])
+  })
+
+  it('drops auth listeners, so a late 1008 on a closed socket stays quiet', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const seen: AuthError[] = []
+    transport.onAuthError?.((e) => seen.push(e))
+
+    transport.close?.()
+    lastSocket().emit('close', { code: 1008, reason: 'too late' })
+
     expect(seen).toEqual([])
   })
 })
