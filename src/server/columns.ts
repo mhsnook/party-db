@@ -33,8 +33,8 @@ export function assertIdent(name: string): string {
 const JSON_TAGS: ReadonlySet<unknown> = new Set(['object', 'array', 'record', 'tuple', 'map', 'set'])
 
 export function columnsOf(schema: StandardSchemaV1 | undefined): ColumnSpec[] | null {
-  const shape = zodShape(schema)
-  if (!shape) return null
+  const shape = zodDef(schema)?.shape
+  if (!shape || typeof shape !== 'object') return null
   return Object.entries(shape).map(([name, field]) => ({
     name: assertIdent(name),
     kind: kindOf(field),
@@ -55,13 +55,6 @@ function zodDef(node: unknown): Record<string, any> | null {
 function typeTag(node: unknown): string | undefined {
   const tag = zodDef(node)?.type
   return typeof tag === 'string' ? tag : undefined
-}
-
-// A Zod v4 object's shape. Anything else (a non-object schema, or a StandardSchema
-// from another library) returns null → blob fallback.
-function zodShape(schema: unknown): Record<string, unknown> | null {
-  const shape = zodDef(schema)?.shape
-  return shape && typeof shape === 'object' ? shape : null
 }
 
 // Peel Optional/Nullable/Default and the transform wrapper to reach the base type,
