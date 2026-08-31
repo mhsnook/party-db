@@ -17,6 +17,8 @@ import {
   oplogInsertStmt,
   resolvedOpJsonExpr,
   structuredStmt,
+  updateGuardStmt,
+  MISSED_UPDATE_GUARD_ERROR,
   type StructuredPlan,
 } from '../src/server/statements.ts'
 import type { WriteBatch } from '../src/protocol.ts'
@@ -140,11 +142,20 @@ describe('oplog-JSON parity: embedded decode vs SQL assembly', () => {
     ])
   })
 
-  it('update of a missing row echoes the sent value (COALESCE fallback branch)', () => {
-    const ops = expectParity([
-      { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }] },
-    ])
-    expect(ops[0]).toEqual([{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }])
+  it('update of a missing row logs nothing: the embedded path rejects', async () => {
+    const { engine, db } = memoryEngine()
+    db.exec(TODOS_DDL)
+    const adapter = new SqliteAdapter(engine, [collection])
+    adapter.init()
+    // the embedded adapter decides in JS, inside its transaction. D1 has no such
+    // moment, so `updateGuardStmt` decides in SQL — same verdict, one statement
+    // earlier (below), and neither path writes an op for a row that isn't there.
+    await expect(
+      adapter.write([
+        { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }] },
+      ]),
+    ).rejects.toThrow(/update matched no row/)
+    expect(db.prepare(`SELECT COUNT(*) c FROM _oplog`).get()).toEqual({ c: 0 })
   })
 
   it('delete carries the sent value', () => {
@@ -165,5 +176,30 @@ describe('oplog-JSON parity: embedded decode vs SQL assembly', () => {
         ],
       },
     ])
+  })
+})
+
+// The guard is how the D1 path reaches the same verdict the embedded path reaches
+// in JS: a statement that passes silently while the row exists, and aborts its
+// batch when it doesn't.
+describe('updateGuardStmt — the existence precondition an UPDATE cannot express', () => {
+  function guard(seed: boolean) {
+    const db = new DatabaseSync(':memory:')
+    db.exec(TODOS_DDL)
+    db.exec(OPLOG_DDL)
+    if (seed) db.exec(`INSERT INTO todos (id, text) VALUES ('a', 'x')`)
+    const { sql, binds } = updateGuardStmt(plan, { type: 'update', value: { id: 'a', done: true } })
+    return { db, run: () => db.prepare(sql).all(...(binds as any[])) }
+  }
+
+  it('does nothing — and burns no seq — while the row exists', () => {
+    const { db, run } = guard(true)
+    run()
+    expect(db.prepare(`SELECT COUNT(*) c FROM _oplog`).get()).toEqual({ c: 0 })
+  })
+
+  it('violates _oplog.channel NOT NULL when the row does not exist', () => {
+    const { run } = guard(false)
+    expect(run).toThrow(new RegExp(MISSED_UPDATE_GUARD_ERROR))
   })
 })

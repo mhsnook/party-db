@@ -252,6 +252,36 @@ connections you route to it — nothing is namespaced onto a shared socket
 here: `this.db.commit(batches)`. The tested copy of this pattern is `Composed`
 in `test/integration/worker.ts`.
 
+## What an update writes
+
+`todos.update(id, (d) => void (d.done = true))` sends `done` and the key — nothing
+else. TanStack already tracks which fields your mutation touched, and the server SETs
+exactly the columns it receives, so a column you never touched is never written back
+from your (possibly stale) copy of the row. Two clients editing *different* columns of
+one row both keep their edit. Two clients editing the *same* column still resolve
+last-write-wins.
+
+An update whose key matches **no row** — deleted underneath you, never there, or
+invisible to your Postgres RLS policy — is rejected, not silently dropped:
+
+```ts
+try {
+  await todos.update('t1', (d) => void (d.status = 'accepted')).isPersisted.promise
+} catch (e) {
+  if (e instanceof WriteError && e.code === 'missing-row') {
+    // the row is gone; the optimistic change has already rolled back
+  }
+}
+```
+
+The POST rolls back whole (409), so nothing is committed and no subscriber sees an op
+for a row that does not exist.
+
+A **delete** of a row that is already gone still succeeds — that is the state you asked
+for. Your optimistic removal settles instead of rolling back, and the delete that fans
+out is a no-op for every client that no longer holds the row. Nothing flickers back
+onto the screen.
+
 ## onAuthError callback
 
 If a client connection makes it past the initial worker check (stateless auth check)

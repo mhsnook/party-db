@@ -87,8 +87,12 @@ CREATE POLICY docs_owner ON docs
 - **Anonymous write** that *reaches* the DB (no claim) → `owner = NULL` is never true →
   **403**. But by default an anonymous write never gets that far — it's rejected 401 at
   the server before any SQL (see [No token](#no-token-fail-closed-by-default) below).
-- **Update/delete of a row you can't see** → `USING` filters it out → **0-row no-op**
+- **Update/delete of a row you can't see** → `USING` filters it out → **0 rows matched**
   (not a 403). You cannot be refused a row that is invisible to you, and that is safe.
+  An update of 0 rows is then the **missing-row rejection**: **409** with
+  `code: 'missing-row'`, the POST rolled back, so the writer learns their write went
+  nowhere ([architecture §16](../architecture.md#16-an-update-sends-tanstacks-changes-and-must-hit-a-row)).
+  A delete of 0 rows stays a no-op — the row is already gone.
   To make cross-user *modification* of a visible row a hard 403 (org-tenancy: you see
   colleagues' rows but can't edit them), widen `USING` to the org and keep `WITH CHECK`
   on the owner — a visible row failing `WITH CHECK` raises `42501`.

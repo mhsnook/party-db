@@ -22,9 +22,12 @@ export { definePartyCollection, type PartyCollection }
 export type PartyCollectionConfig<T extends object> = PartyCollection<T>
 
 // exported for unit tests: a single TanStack mutation → one wire WriteEvent.
-export function toEvent(m: any): WriteEvent {
+// An update sends the fields it changed plus the key, never the whole row (§16).
+export function toEvent(m: any, key: string): WriteEvent {
   if (m.type === 'delete') return { type: 'delete', value: m.original }
-  if (m.type === 'update') return { type: 'update', value: m.modified, previousValue: m.original }
+  if (m.type === 'update') {
+    return { type: 'update', value: { ...m.changes, [key]: m.modified[key] }, previousValue: m.original }
+  }
   return { type: 'insert', value: m.modified }
 }
 
@@ -34,16 +37,18 @@ export function toEvent(m: any): WriteEvent {
 // needs `send` + `waitForSeq`, so tests don't stand up a real transport.
 export function makePersist(
   client: Pick<SyncClient, 'send' | 'waitForSeq'>,
-  channelOf: Map<Collection<any>, string>,
+  // each managed collection's own config: `name` is the channel, `key` the column
+  // an update sends alongside its changed ones.
+  configOf: Map<Collection<any>, PartyCollection<any>>,
 ) {
   return async ({ transaction }: any) => {
     const byChannel = new Map<string, WriteEvent[]>()
     for (const m of transaction.mutations) {
-      const channel = channelOf.get(m.collection)
-      if (!channel) continue // a mutation on a collection we don't manage
-      const ops = byChannel.get(channel) ?? []
-      ops.push(toEvent(m))
-      byChannel.set(channel, ops)
+      const cfg = configOf.get(m.collection)
+      if (!cfg) continue // a mutation on a collection we don't manage
+      const ops = byChannel.get(cfg.name) ?? []
+      ops.push(toEvent(m, cfg.key))
+      byChannel.set(cfg.name, ops)
     }
     const batches: WriteBatch[] = [...byChannel].map(([channel, ops]) => ({ channel, ops }))
     if (!batches.length) return
@@ -55,8 +60,8 @@ export function makePersist(
 // internal: wire N collection configs onto one SyncClient. Returns the
 // collections plus the shared `persist` mutationFn.
 export function wireCollections(client: SyncClient, configs: PartyCollectionConfig<any>[]) {
-  const channelOf = new Map<Collection<any>, string>()
-  const persist = makePersist(client, channelOf)
+  const configOf = new Map<Collection<any>, PartyCollection<any>>()
+  const persist = makePersist(client, configOf)
   const db: Record<string, Collection<any>> = {}
   for (const cfg of configs) {
     const collection = createCollection({
@@ -67,7 +72,7 @@ export function wireCollections(client: SyncClient, configs: PartyCollectionConf
       onUpdate: persist,
       onDelete: persist,
     })
-    channelOf.set(collection, cfg.name)
+    configOf.set(collection, cfg)
     db[cfg.name] = collection
   }
   return { db, persist }

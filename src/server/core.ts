@@ -12,7 +12,7 @@
 
 import { PROTO_PARAM, PROTO_VALUE, type SequencedBatch, type WriteAck, type WriteBatch, type WriteReject } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
-import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
+import { MissedUpdateError, type PersistenceAdapter, type WriteIdentity } from './persistence.ts'
 import { warnUnenforcedAccess } from './access.ts'
 
 // The write-identity hook: resolve the writer's verified identity from a POST.
@@ -218,12 +218,13 @@ export class PartyDbCore {
       // server-side and keep the response generic, or we'd echo schema internals
       // to any writer and mislabel 500-class faults as data rejections.
       //
-      // The adapter classifies first if it can (Postgres reads SQLSTATE +
-      // constraint name off the error); adapters without their own classifier
-      // (embedded + D1) fall through to the SQLite-message regex, unchanged. The
-      // adapter picks the status too — 409 for an integrity conflict (default),
-      // 403 for an RLS/authorization denial — stripped from the client body.
-      const rejection = this.adapter.classifyError?.(e)
+      // A missed update (§16) carries its own rejection; otherwise the adapter
+      // classifies if it can (Postgres reads SQLSTATE + constraint name off the
+      // error), and adapters without a classifier (embedded + D1) fall through to
+      // the SQLite-message regex. The rejection picks the status too — 409 for an
+      // integrity conflict (default), 403 for an RLS denial — stripped from the
+      // client body.
+      const rejection = e instanceof MissedUpdateError ? e.rejection : this.adapter.classifyError?.(e)
       if (rejection) {
         const { status = 409, ...reject } = rejection
         return Response.json(reject satisfies WriteReject, { status })

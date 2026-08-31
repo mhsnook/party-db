@@ -7,7 +7,8 @@
 // statement list built entirely up front — you cannot read a RETURNING row, decode
 // it in JS, and then INSERT the resolved-op JSON, because those would be separate
 // statements outside any transaction. So the whole POST becomes ONE `batch()`:
-//   batch₁ CRUD…, batch₁ oplog INSERT, batch₂ CRUD…, batch₂ oplog INSERT, …, compaction
+//   batch₁ CRUD… (each update behind its existence guard), batch₁ oplog INSERT,
+//   batch₂ CRUD…, batch₂ oplog INSERT, …, compaction
 // and the oplog INSERT assembles its resolved-op JSON *in SQL* (`resolvedOpJsonExpr`),
 // reading back the rows the earlier statements in the same batch just wrote. The
 // data, the log, and the AUTOINCREMENT seqs commit together or not at all — nothing
@@ -20,9 +21,18 @@
 
 import type { SequencedBatch, WriteBatch } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
-import type { PersistenceAdapter } from './persistence.ts'
+import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
-import { buildPlans, oplogInsertStmt, resolveStructured, structuredStmt, type Plan, type StructuredPlan } from './statements.ts'
+import {
+  buildPlans,
+  oplogInsertStmt,
+  resolveStructured,
+  structuredStmt,
+  updateGuardStmt,
+  MISSED_UPDATE_GUARD_ERROR,
+  type Plan,
+  type StructuredPlan,
+} from './statements.ts'
 
 export type D1AdapterOptions = {
   // keep at most this many _oplog rows; older entries are compacted away after each
@@ -56,6 +66,8 @@ export class D1Adapter implements PersistenceAdapter {
         )
       }
     }
+    // `channel TEXT NOT NULL` is what `updateGuardStmt` violates to abort a batch.
+    // Relaxing it turns every missed update back into a phantom `_oplog` row.
     await this.d1.exec(`CREATE TABLE IF NOT EXISTS _oplog (seq INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, ops TEXT NOT NULL)`)
   }
 
@@ -64,10 +76,15 @@ export class D1Adapter implements PersistenceAdapter {
 
     // Build the whole POST as one statement list: each channel-batch's CRUD
     // statements, then its oplog INSERT (which reads those rows back into resolved
-    // JSON in SQL), then one compaction DELETE. We remember where each batch's CRUD
-    // results and its oplog result land so we can map them back after commit.
+    // JSON in SQL), then one compaction DELETE. We remember where each op's CRUD
+    // result and each batch's oplog result land so we can map them back after commit.
+    //
+    // Each update sits immediately behind its own `updateGuardStmt`. Don't hoist
+    // the guards: a POST that inserts a row then updates it would fail its own
+    // insert's guard. `crudAt` indexes around that interleaving.
     const stmts: D1PreparedStatement[] = []
-    const layout: { channel: string; plan: StructuredPlan; batch: WriteBatch; crudStart: number; oplogAt: number }[] = []
+    const layout: { channel: string; plan: StructuredPlan; batch: WriteBatch; crudAt: number[]; oplogAt: number }[] = []
+    const updates: { channel: string; key: unknown }[] = [] // for missedUpdate()
 
     for (const batch of batches) {
       const plan = this.plans.get(batch.channel)
@@ -75,15 +92,21 @@ export class D1Adapter implements PersistenceAdapter {
       // init() guarantees structured; guard the type and the (unreachable) blob case.
       if (plan.kind !== 'structured') throw new Error(`channel ${batch.channel} is not structured`)
 
-      const crudStart = stmts.length
+      const crudAt: number[] = []
       for (const op of batch.ops) {
+        if (op.type === 'update') {
+          const guard = updateGuardStmt(plan, op)
+          stmts.push(this.d1.prepare(guard.sql).bind(...guard.binds))
+          updates.push({ channel: batch.channel, key: (op.value as Record<string, unknown>)[plan.key] })
+        }
         const { sql, binds } = structuredStmt(plan, op)
+        crudAt.push(stmts.length)
         stmts.push(this.d1.prepare(sql).bind(...binds))
       }
       const oplog = oplogInsertStmt(batch.channel, batch.ops, plan)
       const oplogAt = stmts.length
       stmts.push(this.d1.prepare(oplog.sql).bind(...oplog.binds))
-      layout.push({ channel: batch.channel, plan, batch, crudStart, oplogAt })
+      layout.push({ channel: batch.channel, plan, batch, crudAt, oplogAt })
     }
 
     if (this.retention) {
@@ -94,14 +117,20 @@ export class D1Adapter implements PersistenceAdapter {
 
     // one atomic commit for the entire POST — data, log, seqs. A constraint
     // rejection rolls the lot back (verified in the integration suite: the _oplog
-    // gains no entries either).
-    const results = await this.d1.batch<Record<string, unknown>>(stmts)
+    // gains no entries either), and so does an update guard that found no row.
+    let results: D1Result<Record<string, unknown>>[]
+    try {
+      results = await this.d1.batch<Record<string, unknown>>(stmts)
+    } catch (e) {
+      if (!String(e).includes(MISSED_UPDATE_GUARD_ERROR)) throw e
+      throw missedUpdate(updates)
+    }
 
-    return layout.map(({ channel, plan, batch, crudStart, oplogAt }) => {
+    return layout.map(({ channel, plan, batch, crudAt, oplogAt }) => {
       // each op's resolved value comes from its CRUD statement's RETURNING rows —
-      // read the results array (never a single-row assumption): a delete and an
-      // update-of-a-missing-row return no rows and fall back to the sent value.
-      const ops = batch.ops.map((op, i) => resolveStructured(plan, op, results[crudStart + i].results))
+      // read the results array (never a single-row assumption): a delete returns no
+      // rows and echoes the sent value.
+      const ops = batch.ops.map((op, i) => resolveStructured(plan, op, results[crudAt[i]].results))
       const seq = Number((results[oplogAt].results[0] as { seq: number }).seq)
       return { channel, ops, seq }
     })
@@ -137,4 +166,16 @@ export class D1Adapter implements PersistenceAdapter {
       .all<{ seq: number; channel: string; ops: string }>()
     return res.results.map((r) => ({ channel: r.channel, seq: Number(r.seq), ops: JSON.parse(r.ops) }))
   }
+}
+
+// A fired guard doesn't say which statement raised it, so name what the POST makes
+// unambiguous: the channel if every update was in one, the key if there was one
+// update. Querying for the exact row would cost a round trip on a rejection the
+// client rolls back anyway, and it branches on `code`, not on this text.
+function missedUpdate(updates: { channel: string; key: unknown }[]): MissedUpdateError {
+  const channels = new Set(updates.map((u) => u.channel))
+  return new MissedUpdateError(
+    channels.size === 1 ? updates[0].channel : undefined,
+    updates.length === 1 ? updates[0].key : undefined,
+  )
 }

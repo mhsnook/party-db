@@ -54,14 +54,20 @@ export type WriteAck = {
 }
 
 // Reply when the POST is rejected, so the mutating client gets the database's
-// verdict — not a bare 500. `error` is always set; `channel`/`constraint` are
-// best-effort context pulled from the failure. The client surfaces this and rolls
-// its optimistic mutation back.
+// verdict — not a bare 500. `error` is always set; `channel`/`constraint`/`code`
+// are best-effort context pulled from the failure. The client surfaces this and
+// rolls its optimistic mutation back.
+//
+// `code` tells apart two verdicts that share a status: a 409 from a constraint, and
+// a 409 from an update that matched no row (§16).
 export type WriteReject = {
   error: string
   channel?: string
   constraint?: string
+  code?: WriteRejectCode
 }
+
+export type WriteRejectCode = 'missing-row'
 
 // The traffic marker: `partyTransport` puts `?proto=party-db` on every connect
 // and every write POST. A host that serves other traffic on the same room routes

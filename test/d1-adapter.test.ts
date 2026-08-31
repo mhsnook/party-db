@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { z } from 'zod'
 import { D1Adapter } from '../src/server/d1-adapter.ts'
+import { MissedUpdateError } from '../src/server/persistence.ts'
 import { definePartyCollection } from '../src/schema.ts'
 import type { WriteBatch } from '../src/protocol.ts'
 import { FakeD1, asD1 } from './helpers/fake-d1.ts'
@@ -69,6 +70,17 @@ describe('D1Adapter — write assembles ONE batch (CRUD + oplog + compaction)', 
     expect(fake.prepared.some((s) => s.startsWith('DELETE FROM _oplog'))).toBe(false)
   })
 
+  it('puts each update behind its existence guard, in the same batch', async () => {
+    const { fake, adapter } = await setup()
+    await adapter.write([ins({ id: 'a', text: 'x' })])
+    fake.prepared.length = 0
+    await adapter.write([{ channel: 'todos', ops: [{ type: 'update', value: { id: 'a', done: true } }] }])
+    // guard, then the UPDATE it protects, then the oplog INSERT
+    expect(fake.prepared[0]).toMatch(/^INSERT INTO _oplog \(channel, ops\) SELECT NULL, NULL WHERE NOT EXISTS/)
+    expect(fake.prepared[1]).toMatch(/^UPDATE "todos"/)
+    expect(fake.prepared[2]).toMatch(/^INSERT INTO _oplog .* json_array\(/)
+  })
+
   it('interleaves multiple channel-batches: crud₁, oplog₁, crud₂, oplog₂', async () => {
     const { fake, adapter } = await setup()
     fake.prepared.length = 0
@@ -100,16 +112,38 @@ describe('D1Adapter — result mapping (resolved rows + seq)', () => {
     expect([a[0].seq, b[0].seq]).toEqual([1, 2])
   })
 
-  it('update-of-a-missing-row is a no-op that echoes the sent value', async () => {
+  it('resolves a partial update to the full current row', async () => {
     const { fake, adapter } = await setup()
+    await adapter.write([ins({ id: 'a', text: 'orig' })])
     const [batch] = await adapter.write([
-      { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }] },
+      { channel: 'todos', ops: [{ type: 'update', value: { id: 'a', done: true } }] },
     ])
-    expect(batch.ops[0].value).toEqual({ id: 'ghost', done: true }) // sent value, no crash
-    expect(fake.rows(`SELECT COUNT(*) c FROM todos`)[0].c).toBe(0) // nothing created
-    // and the oplog entry carries the sent value (the COALESCE fallback)
-    const oplog = fake.rows(`SELECT ops FROM _oplog ORDER BY seq DESC LIMIT 1`)[0]
-    expect(JSON.parse(oplog.ops as string)).toEqual([{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }])
+    expect(batch.ops[0].value).toEqual({ id: 'a', text: 'orig', done: true, rev: 1, meta: null })
+    expect(fake.rows(`SELECT text FROM todos WHERE id='a'`)[0].text).toBe('orig') // untouched column kept
+  })
+
+  it('rejects an update whose key matches no row, naming the channel and key', async () => {
+    const { fake, adapter } = await setup()
+    await expect(
+      adapter.write([
+        { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }] },
+      ]),
+    ).rejects.toThrow(/update matched no row \(channel "todos", key "ghost"\)/)
+    // the guard aborted the batch: no row, and no phantom op in the log
+    expect(fake.rows(`SELECT COUNT(*) c FROM todos`)[0].c).toBe(0)
+    expect(fake.rows(`SELECT COUNT(*) c FROM _oplog`)[0].c).toBe(0)
+  })
+
+  it('rejects the whole POST when a later batch update misses', async () => {
+    const { fake, adapter } = await setup()
+    await expect(
+      adapter.write([
+        ins({ id: 'a', text: 'valid' }), // would-be seq 1…
+        { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true } }] }, // …rolled back by this
+      ]),
+    ).rejects.toThrow(MissedUpdateError)
+    expect(fake.rows(`SELECT COUNT(*) c FROM todos`)[0].c).toBe(0)
+    expect(fake.rows(`SELECT COUNT(*) c FROM _oplog`)[0].c).toBe(0)
   })
 })
 

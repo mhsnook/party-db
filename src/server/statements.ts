@@ -20,6 +20,7 @@
 
 import type { WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
+import { MissedUpdateError } from './persistence.ts'
 import { assertIdent, columnsOf, decodeRow, encode, type ColumnKind, type ColumnSpec } from './columns.ts'
 
 export type StructuredPlan = {
@@ -103,7 +104,8 @@ export function toPg(sql: string): string {
   return sql.replace(/\?/g, () => `$${++i}`)
 }
 
-// v0 blob store: one JSON row per PK. The resolved row equals the sent row.
+// v0 blob store: one JSON row per PK. The caller passes the whole document —
+// `SqliteAdapter.applyBlobOp` merges an update's changed keys before calling here.
 export function blobStmt(plan: BlobPlan, op: WriteEvent): Statement {
   const row = op.value as Record<string, unknown>
   const key = String(row[plan.key])
@@ -116,15 +118,13 @@ export function blobStmt(plan: BlobPlan, op: WriteEvent): Statement {
   }
 }
 
-// Turn the rows a structured statement returned into the resolved op. insert and a
-// row-hitting update decode the RETURNING row (defaults/serials applied); an update
-// that hit no row and a delete echo the sent value. This is the JS side of what
-// `resolvedOpJsonExpr` reproduces in SQL — the two must agree (parity test).
+// Turn the rows a structured statement returned into the resolved op. insert and
+// update decode the RETURNING row (defaults/serials applied); a delete echoes the
+// sent value; an update that returned no row throws `MissedUpdateError` (§16).
 //
 // `dec` decodes a RETURNING row → its schema shape; the default is the SQLite
 // `decodeRow`. The PG adapter passes `pgDecodeRow` (native booleans, json already
-// parsed by the driver). insert/update decode the returned row; a missed update
-// and a delete echo the sent value with no decode.
+// parsed by the driver).
 export function resolveStructured(
   plan: StructuredPlan,
   op: WriteEvent,
@@ -135,10 +135,29 @@ export function resolveStructured(
   if (op.type === 'delete') return { type: 'delete', value: row }
   if (op.type === 'update') {
     const resolved = rows[0]
-    return { type: 'update', value: resolved ? dec(resolved, plan.kinds) : row, previousValue: op.previousValue }
+    if (!resolved) throw new MissedUpdateError(plan.name, row[plan.key])
+    return { type: 'update', value: dec(resolved, plan.kinds), previousValue: op.previousValue }
   }
   return { type: 'insert', value: dec(rows[0], plan.kinds) }
 }
+
+// Aborts D1's batch when an update's row doesn't exist (§16), since D1 has no
+// interactive transaction to check it in JS. Run this immediately before the
+// UPDATE, in the same `batch()`.
+//
+// It inserts nothing while the row exists — the WHERE yields no row, so no seq is
+// burned — and violates `_oplog.channel NOT NULL` when it doesn't, rolling the
+// batch back. Every real write binds a channel, so that violation has one cause.
+export function updateGuardStmt(plan: StructuredPlan, op: WriteEvent): Statement {
+  const row = op.value as Record<string, unknown>
+  return {
+    sql: `INSERT INTO _oplog (channel, ops) SELECT NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM "${plan.name}" WHERE "${plan.key}" = ?)`,
+    binds: [encode(row[plan.key])],
+  }
+}
+
+// D1 wraps SQLite's message in its own `D1_ERROR: …`, so match, don't compare.
+export const MISSED_UPDATE_GUARD_ERROR = 'NOT NULL constraint failed: _oplog.channel'
 
 // The SQL mirror of `decode` for one column, as a `json_object` value expression:
 //   - boolean: the stored 0/1 (or NULL) → a JSON true/false/null via json(); a bare
@@ -158,12 +177,14 @@ function columnJsonExpr(col: ColumnSpec): string {
 // expression text plus its binds, to be dropped into a `json_array(...)`.
 //
 // insert/update read the row back from the table by key and shape it with the
-// schema's columns; a COALESCE fallback to the pre-serialized sent op covers the
-// update-of-a-missing-row no-op (empty subquery → echo the sent value). delete's
-// value is the sent row, known up front. The outer json() is load-bearing: the
-// JSON subtype does not survive the scalar-subquery boundary, so each element is
-// re-parsed. Bind order matches the `?`s left-to-right: [previousValue?, key,
-// fallback] for insert/update; [sentOp] for delete.
+// schema's columns; delete's value is the sent row, known up front. The read-back
+// always finds its row (the insert just wrote it; `updateGuardStmt` aborted a
+// missing update), so the COALESCE is a well-formedness backstop, not a semantic.
+//
+// The outer json() is load-bearing: the JSON subtype does not survive the
+// scalar-subquery boundary, so each element is re-parsed. Bind order matches the
+// `?`s left-to-right: [previousValue?, key, fallback] for insert/update; [sentOp]
+// for delete.
 export function resolvedOpJsonExpr(plan: StructuredPlan, op: WriteEvent): { expr: string; binds: unknown[] } {
   const row = op.value as Record<string, unknown>
 
@@ -179,10 +200,7 @@ export function resolvedOpJsonExpr(plan: StructuredPlan, op: WriteEvent): { expr
     ...(hasPrev ? [`'previousValue', json(?)`] : []),
   ].join(', ')
   const subquery = `SELECT json_object(${objectPairs}) FROM "${plan.name}" WHERE "${plan.key}" = ?`
-  const fallback: WriteEvent =
-    op.type === 'update'
-      ? { type: 'update', value: row, ...(hasPrev ? { previousValue: op.previousValue } : {}) }
-      : { type: 'insert', value: row }
+  const fallback: WriteEvent = { type: op.type, value: row, ...(hasPrev ? { previousValue: op.previousValue } : {}) }
 
   return {
     expr: `json(COALESCE((${subquery}), ?))`,

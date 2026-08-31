@@ -125,16 +125,26 @@ describe.skipIf(!PG_URL)('PgAdapter (real Postgres)', () => {
       expect(await count('todos')).toBe(1) // table intact, one row
     })
 
-    it('update-of-a-missing-row is a no-op that echoes the sent value', async () => {
+    it('update-of-a-missing-row is rejected, and rolls back with nothing logged', async () => {
       const adapter = await setup()
-      const [batch] = await adapter.write([
-        { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }] },
-      ])
-      expect(batch.ops[0].value).toEqual({ id: 'ghost', done: true }) // sent value, no crash
+      await expect(
+        adapter.write([
+          { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }] },
+        ]),
+      ).rejects.toThrow(/update matched no row \(channel "todos", key "ghost"\)/)
       expect(await count('todos')).toBe(0) // nothing created
-      // and the oplog entry carries the sent value (JSONB round-trips, no parse)
-      const oplog = (await rows(`SELECT ops FROM _oplog ORDER BY seq DESC LIMIT 1`))[0]
-      expect(oplog.ops).toEqual([{ type: 'update', value: { id: 'ghost', done: true }, previousValue: { id: 'ghost' } }])
+      expect(await count('_oplog')).toBe(0) // and no phantom op logged
+    })
+
+    it('an update writes only the columns it carries', async () => {
+      const adapter = await setup()
+      await adapter.write([ins({ id: 'a', text: 'original' })])
+      const [batch] = await adapter.write([
+        { channel: 'todos', ops: [{ type: 'update', value: { id: 'a', done: true } }] },
+      ])
+      // `text` never travelled, so `text` never moved — and the resolved op is the
+      // full row Postgres now holds
+      expect(batch.ops[0].value).toEqual({ id: 'a', text: 'original', done: true, rev: 1, meta: null })
     })
   })
 

@@ -2,27 +2,43 @@ import { describe, it, expect, vi } from 'vitest'
 import { toEvent, makePersist } from '../src/client/collection.ts'
 import type { SyncClient } from '../src/client/sync-client.ts'
 import type { WriteBatch } from '../src/protocol.ts'
+import type { PartyCollection } from '../src/schema.ts'
 
 describe('toEvent', () => {
   it('maps an insert mutation to an insert event carrying the new value', () => {
-    expect(toEvent({ type: 'insert', modified: { id: 'a', text: 'hi' } })).toEqual({
+    expect(toEvent({ type: 'insert', modified: { id: 'a', text: 'hi' } }, 'id')).toEqual({
       type: 'insert',
       value: { id: 'a', text: 'hi' },
     })
   })
 
-  it('maps an update mutation, keeping the prior value for reconciliation', () => {
+  it('sends only the changed columns of an update, plus the key', () => {
     expect(
-      toEvent({ type: 'update', modified: { id: 'a', text: 'new' }, original: { id: 'a', text: 'old' } }),
+      toEvent(
+        {
+          type: 'update',
+          changes: { text: 'new' },
+          modified: { id: 'a', text: 'new', done: false },
+          original: { id: 'a', text: 'old', done: false },
+        },
+        'id',
+      ),
     ).toEqual({
       type: 'update',
-      value: { id: 'a', text: 'new' },
-      previousValue: { id: 'a', text: 'old' },
+      // `done` never travels: the writer didn't touch it, so nothing overwrites it
+      value: { text: 'new', id: 'a' },
+      previousValue: { id: 'a', text: 'old', done: false },
     })
   })
 
+  it('keeps the key column of an update that changed it', () => {
+    expect(
+      toEvent({ type: 'update', changes: { id: 'b' }, modified: { id: 'b' }, original: { id: 'a' } }, 'id'),
+    ).toEqual({ type: 'update', value: { id: 'b' }, previousValue: { id: 'a' } })
+  })
+
   it('maps a delete mutation off the original value', () => {
-    expect(toEvent({ type: 'delete', original: { id: 'a' } })).toEqual({
+    expect(toEvent({ type: 'delete', original: { id: 'a' } }, 'id')).toEqual({
       type: 'delete',
       value: { id: 'a' },
     })
@@ -47,12 +63,13 @@ function mockClient(
   return { client: { send, waitForSeq } as unknown as SyncClient, send, waitForSeq }
 }
 
-// Stand-in "collections": identity is all channelOf keys off, so plain objects suffice.
+// Stand-in "collections": identity is all the config map keys off, so plain
+// objects suffice. The values are the collection configs `wireCollections` holds.
 const todos = { name: 'todos' } as any
 const lists = { name: 'lists' } as any
-const channelOf = new Map<any, string>([
-  [todos, 'todos'],
-  [lists, 'lists'],
+const configs = new Map<any, PartyCollection<any>>([
+  [todos, { name: 'todos', key: 'id' }],
+  [lists, { name: 'lists', key: 'id' }],
 ])
 
 describe('makePersist', () => {
@@ -61,14 +78,14 @@ describe('makePersist', () => {
       { channel: 'todos', seq: 1 },
       { channel: 'lists', seq: 2 },
     ])
-    const persist = makePersist(client, channelOf)
+    const persist = makePersist(client, configs)
 
     await persist({
       transaction: {
         mutations: [
           { collection: todos, type: 'insert', modified: { id: 't1' } },
           { collection: lists, type: 'insert', modified: { id: 'l1' } },
-          { collection: todos, type: 'update', modified: { id: 't2' }, original: { id: 't2-' } },
+          { collection: todos, type: 'update', changes: {}, modified: { id: 't2' }, original: { id: 't2-' } },
         ],
       },
     })
@@ -89,7 +106,7 @@ describe('makePersist', () => {
 
   it('drops mutations on collections it does not manage', async () => {
     const { client, send } = mockClient([{ channel: 'todos', seq: 1 }])
-    const persist = makePersist(client, channelOf)
+    const persist = makePersist(client, configs)
     const foreign = { name: 'foreign' } as any
 
     await persist({
@@ -107,7 +124,7 @@ describe('makePersist', () => {
 
   it('does not POST when no mutation targets a managed collection', async () => {
     const { client, send, waitForSeq } = mockClient([])
-    const persist = makePersist(client, channelOf)
+    const persist = makePersist(client, configs)
     const foreign = { name: 'foreign' } as any
 
     await persist({
@@ -124,7 +141,7 @@ describe('makePersist', () => {
       { channel: 'lists', seq: 8 },
     ]
     const { client, waitForSeq } = mockClient(accepted)
-    const persist = makePersist(client, channelOf)
+    const persist = makePersist(client, configs)
 
     await persist({
       transaction: {
@@ -145,7 +162,7 @@ describe('makePersist rejection paths (what makes TanStack roll back)', () => {
   it('rejects with the server\'s own error instance, and never waits for a seq', async () => {
     const error = new Error('409: constraint')
     const { client, waitForSeq } = mockClient([], { send: error })
-    const persist = makePersist(client, channelOf)
+    const persist = makePersist(client, configs)
 
     await expect(
       persist({ transaction: { mutations: [{ collection: todos, type: 'insert', modified: { id: 't1' } }] } }),
@@ -162,7 +179,7 @@ describe('makePersist rejection paths (what makes TanStack roll back)', () => {
       ],
       { waitOn: ['lists', error] },
     )
-    const persist = makePersist(client, channelOf)
+    const persist = makePersist(client, configs)
 
     await expect(
       persist({
@@ -185,7 +202,7 @@ describe('makePersist rejection paths (what makes TanStack roll back)', () => {
       { channel: 'todos', seq: 3 },
       { channel: 'lists', seq: 4 },
     ])
-    const persist = makePersist(client, channelOf)
+    const persist = makePersist(client, configs)
     const foreign = { name: 'foreign' } as any
 
     await persist({

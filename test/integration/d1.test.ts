@@ -182,23 +182,35 @@ describe('D1 broadcast order == seq order under concurrent POSTs', () => {
   })
 })
 
-describe('D1 update-of-a-missing-row (plan-002 parity + COALESCE fallback)', () => {
-  it('200 no-op echoing the sent value, and the oplog entry carries the sent value', async () => {
+describe('D1 update-of-a-missing-row: the guard aborts the batch', () => {
+  it('rejects 409 with code missing-row, and writes neither the row nor the log', async () => {
     const room = 'd1-update-missing'
     const res = await post(room, [
       { channel: 'todos', ops: [{ type: 'update', value: { id: 'ghost', text: 'boo' }, previousValue: { id: 'ghost' } }] },
     ])
+    expect(res.status).toBe(409)
+    const reject = (await res.json()) as WriteReject
+    expect(reject.code).toBe('missing-row')
+    expect(reject.error).toMatch(/update matched no row \(channel "todos", key "ghost"\)/)
+    expect(await todoCount()).toBe(0) // nothing was created
+    expect(await oplogCount()).toBe(0) // and no phantom op was logged
+
+    // and a fresh client's snapshot is empty — no ghost row, seq still 0
+    const c = await connect(room)
+    await c.waitFor(1)
+    expect(c.batches[0]).toMatchObject({ channel: 'todos', ready: true, seq: 0 })
+    expect(c.batches[0].ops).toHaveLength(0)
+    c.ws.close()
+  })
+
+  it('a hitting update still commits — the guard passes silently and burns no seq', async () => {
+    const room = 'd1-update-hits'
+    await post(room, insert('a', 'original'))
+    const res = await post(room, [{ channel: 'todos', ops: [{ type: 'update', value: { id: 'a', text: 'edited' } }] }])
     expect(res.status).toBe(200)
     const ack = (await res.json()) as WriteAck
-    // the resolved op echoes the sent value (no row to read back)
-    expect(ack.changed?.[0].ops[0]).toMatchObject({ type: 'update', value: { id: 'ghost', text: 'boo' } })
-    expect(await todoCount()).toBe(0) // nothing was created
-
-    // a reconnecting client replays that op from the oplog — the COALESCE fallback
-    // stored the sent value, not a null.
-    const c = await connect(room, 0)
-    await c.waitFor(1)
-    expect(c.batches[0].ops[0]).toMatchObject({ type: 'update', value: { id: 'ghost', text: 'boo' }, previousValue: { id: 'ghost' } })
-    c.ws.close()
+    // seq 2, not 3: the guard inserted no _oplog row on its way through
+    expect(ack.accepted).toEqual([{ channel: 'todos', seq: 2 }])
+    expect(ack.changed?.[0].ops[0]).toMatchObject({ type: 'update', value: { id: 'a', text: 'edited' } })
   })
 })

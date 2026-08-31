@@ -14,9 +14,9 @@
 
 import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
-import type { PersistenceAdapter } from './persistence.ts'
+import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
-import { blobStmt, buildPlans, resolveStructured, structuredStmt, type Plan } from './statements.ts'
+import { blobStmt, buildPlans, resolveStructured, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
 
 // The narrow slice of a SQLite handle the adapter needs. In the DO it's
 // `ctx.storage.sql` + `ctx.storage.transactionSync`; in tests it's a node:sqlite
@@ -105,18 +105,30 @@ export class SqliteAdapter implements PersistenceAdapter {
     return { channel: batch.channel, ops: resolved, seq }
   }
 
-  // Run one op's shared CRUD statement and resolve it. Structured ops decode the
-  // returned row (read via toArray(), which tolerates the empty result an
-  // update-of-a-missing-row / delete yields); blob ops echo the sent value.
+  // Run one op's shared CRUD statement and resolve it. Read the result via
+  // toArray(): a delete returns no rows, and an update that returns none is the
+  // §16 rejection.
   private applyOp(plan: Plan, op: WriteEvent): WriteEvent {
-    if (plan.kind === 'blob') {
-      const { sql, binds } = blobStmt(plan, op)
-      this.engine.exec(sql, ...binds)
-      return op
-    }
+    if (plan.kind === 'blob') return this.applyBlobOp(plan, op)
     const { sql, binds } = structuredStmt(plan, op)
     const rows = this.engine.exec(sql, ...binds).toArray()
     return resolveStructured(plan, op, rows)
+  }
+
+  // The store holds one opaque document per key, so an update merges its changed
+  // keys (§16) over the stored one and resolves to the merged result. No stored
+  // document means the update matched no row.
+  private applyBlobOp(plan: BlobPlan, op: WriteEvent): WriteEvent {
+    let value = op.value as Record<string, unknown>
+    if (op.type === 'update') {
+      const key = value[plan.key]
+      const [stored] = this.engine.exec(`SELECT data FROM "${plan.name}" WHERE k = ?`, String(key)).toArray()
+      if (!stored) throw new MissedUpdateError(plan.name, key)
+      value = { ...(JSON.parse(stored.data as string) as Record<string, unknown>), ...value }
+    }
+    const { sql, binds } = blobStmt(plan, { ...op, value })
+    this.engine.exec(sql, ...binds)
+    return { ...op, value }
   }
 
   async snapshot(): Promise<SequencedBatch[]> {

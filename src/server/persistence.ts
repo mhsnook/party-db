@@ -37,6 +37,26 @@ export type WriteIdentity = {
 // unauthorized write reads as a normal client rejection, not a conflict.
 export type WriteRejection = WriteReject & { status?: number }
 
+// An UPDATE whose key matched no row. Every SQL dialect treats that as a silent
+// success, so the adapters raise this instead, and it rolls the POST back like a
+// constraint rejection. Why, and how each adapter detects it: architecture §16.
+//
+// `rejection` is what the writer gets back; `channel`/`key` are absent when the
+// adapter cannot tell which op missed (D1's rolled-back batch).
+export class MissedUpdateError extends Error {
+  readonly rejection: WriteRejection
+
+  constructor(
+    readonly channel?: string,
+    readonly key?: unknown,
+  ) {
+    const where = [channel && `channel "${channel}"`, key !== undefined && `key ${JSON.stringify(key)}`].filter(Boolean)
+    super(`update matched no row${where.length ? ` (${where.join(', ')})` : ''}`)
+    this.name = 'MissedUpdateError'
+    this.rejection = { error: this.message, channel, code: 'missing-row', status: 409 }
+  }
+}
+
 export interface PersistenceAdapter {
   // ensure our own infrastructure exists (the _oplog; the blob tables we own for
   // schema-less collections). It does NOT create your tables.
