@@ -18,12 +18,9 @@ export type Transport = {
   // we don't auto-reconnect when the down-stream is closed for auth (1008); this
   // hands that verdict to the app instead. Returns an unsubscribe.
   onAuthError?: (listener: (error: AuthError) => void) => () => void
-  // hang up the down-stream for good, so it stops reconnecting (issue #46). An
-  // app with one room per document opens a client per room; without this each
-  // one keeps a live socket for the life of the tab. Optional: a transport that
-  // does not own its stream — a composed host sharing the room's socket
-  // (docs/architecture.md §15) — leaves it out, and `SyncClient.close()` then
-  // just detaches.
+  // hang up the down-stream, reconnect included. Optional: a transport that does
+  // not own its stream — a composed host sharing the room's socket
+  // (docs/architecture.md §15) — omits it, and closing then only detaches.
   close?: () => void
 }
 
@@ -88,8 +85,8 @@ export class SyncClient {
   // (carries each assigned seq). One batch for a single-collection write, many
   // for a cross-collection atomic transaction.
   send(batches: WriteBatch[]) {
-    // a closed client has no down-stream, so the seq this write earns could
-    // never arrive: fail now rather than at the settle timeout 30s later.
+    // a closed client has no down-stream, so the seq this write earns could never
+    // arrive: fail now rather than at the settle timeout 30s from now.
     if (this.closed) return Promise.reject(new ClosedError())
     return this.transport.send(batches)
   }
@@ -103,10 +100,7 @@ export class SyncClient {
     return this.tracker.waitFor(channel, seq, this.settleTimeoutMs)
   }
 
-  // Hang up this client for good: detach the down-stream, fail everything still
-  // waiting on it, drop the collections we were holding, and tell the transport
-  // to close its socket (issue #46). Idempotent, and one-way — a closed client
-  // never reopens; build a new one.
+  // One-way: a closed client never reopens, so build a new one.
   close() {
     if (this.closed) return
     this.closed = true
@@ -114,8 +108,6 @@ export class SyncClient {
     this.unsubscribe = undefined
     // nothing more will stream in — fail any in-flight waiters instead of hanging.
     this.tracker.rejectAll('sync client closed')
-    // release the collection sinks and any batches buffered for a channel that
-    // never registered: on a client-per-room app those are the retained bytes.
     this.sinks.clear()
     this.pending.clear()
     this.transport.close?.()

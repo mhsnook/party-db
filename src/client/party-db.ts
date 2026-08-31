@@ -112,11 +112,8 @@ export function partyTransport(opts: {
       authListeners.add(listener)
       return () => authListeners.delete(listener)
     },
-    // hang up for good. PartySocket.close() stops the re-dial as well as the
-    // current connection, so this is the only way out of the reconnect loop an
-    // app with one room per document would otherwise accumulate (issue #46).
-    // We drop the auth listeners too: closing is our verdict, not the server's,
-    // and nothing should hear an AuthError from a socket we hung up ourselves.
+    // PartySocket.close() stops the re-dial as well as the connection. The auth
+    // listeners go with it: a socket we hung up has no server verdict to report.
     close() {
       authListeners.clear()
       socket.close()
@@ -146,11 +143,6 @@ export function createPartyDb<C extends PartyCollectionConfig<any>[]>(
     onAuthError(listener: (error: AuthError) => void): () => void {
       return transport.onAuthError?.(listener) ?? (() => {})
     },
-    // Hang up this client: detach the stream, fail anything still awaiting a
-    // seq, and close the socket so it stops reconnecting. Call it when the room
-    // goes out of scope — an app with one room per document (issue #46) leaks a
-    // live socket per room visited otherwise. Idempotent; the client is spent
-    // after it, so build a new one to reopen the room.
     close() {
       client.close()
     },

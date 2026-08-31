@@ -58,11 +58,9 @@ export class AuthError extends NonRetriableError {
   }
 }
 
-// The app called `close()` on this client, so the down-stream is detached and
-// the socket hung up. A write from here can never settle — its seq would have
-// nowhere to arrive — so we say so immediately instead of letting the mutation
-// hang until the settle timeout. Non-retriable: a closed client never reopens,
-// the app builds a new one.
+// The client is closed, so a write from here could never settle: its seq has no
+// down-stream to arrive on. We say so at once instead of letting the mutation
+// hang out the settle timeout. Non-retriable — a closed client never reopens.
 export class ClosedError extends NonRetriableError {
   constructor(message = 'party-db client is closed') {
     super(message)
