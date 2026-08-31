@@ -1,6 +1,6 @@
-// Errors the transport's write path can throw, classified by whether replaying
-// the same write could help — mirroring TanStack DB's hierarchy so apps catch
-// them alongside everything else from the data layer.
+// Errors the client's write path can throw, classified by whether replaying the
+// same write could help — mirroring TanStack DB's hierarchy so apps catch them
+// alongside everything else from the data layer.
 //
 //   WriteError      — the server received the write and rejected it (401/409/400).
 //                     Non-retriable: replaying the same batch won't change the
@@ -14,7 +14,7 @@
 //   ClosedError     — the client was closed. Nothing streams down any more, so
 //                     a write could never settle. Non-retriable on this client.
 //
-// Both reach the app intact: the transport throws from the write mutationFn, and
+// They reach the app intact: the write mutationFn throws, and
 // TanStack rejects the transaction's `isPersisted.promise` with that very
 // instance — so `catch (e) { if (e instanceof WriteError) … }` works.
 
@@ -58,9 +58,8 @@ export class AuthError extends NonRetriableError {
   }
 }
 
-// The client is closed, so a write from here could never settle: its seq has no
-// down-stream to arrive on. We say so at once instead of letting the mutation
-// hang out the settle timeout. Non-retriable — a closed client never reopens.
+// Also what an in-flight waiter gets when close() lands under it, so "the client
+// closed" is one class however the write was timed.
 export class ClosedError extends NonRetriableError {
   constructor(message = 'party-db client is closed') {
     super(message)

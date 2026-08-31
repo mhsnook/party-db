@@ -325,10 +325,9 @@ const article = openArticle('a1')
 article.close()
 ```
 
-Closing is one-way. To reopen the room, build a new client — a fresh client
-connects with no cursor, so the server replays a full snapshot. That is the
-trade: caching an open client per room keeps its `?since` cursor warm, closing
-one frees the socket. Cache the rooms a user moves between, close the rest.
+Closing is one-way. To reopen the room, build a new client — it connects with no
+cursor, so the server replays a full snapshot rather than a delta. That is what
+you trade for the socket.
 
 ## Testing
 

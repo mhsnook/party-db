@@ -67,7 +67,7 @@ function mockClient(
 // objects suffice. The values are the collection configs `wireCollections` holds.
 const todos = { name: 'todos' } as any
 const lists = { name: 'lists' } as any
-const configs = new Map<any, PartyCollection<any>>([
+const configs = new WeakMap<any, PartyCollection<any>>([
   [todos, { name: 'todos', key: 'id' }],
   [lists, { name: 'lists', key: 'id' }],
 ])
