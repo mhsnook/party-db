@@ -84,3 +84,23 @@ export function isSequencedBatch(value: unknown): value is SequencedBatch {
   const frame = value as Partial<SequencedBatch>
   return typeof frame.channel === 'string' && Array.isArray(frame.ops)
 }
+
+// The one frame a client sends UP the socket: "re-send me this channel." The
+// reply is not a frame type of its own — the server answers with an ordinary
+// snapshot batch for that channel (`reset: true`, `ready: true`), to the asking
+// connection alone.
+//
+// The client sends it when a collection registers a second time, after TanStack
+// DB's GC dropped the first sink and its rows (#47). Connecting still carries
+// `?since`; this is the only other way to ask for state.
+export type SnapshotRequest = {
+  // the channel to re-send. A name the room doesn't serve is dropped.
+  snapshot: string
+}
+
+// Same posture as `isSequencedBatch`: a host may share the socket, so prove the
+// frame is ours before acting on it.
+export function isSnapshotRequest(value: unknown): value is SnapshotRequest {
+  if (typeof value !== 'object' || value === null) return false
+  return typeof (value as Partial<SnapshotRequest>).snapshot === 'string'
+}

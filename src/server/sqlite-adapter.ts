@@ -131,7 +131,9 @@ export class SqliteAdapter implements PersistenceAdapter {
     return { ...op, value }
   }
 
-  async snapshot(): Promise<SequencedBatch[]> {
+  // `channel` narrows the snapshot to one collection — the re-register request
+  // (docs/architecture.md §8a). Unknown name → no batches.
+  async snapshot(channel?: string): Promise<SequencedBatch[]> {
     // read the seq and every table inside one transaction so the snapshot is a
     // consistent cut: the rows are exactly the state as of `seq`, with no write
     // slipping in between reading the watermark and reading the rows. (Today the
@@ -141,6 +143,7 @@ export class SqliteAdapter implements PersistenceAdapter {
       const seq = Number(this.engine.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
       const out: SequencedBatch[] = []
       for (const plan of this.plans.values()) {
+        if (channel !== undefined && plan.name !== channel) continue
         const rows =
           plan.kind === 'structured'
             ? this.engine.exec(`SELECT * FROM "${plan.name}"`).toArray().map((r) => decodeRow(r, plan.kinds))

@@ -22,7 +22,7 @@
 // events. A host that cannot subclass — it already extends another partyserver
 // `Server` — holds a `PartyDbCore` itself and does the same wiring (§15).
 
-import { Server, type Connection, type ConnectionContext } from 'partyserver'
+import { Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver'
 import type { SequencedBatch, WriteBatch } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
@@ -106,6 +106,13 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
 
   onConnect(conn: Connection, ctx: ConnectionContext): Promise<void> {
     return this.core.connect((message) => conn.send(message), ctx.request.url)
+  }
+
+  // The one frame a client sends up the socket: `{ snapshot: <channel> }`, from a
+  // collection that registered a second time (docs/architecture.md §8a). The core
+  // answers this connection alone; anything else it drops.
+  onMessage(conn: Connection, message: WSMessage): Promise<void> {
+    return this.core.handleMessage((reply) => conn.send(reply), message)
   }
 
   // controlled mode writes come over HTTP, not the (hibernating) socket.

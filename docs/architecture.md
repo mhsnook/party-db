@@ -267,6 +267,37 @@ the convergence is good evidence the shape is right, and its extra move — bail
 a re-snapshot when the delta itself is *large*, not just when it's gone — is worth
 adopting someday.
 
+### 8a. A collection that re-registers asks for its snapshot
+
+Connecting is not the only moment a client needs state. TanStack DB garbage-collects
+a collection once its last subscriber leaves (`gcTime`) and restarts sync on the next
+access, which calls our `sync` again — a second `register` for the same channel, over
+an **empty** collection. The socket never dropped, so `?since` has nothing to heal:
+the client's cursor is current, and a delta from it is empty. Only a snapshot fills
+the restarted collection (#47).
+
+So the client asks for one. `SyncClient` remembers which channels were registered and
+then torn down; a register for one of those sends `{ snapshot: <channel> }` up the
+socket, through the transport's optional `requestSnapshot(channel)` hook
+(`partyTransport` implements it as a socket send). This is the **first and only frame
+a client writes on the WebSocket** — every other client→server message is the write
+POST, which is what lets the socket hibernate.
+
+The reply is not a new frame type. The server answers with an ordinary snapshot batch
+for that channel — `reset: true`, `ready: true` — to the **requesting connection
+alone**, so it truncate-applies through the same path a stale-cursor re-snapshot
+does, and `isReady` fires again. It goes through the same queue `connect` uses, so a
+concurrent commit can't broadcast a newer seq to that socket before the snapshot
+lands. A request naming a channel the room doesn't serve is dropped, like any frame
+the server can't route (#48).
+
+Two things are deliberately out of scope. `?since` connect behavior is untouched.
+And the request does not filter what that connection receives afterwards — every
+subscriber still gets every channel's fan-out; per-connection channel subscriptions
+are the `subscribe(channels[])` design, not this. A transport with no
+`requestSnapshot` keeps the old behavior: the restarted collection fills on the next
+batch that streams in.
+
 ## 9. Broadcast inline, after commit, before responding
 
 `ws.send()` enqueues to the outbound buffer without awaiting receipt, so
@@ -466,8 +497,12 @@ story (`postgres-todo.md`), not something `commit` can close.
   identity gate (§10a), classification of database rejections
 - `commit(batches, identity?)` — the write → seq → broadcast section (§14)
 
+- `handleMessage(send, message)` — the one frame a client sends up the socket,
+  `{ snapshot: <channel> }` (§8a), answered through that same queue
+
 `PartyDbServer` is a thin subclass over the core: its `onStart` builds the default
-adapter and the core, `onConnect` / `onRequest` forward to it, `commit` delegates.
+adapter and the core, `onConnect` / `onMessage` / `onRequest` forward to it, `commit`
+delegates.
 Every subclass knob (`createAdapter`, `auth`, `anonRole`, the caps) maps to a
 constructor option on the core.
 
@@ -475,12 +510,15 @@ The core exists for the host that cannot subclass `PartyDbServer` — one that a
 extends another partyserver `Server`, such as an agents-SDK `AIChatAgent`
 (scribble-harness's Article Agent, the first consumer, #43). That host holds the core
 instead: it constructs the core in its `onStart` over its own storage, calls
-`init()`, and forwards its `onConnect` / `onRequest` events. The README section "A
+`init()`, and forwards its `onConnect` / `onMessage` / `onRequest` events. Forwarding
+`onMessage` is what serves §8a's snapshot request; a host may forward every message,
+since the core drops any frame that is not its own. The README section "A
 Server that can't subclass holds the core instead" has the worked example; `Composed`
 in `test/integration/worker.ts` is the tested copy.
 
-The core owns no sockets. It hands frames to two host callbacks: the per-connection
-`send` passed to `connect`, and the `broadcast` passed at construction. The frames
+The core owns no sockets. It hands frames to three host callbacks: the per-connection
+`send` passed to `connect`, the per-connection `send` passed to `handleMessage`, and
+the `broadcast` passed at construction. The frames
 are the normal wire — raw `SequencedBatch` JSON, never wrapped — so a client cannot
 tell a composed room from a subclassed one. Broadcast order equals seq order as long
 as the `broadcast` callback sends synchronously (a plain `conn.send` loop does; don't

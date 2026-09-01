@@ -21,7 +21,10 @@ doc once that milestone starts; until then a short design note lives at the bott
     can't carry: who is asking. See [cookbook 2](./cookbooks/02-server-validation.md).
 - **Subscription / filtering.** Today the server broadcasts every channel and the
   client ignores unknowns. A `subscribe(channels[])` control message would let the
-  server send only relevant batches + backlog. Matters as channel count grows.
+  server send only relevant batches + backlog. Matters as channel count grows. The
+  socket already carries one client→server frame — `{ snapshot: <channel> }`, the
+  re-register request (architecture §8a) — so `subscribe` would be the second, not
+  the first.
   - **Read-level slicing (Electric-style shapes, the tractable subset).** TanStack
     DB's `where` clauses compile to a **plain-data, serializable AST** — `Func {
     name, args }`, `PropRef { path }`, `Value { value }`, *no closures* (verified in

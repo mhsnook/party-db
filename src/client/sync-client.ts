@@ -22,6 +22,13 @@ export type Transport = {
   // `subscribe` + `send` is the whole seam, and everything else is a capability
   // a transport may not have.
   close?: () => void
+  // ask the server to re-send one channel's current state. The SyncClient calls
+  // this when a collection registers a SECOND time — TanStack DB dropped the
+  // first sink and its rows on GC, so nothing but a fresh snapshot fills it
+  // (#47). The reply is an ordinary `reset` batch on the down-stream, so there is
+  // nothing to await here. A transport without the hook keeps the old behavior:
+  // the re-registered collection fills on the next batch that streams in.
+  requestSnapshot?: (channel: string) => void
 }
 
 export type SyncClientOptions = {
@@ -38,6 +45,10 @@ const DEFAULT_SETTLE_TIMEOUT_MS = 30_000
 export class SyncClient {
   private sinks = new Map<string, ChannelSink>()
   private pending = new Map<string, SequencedBatch[]>() // batches before register
+  // channels that were registered and then torn down. A sink that comes back for
+  // one of these is a fresh, EMPTY collection (TanStack GC dropped the rows), so
+  // its register asks the server for a new snapshot — see `register`.
+  private torndown = new Set<string>()
   // settlement (the per-channel high-water mark + waiters + timeout) lives in a
   // pure SeqTracker, so it's testable without a transport and the timeout has a home.
   private tracker: SeqTracker
@@ -74,12 +85,25 @@ export class SyncClient {
     this.tracker.observe(batch.channel, batch.seq)
   }
 
-  // a collection's sync() hands us its callbacks under a channel name.
+  // a collection's sync() hands us its callbacks under a channel name. The
+  // returned cleanup is what TanStack DB calls when it garbage-collects the
+  // collection; registering again after that is a new, empty sink.
   register(channel: string, sink: ChannelSink) {
     this.sinks.set(channel, sink)
+    // a second register for this channel starts from nothing: the buffered
+    // batches are long gone and the collection was truncated with its old sink.
+    // Ask for a fresh snapshot; it arrives as a `reset` batch and truncate-applies
+    // through the normal route, which is also what fires `markReady` again.
+    if (this.torndown.delete(channel)) this.transport?.requestSnapshot?.(channel)
     for (const batch of this.pending.get(channel) ?? []) this.apply(sink, batch)
     this.pending.delete(channel)
-    return () => this.sinks.delete(channel)
+    return () => {
+      // a cleanup that fires after this channel re-registered belongs to the OLD
+      // sink: it must not unregister the live one.
+      if (this.sinks.get(channel) !== sink) return
+      this.sinks.delete(channel)
+      this.torndown.add(channel)
+    }
   }
 
   // push a set of channel batches up in one shot; resolves with the ack
@@ -109,6 +133,7 @@ export class SyncClient {
     this.tracker.rejectAll(new ClosedError())
     this.sinks.clear()
     this.pending.clear()
+    this.torndown.clear()
     this.transport.close?.()
     this.transport = undefined
   }

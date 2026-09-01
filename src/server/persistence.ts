@@ -74,7 +74,11 @@ export interface PersistenceAdapter {
   write(batches: WriteBatch[], identity?: WriteIdentity): Promise<SequencedBatch[]>
 
   // Full current state per collection + the latest seq, for a fresh connection.
-  snapshot(): Promise<SequencedBatch[]>
+  // Pass `channel` to snapshot that one collection alone — what a client asks for
+  // when a collection re-registers and its rows are gone (docs/architecture.md §8a).
+  // An unknown name returns no batches. Ignoring the argument is safe but wasteful:
+  // the caller sends only the batch for the channel it asked about.
+  snapshot(channel?: string): Promise<SequencedBatch[]>
 
   // The delta a reconnecting client missed — oplog entries after `since`, in
   // order. Returns `null` when `since` predates what's still retained (compacted

@@ -128,6 +128,54 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
     expect((await core.handleWrite(post(write('next', 'still serving')))).status).toBe(200)
   })
 
+  it('handleMessage answers a snapshot request with that channel alone, to the asking connection', async () => {
+    const { core, broadcasts } = await host()
+    await core.commit(write('a', 'one'))
+    const frames: SequencedBatch[] = []
+    await core.handleMessage((m) => frames.push(JSON.parse(m)), JSON.stringify({ snapshot: 'todos' }))
+
+    expect(frames).toHaveLength(1)
+    expect(frames[0]).toMatchObject({ channel: 'todos', reset: true, ready: true })
+    expect(frames[0].ops.map((op) => (op.value as any).id)).toEqual(['a'])
+    // the reply went to this connection only — nothing was fanned out
+    expect(broadcasts).toHaveLength(1) // the commit above, and nothing since
+  })
+
+  it('handleMessage drops an unknown channel and any frame that is not a snapshot request', async () => {
+    const { core } = await host()
+    const frames: string[] = []
+    const send = (m: string) => void frames.push(m)
+    for (const message of [
+      JSON.stringify({ snapshot: 'nope' }), // a channel this room does not serve
+      JSON.stringify({ snapshot: 42 }), // right key, wrong type
+      JSON.stringify({ cf_agent_use_chat_request: 'x' }), // a composed host's own frame
+      'not json at all',
+      new ArrayBuffer(4), // a binary frame
+    ]) {
+      await core.handleMessage(send, message)
+    }
+    expect(frames).toEqual([])
+  })
+
+  it('handleMessage serializes with a concurrent commit: the snapshot never lands before a seq it already carries', async () => {
+    const { core, broadcasts } = await host()
+    await core.commit(write('a', 'one'))
+    // the connection sees both the fan-out and its own snapshot reply, so collect
+    // them in one list — that list is what ordering is about.
+    const frames = broadcasts
+    const committing = core.commit(write('b', 'two'))
+    const answering = core.handleMessage((m) => frames.push(JSON.parse(m)), JSON.stringify({ snapshot: 'todos' }))
+    await Promise.all([committing, answering])
+
+    const seqs = frames.map((f) => Number(f.seq))
+    expect(seqs).toEqual([...seqs].sort((x, y) => x - y))
+    // the snapshot ran after the commit, so it carries that write's row and seq
+    const snapshot = frames[frames.length - 1]
+    expect(snapshot.reset).toBe(true)
+    expect(snapshot.ops.map((op) => (op.value as any).id).sort()).toEqual(['a', 'b'])
+    expect(Number(snapshot.seq)).toBe(Math.max(...seqs))
+  })
+
   it('answers a constraint rejection 409, and stays serving after it', async () => {
     const { core } = await host()
     await core.commit(write('dup', 'first'))

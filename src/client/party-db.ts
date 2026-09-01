@@ -5,7 +5,7 @@ import PartySocket from 'partysocket'
 import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
-import { isSequencedBatch, PROTO_PARAM, PROTO_VALUE, type SequencedBatch } from '../protocol.ts'
+import { isSequencedBatch, PROTO_PARAM, PROTO_VALUE, type SequencedBatch, type SnapshotRequest } from '../protocol.ts'
 
 // WebSocket close code the server uses when a room-aware auth check rejects the
 // connection (docs/auth.md §2). Unlike 1006 (network) / 1011 (server) / normal,
@@ -106,6 +106,12 @@ export function partyTransport(opts: {
       }
       if (!res.ok) throw new WriteError(res.status, await toWriteReject(res))
       return res.json()
+    },
+    // the only frame we ever write on the socket. PartySocket queues a send made
+    // while the socket is connecting and flushes it on open, so a request made
+    // during a reconnect still reaches the room.
+    requestSnapshot(channel) {
+      socket.send(JSON.stringify({ snapshot: channel } satisfies SnapshotRequest))
     },
     isConnecting: () => socket.readyState === socket.CONNECTING,
     onAuthError(listener) {
