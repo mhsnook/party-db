@@ -75,9 +75,9 @@ three issues touch `src/client/sync-client.ts` and `src/client/party-db.ts`.
 |-------|-------|---------------|------|--------|------------|--------|
 | A1 | #45 | Zod v4 `kindOf` reads v3 internals | server | S | — | DONE (PR #51) |
 | B1 | #48 + plan 007 | Drop non-`SequencedBatch` frames; client test gaps | client | M | — | DONE (PR #50) |
-| B2 | #46 | `Transport.close?()` / client teardown | client | S | B1 | TODO — next up |
-| B3 | #47 | Re-register after TanStack GC gets no snapshot | client | M | B2, **decision gate** | TODO |
-| C1 | #49 | Changed-columns-only updates + surface a no-row update | write path | M | — | TODO |
+| B2 | #46 | `Transport.close?()` / client teardown | client | S | B1 | DONE (PR #56) |
+| B3 | #47 | Re-register after TanStack GC gets no snapshot | client | M | B2, **decision gate** | TODO — last item |
+| C1 | #49 | Changed-columns-only updates + surface a no-row update | write path | M | — | DONE (PR #54, both parts) |
 
 ### Lane notes
 
@@ -116,10 +116,16 @@ three issues touch `src/client/sync-client.ts` and `src/client/party-db.ts`.
   B, so C1 runs in parallel with B2/B3. Part 2 changes observable behavior —
   a formerly "successful" missing-row update now rejects — which is the bug
   fix the issue asks for; say so in the PR body.
-- **Release note**: tag v0.0.3 once B2 and C1 land. B3 can trail into
-  v0.0.4 if the decision gate takes time.
+- **Release note**: the v0.0.3 checkpoint is reached (B2 and C1 landed);
+  the tag and version bump are not cut yet. B3 can trail into v0.0.4 if
+  the decision gate takes time.
 - Housekeeping 2026-08-28: #43 closed (shipped in v0.0.2, PR #44 + §15);
   #31 closed (shipped with #35; pinned by #50's transport tests).
+- 2026-09-01: PR #57 requires Zod v4, superseding #51's dual-spelling
+  fallback as the long-term posture. New issue #55 (declared tombstone
+  column / departures) is a design decision, not a scheduled task — it
+  says so itself; slot it only after the maintainer picks a direction
+  (remove-by-default vs keep-and-filter is the fork).
 
 ## Findings considered and rejected
 
