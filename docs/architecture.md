@@ -291,6 +291,10 @@ concurrent commit can't broadcast a newer seq to that socket before the snapshot
 lands. A request naming a channel the room doesn't serve is dropped, like any frame
 the server can't route (#48).
 
+An app therefore does not need to pin its collections — the standing no-op
+`subscribeChanges` that keeps GC from ever running (scribble-harness's workaround
+for #47) is no longer a contract a consumer has to know about.
+
 Two things are deliberately out of scope. `?since` connect behavior is untouched.
 And the request does not filter what that connection receives afterwards — every
 subscriber still gets every channel's fan-out; per-connection channel subscriptions
