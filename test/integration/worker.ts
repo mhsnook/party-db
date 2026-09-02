@@ -2,7 +2,7 @@
 // Object with SQLite. The integration test drives it through `SELF.fetch` — the
 // full HTTP + WebSocket path, partyserver routing, DO storage and all.
 
-import { routePartykitRequest, Server, type Connection, type ConnectionContext } from 'partyserver'
+import { routePartykitRequest, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver'
 import {
   PartyDbServer,
   PartyDbCore,
@@ -307,6 +307,14 @@ export class Composed extends Server {
     if (isPartyDbRequest(url)) return this.db.connect((message) => conn.send(message), url)
     // the host's own protocol on its own connections — never a party-db frame.
     conn.send('host: hello')
+  }
+
+  // party-db's one up-frame arrives here too. The core drops anything that isn't
+  // its own, so forwarding is safe on any connection; this host routes by the tag
+  // it already set, and its own protocol still gets every frame it owns.
+  onMessage(conn: Connection, message: WSMessage): void | Promise<void> {
+    if (conn.tags.includes('party-db')) return this.db.handleMessage((reply) => conn.send(reply), message)
+    // the host's own protocol handles its own connections' frames here.
   }
 
   onRequest(req: Request): Promise<Response> | Response {

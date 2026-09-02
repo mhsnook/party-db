@@ -10,7 +10,16 @@
 // holds the core instead". Tested copy: `Composed` in
 // `test/integration/worker.ts`. Design record: docs/architecture.md §15.
 
-import { PROTO_PARAM, PROTO_VALUE, type SequencedBatch, type WriteAck, type WriteBatch, type WriteReject } from '../protocol.ts'
+import {
+  isSnapshotRequest,
+  parseFrame,
+  PROTO_PARAM,
+  PROTO_VALUE,
+  type SequencedBatch,
+  type WriteAck,
+  type WriteBatch,
+  type WriteReject,
+} from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError, type PersistenceAdapter, type WriteIdentity } from './persistence.ts'
 import { warnUnenforcedAccess } from './access.ts'
@@ -130,6 +139,31 @@ export class PartyDbCore {
       const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
       const batches = delta ?? (await this.adapter.snapshot())
       for (const b of batches) send(JSON.stringify(b))
+    })
+  }
+
+  // Serve one frame a client sent UP the socket. Today there is exactly one:
+  // `{ snapshot: <channel> }`, which a client sends when a collection registers
+  // a second time and its rows are gone (docs/architecture.md §8a, #47). We answer
+  // with an ordinary snapshot batch for that channel — `reset: true`, so the
+  // client truncates before applying — to this connection alone.
+  //
+  // Everything else is dropped: a frame that isn't ours (a composed host shares
+  // the socket, §15) and a channel this room doesn't serve, mirroring the client's
+  // own posture on frames it can't route (#48). A drop is silent — a socket has no
+  // reply channel for an error, and the client is not waiting on one.
+  //
+  // Runs through the same queue as writes and connects, so the read and its send
+  // cannot interleave with a concurrent commit's broadcast: the client sees the
+  // snapshot, then every seq after it, in order.
+  handleMessage(send: (message: string) => void, message: unknown): Promise<void> {
+    const channel = parseFrame(message, isSnapshotRequest)?.snapshot
+    if (channel === undefined || !this.channels.has(channel)) return Promise.resolve()
+    return this.serialize(async () => {
+      const batches = await this.adapter.snapshot(channel)
+      // an adapter that ignores the argument hands back every channel; send only
+      // the one that was asked for.
+      for (const b of batches) if (b.channel === channel) send(JSON.stringify(b))
     })
   }
 

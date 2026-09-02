@@ -28,6 +28,7 @@ const hoisted = vi.hoisted(() => {
     removeEventListener(type: string, h: (e: any) => void) {
       this.listeners[type] = (this.listeners[type] ?? []).filter((x) => x !== h)
     }
+    send = vi.fn()
     // the real PartySocket.close() stops the re-dial and dispatches the close
     // event synchronously, with code 1000 unless told otherwise.
     close = vi.fn((code = 1000, reason = '') => {
@@ -340,3 +341,12 @@ describe('partyTransport drops frames that are not ours', () => {
   })
 })
 
+
+describe('partyTransport snapshot request (the one up-frame)', () => {
+  it('sends { snapshot: <channel> } on the socket', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    transport.requestSnapshot!('todos')
+    // the literal frame is the wire contract the server parses — pinned here.
+    expect(lastSocket().send.mock.calls).toEqual([['{"snapshot":"todos"}']])
+  })
+})

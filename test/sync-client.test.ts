@@ -10,6 +10,7 @@ function fakeTransport() {
   let onBatch: ((b: SequencedBatch) => void) | undefined
   const send = vi.fn(async () => ({ accepted: [] as { channel: string; seq: number }[] }))
   const close = vi.fn()
+  const requestSnapshot = vi.fn()
   const transport: Transport = {
     subscribe(cb) {
       onBatch = cb
@@ -19,25 +20,29 @@ function fakeTransport() {
     },
     send,
     close,
+    requestSnapshot,
   }
   return {
     transport,
     send,
     close,
+    requestSnapshot,
     push: (b: SequencedBatch) => onBatch?.(b),
   }
 }
 
 function recorder() {
   const ops: unknown[] = []
+  const markReady = vi.fn()
+  const truncate = vi.fn()
   const sink: ChannelSink = {
     begin: () => {},
     write: (op) => void ops.push(op.value),
     commit: () => {},
-    markReady: () => {},
-    truncate: () => {},
+    markReady,
+    truncate,
   }
-  return { sink, ops }
+  return { sink, ops, markReady, truncate }
 }
 
 const seqBatch = (channel: string, seq: number, value: unknown): SequencedBatch => ({
@@ -250,5 +255,108 @@ describe('SyncClient send + close', () => {
     client.register('todos', sink)
     t.push(seqBatch('todos', 1, { id: 'a' }))
     expect(ops).toEqual([]) // stream detached, nothing routed
+  })
+})
+
+// The re-register path: TanStack DB garbage-collects a collection when its last
+// subscriber leaves, then restarts sync on the next access — a second `register`
+// against an EMPTY collection. Nothing replays it, so the client asks the server
+// for a fresh snapshot (issue #47).
+describe('SyncClient re-register asks for a snapshot', () => {
+  it('asks for nothing on a first register', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    client.register('todos', recorder().sink)
+    expect(t.requestSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('asks exactly once when a torn-down channel registers again', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    client.register('todos', recorder().sink)()
+    client.register('todos', recorder().sink)
+
+    expect(t.requestSnapshot).toHaveBeenCalledTimes(1)
+    expect(t.requestSnapshot).toHaveBeenCalledWith('todos')
+  })
+
+  it('replays the reset snapshot into the fresh sink, truncate and ready included', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    const first = recorder()
+    client.register('todos', first.sink)()
+
+    const second = recorder()
+    client.register('todos', second.sink)
+    t.push({ channel: 'todos', seq: 4, ops: [{ type: 'insert', value: { id: 'a' } }], ready: true, reset: true })
+
+    expect(second.ops).toEqual([{ id: 'a' }])
+    expect(second.truncate).toHaveBeenCalledTimes(1)
+    expect(second.markReady).toHaveBeenCalledTimes(1)
+    // the reply is for the sink that asked: the collection GC dropped never sees it
+    expect(first.ops).toEqual([])
+  })
+
+  it('drops what buffered while the sink was gone: the snapshot carries it', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    client.register('todos', recorder().sink)()
+    t.push(seqBatch('todos', 2, { id: 'b' })) // streamed in with no sink to take it
+
+    const second = recorder()
+    client.register('todos', second.sink)
+    expect(second.ops).toEqual([]) // not written, then truncated away microseconds later
+
+    // the requested snapshot is what fills it, and it carries that row
+    t.push({ channel: 'todos', seq: 2, ops: [{ type: 'insert', value: { id: 'b' } }], ready: true, reset: true })
+    expect(second.ops).toEqual([{ id: 'b' }])
+  })
+
+  it('still replays the buffer for a transport that cannot ask', () => {
+    const t = fakeTransport()
+    const { requestSnapshot, ...bare } = t.transport
+    const client = new SyncClient(bare)
+    client.register('todos', recorder().sink)()
+    t.push(seqBatch('todos', 2, { id: 'b' }))
+
+    const second = recorder()
+    client.register('todos', second.sink)
+    expect(second.ops).toEqual([{ id: 'b' }]) // the only fill it will get
+  })
+
+  it('asks again on each later teardown, and never for a channel still registered', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    const cleanup = client.register('todos', recorder().sink)
+    cleanup()
+    cleanup() // idempotent: a second call is not a second teardown
+    client.register('todos', recorder().sink)()
+    client.register('todos', recorder().sink)
+    expect(t.requestSnapshot.mock.calls).toEqual([['todos'], ['todos']])
+  })
+
+  it("keeps the old behavior for a transport that can't request one", () => {
+    const t = fakeTransport()
+    const { requestSnapshot, ...bare } = t.transport
+    const client = new SyncClient(bare)
+    const { sink, ops } = recorder()
+    client.register('todos', recorder().sink)()
+    client.register('todos', sink)
+
+    // still fed by whatever streams in next
+    t.push(seqBatch('todos', 1, { id: 'a' }))
+    expect(ops).toEqual([{ id: 'a' }])
+  })
+
+  it('lets a stale cleanup fire without unregistering the live sink', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    const staleCleanup = client.register('todos', recorder().sink)
+    const live = recorder()
+    client.register('todos', live.sink) // TanStack re-synced before the old cleanup ran
+    staleCleanup()
+
+    t.push(seqBatch('todos', 1, { id: 'a' }))
+    expect(live.ops).toEqual([{ id: 'a' }])
   })
 })

@@ -24,7 +24,7 @@ import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'
 import { pgDecodeRow, pgEncode } from './columns.ts'
-import { buildPlans, resolveStructured, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
+import { buildPlans, resolveStructured, snapshotPlans, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
 
 // The narrow slice of a node-postgres-style driver the adapter needs — `query(text,
 // values) → { rows }`, the shape both `pg.Client` and a Hyperdrive-backed client
@@ -234,14 +234,18 @@ export class PgAdapter implements PersistenceAdapter {
     await c.query(toPg(`DELETE FROM _oplog WHERE seq <= (SELECT MAX(seq) FROM _oplog) - ?`), [this.retention])
   }
 
-  async snapshot(): Promise<SequencedBatch[]> {
+  // `channel` narrows the snapshot to one collection — the re-register request
+  // (docs/architecture.md §8a). Unknown name → no batches.
+  async snapshot(channel?: string): Promise<SequencedBatch[]> {
+    const structured = snapshotPlans(this.plans, channel).filter((p): p is StructuredPlan => p.kind === 'structured')
+    // nothing to read (an unknown or schema-less channel): don't open a transaction
+    if (!structured.length) return []
     const c = await this.conn()
     // one REPEATABLE READ transaction so the watermark and every table are a single
     // consistent cut — no write can slip between reading MAX(seq) and the rows.
     // (The serialize queue already excludes concurrent writes; this locks it in.)
     try {
       await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ')
-      const structured = [...this.plans.values()].filter((p): p is StructuredPlan => p.kind === 'structured')
       const seqRes = await c.query<{ s: unknown }>(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`)
       const seq = Number(seqRes.rows[0].s)
       const out: SequencedBatch[] = []

@@ -36,7 +36,9 @@ Every seam a write crosses, in order. Grep the named symbol to land in the right
 
 The read path is the same pipe backwards. On connect the client sends `?since=<seq>` and
 `PartyDbServer.onConnect` replays the `_oplog` delta; with no cursor, or a cursor older than
-retention, the server sends a full snapshot marked `reset: true` instead.
+retention, the server sends a full snapshot marked `reset: true` instead. A collection that
+registers a SECOND time (TanStack GC dropped the first one) asks for that channel's snapshot
+with a `{ snapshot }` frame on the socket — `PartyDbCore.handleMessage`, §8a.
 
 Vocabulary, used exactly this way everywhere:
 
@@ -101,7 +103,8 @@ records decisions the maintainer already made, so nobody re-audits them.
 Four files hold the whole contract. Read them before changing anything under `src/`.
 
 - **`src/protocol.ts`** — the wire, and it is deliberately tiny: `WriteEvent` (= TanStack's
-  `Omit<ChangeMessage, 'key'>`), `WriteBatch`, `SequencedBatch`, `Cursor`, `WriteAck`, `WriteReject`.
+  `Omit<ChangeMessage, 'key'>`), `WriteBatch`, `SequencedBatch`, `Cursor`, `WriteAck`, `WriteReject`,
+  and `SnapshotRequest` — the one frame a client sends UP the socket (`docs/architecture.md` §8a).
 - **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access? }`, the one
   collection interface both sides import, plus `definePartyCollection` for inference.
 - **`src/server/persistence.ts`** — `PersistenceAdapter` (the storage seam), `WriteIdentity`,
@@ -120,8 +123,8 @@ Four files hold the whole contract. Read them before changing anything under `sr
 
 **Server**
 
-- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onStart` / `.createAdapter` — `src/server/party-db-server.ts`, the thin subclass
-- `PartyDbCore.init` / `.connect` / `.handleWrite` / `.commit` / `.serialize` / `isPartyDbRequest` — `src/server/core.ts`, the composable core for a host that can't subclass (`docs/architecture.md` §15)
+- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onMessage` / `.onStart` / `.createAdapter` — `src/server/party-db-server.ts`, the thin subclass
+- `PartyDbCore.init` / `.connect` / `.handleMessage` / `.handleWrite` / `.commit` / `.serialize` / `isPartyDbRequest` — `src/server/core.ts`, the composable core for a host that can't subclass (`docs/architecture.md` §15)
 - `authHooks(authorize)` / `bearer(req)` / `getTokenFromRequest(req)` — `src/server/auth.ts`
 - `buildPlans` / `structuredStmt` / `blobStmt` / `resolveStructured` / `resolvedOpJsonExpr` / `oplogInsertStmt` / `toPg` — `src/server/statements.ts`
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`

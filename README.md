@@ -200,7 +200,7 @@ one, because only the oplog feeds the stream. See
 `PartyDbServer` is a thin subclass over `PartyDbCore`. If your Durable Object
 already extends another partyserver `Server` — an agents-SDK `AIChatAgent`, say —
 you can't subclass `PartyDbServer` too. Hold the core instead: construct it in
-`onStart`, call `init()`, and forward `onConnect` / `onRequest` to it.
+`onStart`, call `init()`, and forward `onConnect` / `onMessage` / `onRequest` to it.
 
 The party-db client marks every connect and write POST with `?proto=party-db`,
 and the server exports `isPartyDbRequest`, so your server can route party-db
@@ -237,6 +237,14 @@ export class ArticleAgent extends AIChatAgent<Env> {
   onConnect(conn, ctx) {
     if (isPartyDbRequest(ctx.request)) return this.db.connect((m) => conn.send(m), ctx.request.url)
     // ...your own socket traffic
+  }
+
+  // party-db's one up-frame (a re-registered collection asking for its snapshot).
+  // The core drops any frame that isn't its own, so forward every message — then
+  // hand it to your own protocol as before. Don't replace your handler with this one.
+  onMessage(conn, message) {
+    this.db.handleMessage((m) => conn.send(m), message)
+    return super.onMessage(conn, message) // ...your own socket traffic
   }
 
   onRequest(req) {
@@ -358,9 +366,9 @@ pnpm test:pg && pnpm test:integration
 
 | File | Role |
 | --- | --- |
-| `src/protocol.ts` | wire contract: `WriteEvent` / `WriteBatch` / `SequencedBatch` / `WriteAck` |
+| `src/protocol.ts` | wire contract: `WriteEvent` / `WriteBatch` / `SequencedBatch` / `WriteAck` / `SnapshotRequest` |
 | `src/client/apply.ts` | `applyBatch(sink, batch)` — the client's batch-apply helper (drives TanStack's `sync`) |
-| `src/client/sync-client.ts` | one stream + channel registry + `waitForSeq` settlement |
+| `src/client/sync-client.ts` | one stream + channel registry + `waitForSeq` settlement; asks for a snapshot when a collection re-registers |
 | `src/client/seq-tracker.ts` | pure settlement: per-channel high-water mark, waiters, timeout |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |

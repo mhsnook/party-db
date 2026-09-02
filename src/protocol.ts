@@ -84,3 +84,39 @@ export function isSequencedBatch(value: unknown): value is SequencedBatch {
   const frame = value as Partial<SequencedBatch>
   return typeof frame.channel === 'string' && Array.isArray(frame.ops)
 }
+
+// The one frame a client sends UP the socket: "re-send me this channel." The
+// reply is not a frame type of its own — the server answers with an ordinary
+// snapshot batch for that channel (`reset: true`, `ready: true`), to the asking
+// connection alone.
+//
+// The client sends it when a collection registers a second time, after TanStack
+// DB's GC dropped the first sink and its rows (#47). Connecting still carries
+// `?since`; this is the only other way to ask for state.
+export type SnapshotRequest = {
+  // the channel to re-send. A name the room doesn't serve is dropped.
+  snapshot: string
+}
+
+// Same posture as `isSequencedBatch`: a host may share the socket, so prove the
+// frame is ours before acting on it.
+export function isSnapshotRequest(value: unknown): value is SnapshotRequest {
+  if (typeof value !== 'object' || value === null) return false
+  return typeof (value as Partial<SnapshotRequest>).snapshot === 'string'
+}
+
+// Decode one socket frame of ours, or null when it isn't one. Both directions
+// need this and for the same reason: a composed host shares the room's socket
+// (docs/architecture.md §15), so the stream carries frames party-db did not send
+// — binary, text that isn't JSON, JSON of another protocol. Pass the guard for
+// the direction you're reading: `isSequencedBatch` coming down, `isSnapshotRequest`
+// going up.
+export function parseFrame<T>(data: unknown, guard: (value: unknown) => value is T): T | null {
+  if (typeof data !== 'string') return null
+  try {
+    const frame: unknown = JSON.parse(data)
+    return guard(frame) ? frame : null
+  } catch {
+    return null
+  }
+}
