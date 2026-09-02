@@ -12,6 +12,7 @@
 
 import {
   isSnapshotRequest,
+  parseFrame,
   PROTO_PARAM,
   PROTO_VALUE,
   type SequencedBatch,
@@ -156,8 +157,8 @@ export class PartyDbCore {
   // cannot interleave with a concurrent commit's broadcast: the client sees the
   // snapshot, then every seq after it, in order.
   handleMessage(send: (message: string) => void, message: unknown): Promise<void> {
-    const channel = snapshotChannel(message)
-    if (channel === null || !this.channels.has(channel)) return Promise.resolve()
+    const channel = parseFrame(message, isSnapshotRequest)?.snapshot
+    if (channel === undefined || !this.channels.has(channel)) return Promise.resolve()
     return this.serialize(async () => {
       const batches = await this.adapter.snapshot(channel)
       // an adapter that ignores the argument hands back every channel; send only
@@ -306,20 +307,6 @@ export class PartyDbCore {
       return sequenced
     })
   }
-}
-
-// Read the channel out of a `{ snapshot }` frame, or null when the frame isn't
-// one. Only text frames are parsed: a host sharing the socket may send binary,
-// and JSON that isn't ours fails the type guard.
-function snapshotChannel(message: unknown): string | null {
-  if (typeof message !== 'string') return null
-  let frame: unknown
-  try {
-    frame = JSON.parse(message)
-  } catch {
-    return null
-  }
-  return isSnapshotRequest(frame) ? frame.snapshot : null
 }
 
 // Parse the `?since` query param into a usable cursor. null → snapshot: missing,

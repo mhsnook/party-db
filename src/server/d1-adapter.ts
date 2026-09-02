@@ -27,6 +27,7 @@ import {
   buildPlans,
   oplogInsertStmt,
   resolveStructured,
+  snapshotPlans,
   structuredStmt,
   updateGuardStmt,
   MISSED_UPDATE_GUARD_ERROR,
@@ -142,9 +143,9 @@ export class D1Adapter implements PersistenceAdapter {
     // one read batch() — D1 runs it transactionally, so the watermark and every
     // table are a single consistent cut. `ready`/`reset` mirror the embedded
     // adapter: a fresh connection's snapshot replaces each channel.
-    const structured = [...this.plans.values()].filter(
-      (p): p is StructuredPlan => p.kind === 'structured' && (channel === undefined || p.name === channel),
-    )
+    const structured = snapshotPlans(this.plans, channel).filter((p): p is StructuredPlan => p.kind === 'structured')
+    // nothing to read (an unknown or schema-less channel): don't spend a round trip
+    if (!structured.length) return []
     const results = await this.d1.batch<Record<string, unknown>>([
       this.d1.prepare(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`),
       ...structured.map((p) => this.d1.prepare(`SELECT * FROM "${p.name}"`)),

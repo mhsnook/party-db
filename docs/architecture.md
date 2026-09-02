@@ -298,9 +298,20 @@ for #47) is no longer a contract a consumer has to know about.
 Two things are deliberately out of scope. `?since` connect behavior is untouched.
 And the request does not filter what that connection receives afterwards — every
 subscriber still gets every channel's fan-out; per-connection channel subscriptions
-are the `subscribe(channels[])` design, not this. A transport with no
-`requestSnapshot` keeps the old behavior: the restarted collection fills on the next
-batch that streams in.
+are the `subscribe(channels[])` design, not this.
+
+A transport that doesn't implement `requestSnapshot` degrades, and not gently: the
+restarted collection still takes whatever streams in next, but nothing marks it
+ready again — only a `ready` batch does, and a delta isn't one — so it stays in
+`loading` and `preload()` never resolves. Implement the hook in a custom transport.
+
+The frame is also the one party-db input no gate can reach. A POST passes the lobby
+(§10) and the size caps; a connect passes the lobby and the client's reconnect
+backoff; a frame on an already-open socket passes neither, and it is triggered by a
+UI action rather than a network event. So a client that re-registers in a loop can
+queue full-table reads ahead of the room's writes. Accepted pre-1.0, and named here
+so it isn't rediscovered: the fix, when it's wanted, is to coalesce a channel's
+in-flight request per connection rather than to rate-limit the door.
 
 ## 9. Broadcast inline, after commit, before responding
 
@@ -516,7 +527,10 @@ extends another partyserver `Server`, such as an agents-SDK `AIChatAgent`
 instead: it constructs the core in its `onStart` over its own storage, calls
 `init()`, and forwards its `onConnect` / `onMessage` / `onRequest` events. Forwarding
 `onMessage` is what serves §8a's snapshot request; a host may forward every message,
-since the core drops any frame that is not its own. The README section "A
+since the core drops any frame that is not its own — but it forwards *as well as*
+running its own dispatch, never instead of it, or the host loses its own protocol.
+A `PartyDbServer` subclass that overrides `onMessage` chains with
+`super.onMessage(conn, message)` for the same reason. The README section "A
 Server that can't subclass holds the core instead" has the worked example; `Composed`
 in `test/integration/worker.ts` is the tested copy.
 

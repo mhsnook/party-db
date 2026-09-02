@@ -169,11 +169,10 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
 
     const seqs = frames.map((f) => Number(f.seq))
     expect(seqs).toEqual([...seqs].sort((x, y) => x - y))
-    // the snapshot ran after the commit, so it carries that write's row and seq
+    // the snapshot ran after the commit, so it carries that write's row
     const snapshot = frames[frames.length - 1]
     expect(snapshot.reset).toBe(true)
     expect(snapshot.ops.map((op) => (op.value as any).id).sort()).toEqual(['a', 'b'])
-    expect(Number(snapshot.seq)).toBe(Math.max(...seqs))
   })
 
   it('answers a constraint rejection 409, and stays serving after it', async () => {

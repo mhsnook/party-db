@@ -310,16 +310,11 @@ export class Composed extends Server {
   }
 
   // party-db's one up-frame arrives here too. The core drops anything that isn't
-  // its own, so the host can forward every message; this one routes by tag anyway,
-  // because its own protocol owns the other connections.
+  // its own, so forwarding is safe on any connection; this host routes by the tag
+  // it already set, and its own protocol still gets every frame it owns.
   onMessage(conn: Connection, message: WSMessage): void | Promise<void> {
-    if (this.isPartyDb(conn)) return this.db.handleMessage((reply) => conn.send(reply), message)
-    // the host's own protocol would handle its frames here.
-  }
-
-  private isPartyDb(conn: Connection): boolean {
-    for (const c of this.getConnections('party-db')) if (c.id === conn.id) return true
-    return false
+    if (conn.tags.includes('party-db')) return this.db.handleMessage((reply) => conn.send(reply), message)
+    // the host's own protocol handles its own connections' frames here.
   }
 
   onRequest(req: Request): Promise<Response> | Response {

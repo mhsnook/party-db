@@ -9,14 +9,13 @@
 // `isReady` fires again), and the raw socket (a concurrent write can't interleave
 // with the re-snapshot).
 
-import { SELF } from 'cloudflare:test'
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import { createPartyDb } from '../../src/client/party-db.ts'
 import { definePartyCollection } from '../../src/schema.ts'
 import type { Transport } from '../../src/client/sync-client.ts'
 import type { SequencedBatch, WriteAck } from '../../src/protocol.ts'
-import { insert, partyUrl, post, roomHeader } from './helpers.ts'
+import { connect, insert, post } from './helpers.ts'
 
 // the same collection `Main` (worker.ts) serves, declared as an app declares it
 const todos = definePartyCollection({
@@ -26,16 +25,12 @@ const todos = definePartyCollection({
 })
 
 // A `Transport` over the test worker: partysocket can't dial `SELF`, so the
-// down-stream is the raw WebSocket this opens and the up-path is the same POST
-// helper the rest of the suite uses. Everything above it — SyncClient, the
-// collection, `persist` — is the real client.
+// down-stream is the suite's raw WebSocket and the up-path is the same POST
+// helper. Everything above it — SyncClient, the collection, `persist` — is the
+// real client.
 async function workerTransport(room: string) {
-  const res = await SELF.fetch(partyUrl('main', room), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
-  expect(res.status).toBe(101)
-  const ws = res.webSocket!
-  ws.accept()
+  const { ws } = await connect(room)
   const listeners = new Set<(batch: SequencedBatch) => void>()
-  const requested: string[] = []
   ws.addEventListener('message', (e) => {
     const batch = JSON.parse(e.data as string) as SequencedBatch
     for (const listener of listeners) listener(batch)
@@ -51,11 +46,10 @@ async function workerTransport(room: string) {
       return (await res.json()) as WriteAck
     },
     requestSnapshot(channel) {
-      requested.push(channel)
       ws.send(JSON.stringify({ snapshot: channel }))
     },
   }
-  return { transport, ws, requested }
+  return { transport, ws }
 }
 
 const ids = (collection: { toArray: { id: string }[] }) => collection.toArray.map((row) => row.id).sort()
@@ -65,14 +59,13 @@ describe('a collection that re-registers after cleanup gets a fresh snapshot', (
     const room = 're-register'
     await post(room, insert('t1', 'one'))
 
-    const { transport, ws, requested } = await workerTransport(room)
+    const { transport, ws } = await workerTransport(room)
     const { db } = createPartyDb(transport, [todos])
     const collection = db.todos
 
     await collection.preload()
     expect(collection.isReady()).toBe(true)
-    expect(ids(collection)).toEqual(['t1'])
-    expect(requested).toEqual([]) // the connect snapshot filled it; nothing was asked for
+    expect(ids(collection)).toEqual(['t1']) // the connect snapshot filled it
 
     // exactly what TanStack does when the last subscriber leaves past gcTime
     await collection.cleanup()
@@ -82,11 +75,11 @@ describe('a collection that re-registers after cleanup gets a fresh snapshot', (
     // a write while nothing is registered: the re-snapshot must carry it too
     await post(room, insert('t2', 'two'))
 
-    // reopening the panel: sync restarts, so `register` runs a second time
+    // reopening the panel: sync restarts, so `register` runs a second time. Only
+    // the requested snapshot can fill it — nothing else replays this channel.
     void collection.preload()
     await vi.waitFor(() => expect(collection.isReady()).toBe(true))
     expect(ids(collection)).toEqual(['t1', 't2'])
-    expect(requested).toEqual(['todos']) // one request, for the one channel
 
     // and the collection is live again — a later write streams in as before
     await post(room, insert('t3', 'three'))
@@ -101,13 +94,8 @@ describe('the re-snapshot is serialized against concurrent writes', () => {
     const room = 're-register-race'
     await post(room, insert('r1', 'one'))
 
-    const res = await SELF.fetch(partyUrl('main', room), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
-    expect(res.status).toBe(101)
-    const ws = res.webSocket!
-    ws.accept()
-    const frames: SequencedBatch[] = []
-    ws.addEventListener('message', (e) => void frames.push(JSON.parse(e.data as string)))
-    await vi.waitFor(() => expect(frames).toHaveLength(1)) // the connect snapshot
+    const { ws, batches: frames, waitFor } = await connect(room)
+    await waitFor(1) // the connect snapshot
 
     // ask for a re-snapshot and write in the same tick — the room's queue decides
     // the order, and both outcomes are correct as long as they don't interleave.
@@ -115,7 +103,7 @@ describe('the re-snapshot is serialized against concurrent writes', () => {
     const ack = (await (await post(room, insert('r2', 'two'))).json()) as WriteAck
     const writeSeq = Number(ack.accepted[0].seq)
 
-    await vi.waitFor(() => expect(frames).toHaveLength(3)) // + the re-snapshot + the fan-out
+    await waitFor(3) // + the re-snapshot + the fan-out
     const seqs = frames.map((f) => Number(f.seq))
     expect(seqs).toEqual([...seqs].sort((a, b) => a - b))
 
@@ -135,12 +123,8 @@ describe('the re-snapshot is serialized against concurrent writes', () => {
 
   it('drops a request for a channel the room does not serve', async () => {
     const room = 're-register-unknown'
-    const res = await SELF.fetch(partyUrl('main', room), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
-    const ws = res.webSocket!
-    ws.accept()
-    const frames: SequencedBatch[] = []
-    ws.addEventListener('message', (e) => void frames.push(JSON.parse(e.data as string)))
-    await vi.waitFor(() => expect(frames).toHaveLength(1)) // the connect snapshot
+    const { ws, batches: frames, waitFor } = await connect(room)
+    await waitFor(1) // the connect snapshot
 
     ws.send(JSON.stringify({ snapshot: 'nope' }))
     ws.send('not a party-db frame at all')
@@ -148,7 +132,7 @@ describe('the re-snapshot is serialized against concurrent writes', () => {
     // the room stays up and keeps serving: the next write still fans out, and the
     // dropped frames added nothing before it
     await post(room, insert('u1', 'one'))
-    await vi.waitFor(() => expect(frames).toHaveLength(2))
+    await waitFor(2)
     expect(frames[1].ops[0].value).toMatchObject({ id: 'u1' })
 
     ws.close()

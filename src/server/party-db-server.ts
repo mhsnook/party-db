@@ -111,6 +111,10 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // The one frame a client sends up the socket: `{ snapshot: <channel> }`, from a
   // collection that registered a second time (docs/architecture.md §8a). The core
   // answers this connection alone; anything else it drops.
+  //
+  // Serving your own socket traffic from the same room? Override this and chain —
+  // `return super.onMessage(conn, message)` — the way `onStart` does above. An
+  // override that doesn't chain leaves a re-registered collection empty.
   onMessage(conn: Connection, message: WSMessage): Promise<void> {
     return this.core.handleMessage((reply) => conn.send(reply), message)
   }

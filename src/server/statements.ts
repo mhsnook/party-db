@@ -53,6 +53,15 @@ export function buildPlans(collections: PartyCollection<any>[]): Map<string, Pla
   return plans
 }
 
+// The plans one snapshot covers: every declared collection, or just the one a
+// client named in a `{ snapshot }` request (architecture §8a). A name the room
+// doesn't serve selects nothing, so the adapter reads no tables at all.
+export function snapshotPlans(plans: Map<string, Plan>, channel?: string): Plan[] {
+  if (channel === undefined) return [...plans.values()]
+  const plan = plans.get(channel)
+  return plan ? [plan] : []
+}
+
 export type Statement = { sql: string; binds: unknown[] }
 
 // CRUD against your real columns for one structured op. `insert`/`update`/`delete`

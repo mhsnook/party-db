@@ -104,3 +104,19 @@ export function isSnapshotRequest(value: unknown): value is SnapshotRequest {
   if (typeof value !== 'object' || value === null) return false
   return typeof (value as Partial<SnapshotRequest>).snapshot === 'string'
 }
+
+// Decode one socket frame of ours, or null when it isn't one. Both directions
+// need this and for the same reason: a composed host shares the room's socket
+// (docs/architecture.md §15), so the stream carries frames party-db did not send
+// — binary, text that isn't JSON, JSON of another protocol. Pass the guard for
+// the direction you're reading: `isSequencedBatch` coming down, `isSnapshotRequest`
+// going up.
+export function parseFrame<T>(data: unknown, guard: (value: unknown) => value is T): T | null {
+  if (typeof data !== 'string') return null
+  try {
+    const frame: unknown = JSON.parse(data)
+    return guard(frame) ? frame : null
+  } catch {
+    return null
+  }
+}

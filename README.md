@@ -240,9 +240,11 @@ export class ArticleAgent extends AIChatAgent<Env> {
   }
 
   // party-db's one up-frame (a re-registered collection asking for its snapshot).
-  // The core drops any frame that isn't its own, so forwarding every message is safe.
+  // The core drops any frame that isn't its own, so forward every message — then
+  // hand it to your own protocol as before. Don't replace your handler with this one.
   onMessage(conn, message) {
-    return this.db.handleMessage((m) => conn.send(m), message)
+    this.db.handleMessage((m) => conn.send(m), message)
+    return super.onMessage(conn, message) // ...your own socket traffic
   }
 
   onRequest(req) {

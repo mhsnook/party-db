@@ -33,25 +33,16 @@ function fakeTransport() {
 
 function recorder() {
   const ops: unknown[] = []
-  let truncated = 0
-  let ready = 0
+  const markReady = vi.fn()
+  const truncate = vi.fn()
   const sink: ChannelSink = {
     begin: () => {},
     write: (op) => void ops.push(op.value),
     commit: () => {},
-    markReady: () => void ready++,
-    truncate: () => void truncated++,
+    markReady,
+    truncate,
   }
-  return {
-    sink,
-    ops,
-    get truncated() {
-      return truncated
-    },
-    get ready() {
-      return ready
-    },
-  }
+  return { sink, ops, markReady, truncate }
 }
 
 const seqBatch = (channel: string, seq: number, value: unknown): SequencedBatch => ({
@@ -300,10 +291,37 @@ describe('SyncClient re-register asks for a snapshot', () => {
     t.push({ channel: 'todos', seq: 4, ops: [{ type: 'insert', value: { id: 'a' } }], ready: true, reset: true })
 
     expect(second.ops).toEqual([{ id: 'a' }])
-    expect(second.truncated).toBe(1)
-    expect(second.ready).toBe(1)
+    expect(second.truncate).toHaveBeenCalledTimes(1)
+    expect(second.markReady).toHaveBeenCalledTimes(1)
     // the reply is for the sink that asked: the collection GC dropped never sees it
     expect(first.ops).toEqual([])
+  })
+
+  it('drops what buffered while the sink was gone: the snapshot carries it', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    client.register('todos', recorder().sink)()
+    t.push(seqBatch('todos', 2, { id: 'b' })) // streamed in with no sink to take it
+
+    const second = recorder()
+    client.register('todos', second.sink)
+    expect(second.ops).toEqual([]) // not written, then truncated away microseconds later
+
+    // the requested snapshot is what fills it, and it carries that row
+    t.push({ channel: 'todos', seq: 2, ops: [{ type: 'insert', value: { id: 'b' } }], ready: true, reset: true })
+    expect(second.ops).toEqual([{ id: 'b' }])
+  })
+
+  it('still replays the buffer for a transport that cannot ask', () => {
+    const t = fakeTransport()
+    const { requestSnapshot, ...bare } = t.transport
+    const client = new SyncClient(bare)
+    client.register('todos', recorder().sink)()
+    t.push(seqBatch('todos', 2, { id: 'b' }))
+
+    const second = recorder()
+    client.register('todos', second.sink)
+    expect(second.ops).toEqual([{ id: 'b' }]) // the only fill it will get
   })
 
   it('asks again on each later teardown, and never for a channel still registered', () => {
@@ -319,11 +337,11 @@ describe('SyncClient re-register asks for a snapshot', () => {
 
   it("keeps the old behavior for a transport that can't request one", () => {
     const t = fakeTransport()
-    const { requestSnapshot, ...bare } = t.transport as Transport & { requestSnapshot: unknown }
+    const { requestSnapshot, ...bare } = t.transport
     const client = new SyncClient(bare)
     const { sink, ops } = recorder()
     client.register('todos', recorder().sink)()
-    expect(() => client.register('todos', sink)).not.toThrow()
+    client.register('todos', sink)
 
     // still fed by whatever streams in next
     t.push(seqBatch('todos', 1, { id: 'a' }))

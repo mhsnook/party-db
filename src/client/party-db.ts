@@ -5,25 +5,12 @@ import PartySocket from 'partysocket'
 import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
-import { isSequencedBatch, PROTO_PARAM, PROTO_VALUE, type SequencedBatch, type SnapshotRequest } from '../protocol.ts'
+import { isSequencedBatch, parseFrame, PROTO_PARAM, PROTO_VALUE, type SnapshotRequest } from '../protocol.ts'
 
 // WebSocket close code the server uses when a room-aware auth check rejects the
 // connection (docs/auth.md §2). Unlike 1006 (network) / 1011 (server) / normal,
 // re-dialing can't fix it — the same token loops — so we treat it as terminal.
 const CLOSE_POLICY_VIOLATION = 1008
-
-// Decode one socket frame, or null if it isn't ours. A composed host shares the
-// room's socket (docs/architecture.md §15), so the stream carries frames party-db
-// did not send: binary, text that isn't JSON, or JSON with no channel to route by.
-function parseFrame(data: unknown): SequencedBatch | null {
-  if (typeof data !== 'string') return null
-  try {
-    const frame: unknown = JSON.parse(data)
-    return isSequencedBatch(frame) ? frame : null
-  } catch {
-    return null
-  }
-}
 
 // The DO / PartyKit transport: down = the partysocket (hibernatable WS on the
 // server), up = POST to the same room (so the socket can hibernate).
@@ -74,7 +61,7 @@ export function partyTransport(opts: {
   return {
     subscribe(onBatch) {
       const handler = (e: MessageEvent) => {
-        const batch = parseFrame(e.data)
+        const batch = parseFrame(e.data, isSequencedBatch)
         if (!batch) return
         if (typeof batch.seq === 'number') lastSeq = Math.max(lastSeq ?? 0, batch.seq)
         onBatch(batch)
