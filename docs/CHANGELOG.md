@@ -1,5 +1,27 @@
 # Changes
 
+## 2026-09-03 - v0.0.4
+
+Fixed:
+
+- A collection that registers a second time reopened blank (#47, #58). TanStack DB
+  garbage-collects a collection once its last subscriber leaves, and restarts sync on
+  the next access. That second `register` landed on an empty collection which nothing
+  replayed: the socket never dropped, so the client's `?since` cursor was current and
+  a delta from it was empty. The panel stayed blank, `isReady` never fired, and only
+  future writes arrived. The client now asks the room for that channel's snapshot.
+
+Added:
+
+- `Transport.requestSnapshot?(channel)`, the optional seam the re-register snapshot
+  goes out through. `partyTransport` implements it as a `{ snapshot: <channel> }`
+  socket send — the one frame a client writes UP the WebSocket. The room replies with
+  an ordinary snapshot batch marked `reset: true`, to the requesting connection alone.
+  A custom transport without the hook keeps today's behavior, and `?since` connect
+  behavior is untouched.
+- `PersistenceAdapter.snapshot()` takes an optional channel, so the room reads one
+  table instead of all of them.
+
 ## 2026-09-01 - v0.0.3
 
 Breaking:
