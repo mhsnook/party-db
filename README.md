@@ -69,6 +69,8 @@ transparent, RDBMS, and Postgres CRUD.
   snapshot / backlog / fan-out), table-sharing config, user-protected tables.
 - Milestone 3: **Not just a party anymore:** query slicing, RLS-in-JS -- most apps
   don't work as parties, you need to filter content by more than just public-or-userID.
+  Its first piece has landed: per-collection access policies with owner rows
+  ([cookbook 05](./docs/cookbooks/05-public-and-private-collections.md)), on every adapter.
 - Far Future: **Codegen mode:** build the entire system from a DB string or schemas, live
   codegen, send schema changes over the wire, etc.
 
@@ -234,6 +236,12 @@ export class ArticleAgent extends AIChatAgent<Env> {
     return isPartyDbRequest(ctx.request) ? ['party-db'] : []
   }
 
+  // Using access policies with an 'owner' or 'authed' read? The core also needs a
+  // `broadcastTo(msg, audience)`, and each socket's user: pin
+  // `viewerTags(await this.db.resolveViewer(ctx.request))` in getConnectionTags, pass
+  // `viewerFromTags(conn.tags)` to connect/handleMessage, and send to
+  // `this.getConnections(audienceTag(audience))`. PartyDbServer does exactly this.
+
   onConnect(conn, ctx) {
     if (isPartyDbRequest(ctx.request)) return this.db.connect((m) => conn.send(m), ctx.request.url)
     // ...your own socket traffic
@@ -376,6 +384,7 @@ pnpm test:pg && pnpm test:integration
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + `commit()`; the thin subclass over the core |
 | `src/server/core.ts` | `PartyDbCore` — the room's core functionality, for hosts that compose instead of subclass |
+| `src/server/access.ts` | the access policies: the write gate, the read filter, and the fan-out split (cookbook 5) |
 | `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |
 | `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1 ↔ Postgres) |
 | `src/server/sqlite-adapter.ts` | `SqliteAdapter` — structured CRUD + `RETURNING`; blob fallback |

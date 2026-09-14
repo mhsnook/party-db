@@ -55,8 +55,9 @@ Vocabulary, used exactly this way everywhere:
 - **We never create or migrate your tables.** `_oplog` is the only table party-db owns.
 - **Every value is bound; every identifier comes from the schema allowlist** (`assertIdent` in
   `src/server/columns.ts`), never from a payload's keys.
-- **`access` and `ownerColumn` are declared surface, not enforcement** (issue #33). `warnUnenforcedAccess`
-  warns loudly at boot. Do not treat them as security.
+- **Access policies are enforced at four choke points** (`docs/architecture.md` §17): the
+  write gate, the snapshot, the `?since` delta, and the fan-out. A public collection keeps
+  the one-serialization broadcast. Host `commit()` skips the write gate, never the read filter.
 - **An update writes only the columns it changed, and must hit a row.** `toEvent` sends
   `mutation.changes` + the key; a zero-row UPDATE is a `MissedUpdateError` → 409
   `code: 'missing-row'`, never a phantom op in the `_oplog` (`docs/architecture.md` §16).
@@ -130,7 +131,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`
 - `SqliteAdapter` / `D1Adapter` / `PgAdapter` — each implements `init` / `write` / `snapshot` / `replaySince`;
   `PgAdapter` adds `classifyError` and `verifyAnonRole`
-- `warnUnenforcedAccess` / `unenforcedAccessCollections` — `src/server/access.ts`
+- `policiesOf` / `gateWrite` / `checkStored` / `visibleTo` / `audiencesOf` / `viewerTags` / `viewerFromTags` — `src/server/access.ts`, the access policies
 
 ## Commands
 

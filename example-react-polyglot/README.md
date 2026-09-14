@@ -13,27 +13,20 @@ The whole point is the **userspace shape**: schemas + collections defined once i
 [`src/collections.ts`](./src/collections.ts), the server is `collections = [...]` plus
 one `auth` hook, and the client imports the exact same array.
 
-## 🚧 Speculative — enforcement is not built yet
+## Access is enforced
 
-This example is **API-first**: it's the target userspace code, written before the
-framework that backs it. `access` and `owner` are declared and they **typecheck**, but the
-current `PartyDbServer` does **not** enforce them — so in the running demo *every
-collection syncs publicly* and switching identity does not hide another learner's rows.
-Because declaring an unenforced policy is a security-shaped footgun, the server now
-**warns loudly at startup** that these rules do nothing yet. What the framework still owes
-this app (owner-stamping on insert, the read filter at snapshot / `?since` / fan-out, the
-per-collection write gate) is tracked in
-**[issue #33](https://github.com/mhsnook/party-db/issues/33)** (the JS-layer access work),
-with the design in [cookbook 05](../docs/cookbooks/05-public-and-private-collections.md).
+`access` and `ownerColumn` are enforced by the server
+([cookbook 05](../docs/cookbooks/05-public-and-private-collections.md), architecture §17).
+Switch identity and another learner's decks and flashcards disappear. Logging in or out
+reloads the tab, because a socket keeps the user it connected as; the new socket's
+snapshot, its `?since` backlog, and every live fan-out carry only your own rows. The
+catalog stays public to read and open to any signed-in member to add to. Log out and
+every write to your own collections comes back `401`; touch someone else's row and it
+comes back `403`.
 
-The server's `auth` hook is the exception — it ships, and it decides who may write at all.
-Log in and every write lands; log out and every write comes back `401`. It returns a
-`WriteIdentity` (the claims the database judges the write by), not a bare uid; on this
-room's embedded SQLite there is no RLS to read those claims, so only the anonymous case
-bites. See [cookbook 08](../docs/cookbooks/08-postgres-rls.md) for the Postgres half.
-
-What *does* run today: the full sync + optimistic writes, the shared-once collections, the
-public-catalog + your-overlay UI, and deck settings — all of it is ordinary party-db CRUD.
+The server's `auth` hook is the one seam that drives all of it. It returns a
+`WriteIdentity`, and the uid the policies compare against is its `sub` claim. See
+[cookbook 08](../docs/cookbooks/08-postgres-rls.md) for the Postgres-native alternative.
 
 ## How to run
 

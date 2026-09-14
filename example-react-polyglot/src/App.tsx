@@ -147,8 +147,8 @@ function Phrases({ languageId }: { languageId: string }) {
       })),
   )
 
-  // user_id is passed explicitly today; once the framework auto-stamps the owner
-  // column from your uid (cookbook 05), this becomes just { id, phrase_id, ... }.
+  // The server would stamp user_id from your uid if it were left out (cookbook 05),
+  // but the schema declares it required, so the insert type still asks for it.
   const learn = (phraseId: string) =>
     run(flashcards.insert({ id: crypto.randomUUID(), user_id: me!.id, phrase_id: phraseId, status: 'learning', due_at: Date.now() }))
   const promote = (cardId: string) => run(flashcards.update(cardId, (c) => void (c.status = 'known')))

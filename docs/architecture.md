@@ -506,14 +506,17 @@ story (`postgres-todo.md`), not something `commit` can close.
 `PartyDbCore` (`src/server/core.ts`) holds the core functionality of a room:
 
 - the adapter, which the host builds over its own storage
-- `connect(send, url)` — the `?since` cursor parse, `replaySince` vs `snapshot`,
-  sent atomically through the write queue (§8, plan 004)
+- `connect(send, url, viewer?)` — the `?since` cursor parse, `replaySince` vs
+  `snapshot`, sent atomically through the write queue (§8, plan 004), filtered to
+  what the socket's user may read (§17)
 - `handleWrite(req)` — the POST path: size/shape caps, the `auth` → `anonRole`
   identity gate (§10a), classification of database rejections
 - `commit(batches, identity?)` — the write → seq → broadcast section (§14)
 
-- `handleMessage(send, message)` — the one frame a client sends up the socket,
-  `{ snapshot: <channel> }` (§8a), answered through that same queue
+- `handleMessage(send, message, viewer?)` — the one frame a client sends up the
+  socket, `{ snapshot: <channel> }` (§8a), answered through that same queue
+- `resolveViewer(req)` — who a connecting socket belongs to, for the access
+  policies (§17); the host pins it to the socket and passes it back in
 
 `PartyDbServer` is a thin subclass over the core: its `onStart` builds the default
 adapter and the core, `onConnect` / `onMessage` / `onRequest` forward to it, `commit`
@@ -620,6 +623,62 @@ alice learns her write went nowhere, rather than believing it landed. Note what 
 does NOT cover: a row that becomes invisible to OTHER readers (an unpublish, an
 archive) still needs per-connection fan-out, which we don't have — see
 [`unspecified.md`](./unspecified.md) → subscription/filtering.
+
+## 17. Access policies: four choke points, judged in JS
+
+A collection declares who may read, insert, update, and delete it — `access` and
+`ownerColumn`, with the shorthands of cookbook 5. party-db enforces that
+declaration itself, the same way on every adapter:
+
+- **The uid** is the verified identity's `sub` claim, from the `auth` hook (§10a).
+  A write resolves it fresh. A socket resolves it once, at connect, from its
+  upgrade request, and `PartyDbServer` pins it to the socket as partyserver tags
+  (`party-db:uid:<uid>`, `party-db:authed`), which survive hibernation and index
+  `getConnections(tag)`. A room whose reads are all public never calls `auth` on
+  connect and tags nothing.
+- **The write gate** runs before any transaction opens: each op's verb against its
+  policy — `'none'` is a 403, and `'authed'` or `'owner'` with no uid is a 401. An
+  `'owner'` insert stamps the owner column from the uid when it is absent and
+  refuses any other value (403); an update may not set it to someone else. An
+  `'owner'` update or delete is then checked against the **stored** row inside the
+  write queue, through the adapter's `readRows`, so no write can change the row
+  between the check and the commit. A delete is rewritten to carry the stored row,
+  so its fan-out and its `_oplog` entry route by the real owner, never by one the
+  client claimed.
+- **The snapshot and the `?since` delta** carry only the rows the socket's user may
+  read. A snapshot batch goes out even when it is empty, so the client's
+  collection still truncates and turns ready; a delta batch with nothing visible
+  is dropped.
+- **The fan-out** keeps §9's single serialization for a public collection. An
+  `'owner'` batch splits into one frame per owner, sent through the host's
+  `broadcastTo` to that user's sockets; `'authed'` goes to every signed-in socket;
+  `'none'` goes nowhere. Still synchronous, still inside the serialized section.
+- **The write's answer** (`WriteAck`) lists only the batches the writer may read,
+  so a client never waits on a seq that will not stream back to it (§7).
+
+Why a stored-row read rather than `AND owner = ?` on the UPDATE: a zero-row result
+would conflate "not yours" (403) with the missing-row rejection (§16, 409), and
+need a second query to tell them apart anyway.
+
+What it costs: a room with no `access` or `ownerColumn` behaves exactly as before —
+no `auth` call on connect, no tags, the same broadcast. An enforced room pays the
+`auth` hook once per connect, a JS filter over each snapshot and delta (the
+adapters still read whole tables, as they already did), one stored-row read per
+written channel that carries an owner update or delete, and one serialization per
+owner in a batch instead of one per batch. Schema-less (blob) collections are
+enforced the same way; the owner column is a key in the stored document.
+
+Boot refuses what it cannot enforce as written: an `'owner'` policy with no
+`ownerColumn`, an `ownerColumn` the schema lacks, an `'owner'` or `'authed'` read
+with no `broadcastTo`, an `'owner'` update or delete on an adapter without
+`readRows`. A room that declares policies but has no `auth` hook boots with a
+warning: every request is anonymous.
+
+It is roughshod RLS, not a security kernel. Host code that writes with `commit()`
+(§14) is trusted and skips the write gate; its fan-out still follows the read
+policies. A socket keeps the uid it connected with until it reconnects. Owner by
+claims other than `sub` (`ownerColumns`), SQL-side read filtering, and expression
+read rules (cookbook 6) are not built.
 
 ## Layering
 
