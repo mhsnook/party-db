@@ -11,13 +11,9 @@
 
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 
-// Who may perform a given CRUD verb on a collection.
-//
-// ⚠️ DESIGN PREVIEW — NOT ENFORCED. Setting `access`/`ownerColumn` today changes
-// NOTHING except a loud startup warning; there is no enforcement layer yet, so do
-// NOT rely on these for security. This is the userspace surface the JS-layer access
-// work (issue #33) is written backwards from; the design lives in
-// docs/cookbooks/05 (string policies) and 06 (expression rules).
+// Who may perform a given CRUD verb on a collection. Enforced by the server at the
+// write gate, the snapshot, the `?since` backlog, and the fan-out
+// (docs/architecture.md §17; cookbook 5). The uid is the `auth` hook's `sub` claim.
 //   'public' — anyone, signed in or not
 //   'authed' — any request carrying a verified uid (no ownership tie)
 //   'owner'  — only the row's owner (requires `ownerColumn`, matched to the uid)
@@ -44,7 +40,6 @@ export type PartyCollection<T extends object = Record<string, unknown>> = {
   ownerColumn?: keyof T & string
   // Per-verb access rules. Omitted → 'public' on all four verbs, unless
   // `ownerColumn` is set, which defaults to 'owner' on all four.
-  // ⚠️ Preview, UNENFORCED — see the AccessPolicy note above and issue #33.
   access?: Access
 }
 

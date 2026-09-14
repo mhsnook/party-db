@@ -204,3 +204,14 @@ describe('D1Adapter — snapshot + replaySince (parity with embedded semantics)'
     expect(await adapter.replaySince(1)).toEqual([])
   })
 })
+
+describe('D1Adapter — readRows (the write gate’s stored-row read)', () => {
+  it('reads rows by key in one batch, chunked under D1’s 100-bind limit', async () => {
+    const { fake, adapter } = await setup()
+    for (let i = 0; i < 150; i++) fake.db.exec(`INSERT INTO todos (id, text) VALUES ('t${i}', 'row ${i}')`)
+    const keys = [...Array.from({ length: 150 }, (_, i) => `t${i}`), 'missing']
+    const rows = await adapter.readRows('todos', keys)
+    expect(rows).toHaveLength(150)
+    expect(rows[0]).toMatchObject({ id: 't0', text: 'row 0', done: false })
+  })
+})

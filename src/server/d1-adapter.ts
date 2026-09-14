@@ -26,6 +26,7 @@ import { decodeRow } from './columns.ts'
 import {
   buildPlans,
   oplogInsertStmt,
+  readRowsStmts,
   resolveStructured,
   snapshotPlans,
   structuredStmt,
@@ -135,6 +136,16 @@ export class D1Adapter implements PersistenceAdapter {
       const seq = Number((results[oplogAt].results[0] as { seq: number }).seq)
       return { channel, ops, seq }
     })
+  }
+
+  // The stored rows for these keys: the write gate's read for an 'owner' update or
+  // delete. One read batch(), chunked to D1's 100-bind limit per statement.
+  async readRows(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]> {
+    const plan = this.plans.get(channel)
+    if (!plan || plan.kind !== 'structured' || !keys.length) return []
+    const stmts = readRowsStmts(plan, keys, 100).map(({ sql, binds }) => this.d1.prepare(sql).bind(...binds))
+    const results = await this.d1.batch<Record<string, unknown>>(stmts)
+    return results.flatMap((r) => r.results.map((row) => decodeRow(row, plan.kinds)))
   }
 
   // `channel` narrows the snapshot to one collection — the re-register request

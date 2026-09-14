@@ -86,6 +86,14 @@ export interface PersistenceAdapter {
   // empty array is a complete delta (the client missed nothing).
   replaySince(since: number): Promise<SequencedBatch[] | null>
 
+  // Optional: the current rows for these keys in one collection, decoded to the
+  // schema's shape — what the write gate reads to check an 'owner' update or
+  // delete against the STORED row, inside the write queue so no write slips in
+  // between the check and the commit. Keys with no row are simply absent. A room
+  // that declares an 'owner' update or delete refuses to start on an adapter
+  // without it, rather than skip the check.
+  readRows?(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]>
+
   // Optional: turn a `write()` failure into the client-facing rejection (→ 409),
   // or return `null` to let the server treat it as an internal fault (→ 500). Each
   // engine knows how it phrases a constraint violation — Postgres has a structured

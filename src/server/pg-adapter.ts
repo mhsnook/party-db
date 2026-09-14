@@ -24,7 +24,7 @@ import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'
 import { pgDecodeRow, pgEncode } from './columns.ts'
-import { buildPlans, resolveStructured, snapshotPlans, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
+import { buildPlans, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
 
 // The narrow slice of a node-postgres-style driver the adapter needs — `query(text,
 // values) → { rows }`, the shape both `pg.Client` and a Hyperdrive-backed client
@@ -236,6 +236,20 @@ export class PgAdapter implements PersistenceAdapter {
 
   // `channel` narrows the snapshot to one collection — the re-register request
   // (docs/architecture.md §8a). Unknown name → no batches.
+  // The stored rows for these keys: the write gate's read for an 'owner' update or
+  // delete. Read on the adapter's own connection, as the snapshot is.
+  async readRows(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]> {
+    const plan = this.plans.get(channel)
+    if (!plan || plan.kind !== 'structured' || !keys.length) return []
+    const c = await this.conn()
+    const out: Record<string, unknown>[] = []
+    for (const { sql, binds } of readRowsStmts(plan, keys, 1000, pgEncode)) {
+      const { rows } = await c.query(toPg(sql), binds)
+      out.push(...rows.map((r) => pgDecodeRow(r, plan.kinds)))
+    }
+    return out
+  }
+
   async snapshot(channel?: string): Promise<SequencedBatch[]> {
     const structured = snapshotPlans(this.plans, channel).filter((p): p is StructuredPlan => p.kind === 'structured')
     // nothing to read (an unknown or schema-less channel): don't open a transaction
