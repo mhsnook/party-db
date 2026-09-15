@@ -104,6 +104,28 @@ export function structuredStmt(plan: StructuredPlan, op: WriteEvent, enc: (v: un
   }
 }
 
+// Read the rows for a set of keys, in chunks of at most `size` binds per
+// statement (D1 allows 100; SQLite and Postgres allow far more). The key column
+// comes from the plan's allowlist; every key is bound.
+export function readRowsStmts(
+  plan: Plan,
+  keys: unknown[],
+  size: number,
+  enc: (v: unknown) => unknown = encode,
+): Statement[] {
+  const out: Statement[] = []
+  for (let i = 0; i < keys.length; i += size) {
+    const chunk = keys.slice(i, i + size)
+    const marks = chunk.map(() => '?').join(', ')
+    out.push(
+      plan.kind === 'structured'
+        ? { sql: `SELECT * FROM "${plan.name}" WHERE "${plan.key}" IN (${marks})`, binds: chunk.map((k) => enc(k)) }
+        : { sql: `SELECT data FROM "${plan.name}" WHERE k IN (${marks})`, binds: chunk.map((k) => String(k)) },
+    )
+  }
+  return out
+}
+
 // Rewrite a `?`-placeholder statement (what the builders emit) into Postgres'
 // `$1…$n` positional form. Our builders only ever emit `?` as a value placeholder
 // — every value is bound, never inlined, and identifiers are double-quoted — so a

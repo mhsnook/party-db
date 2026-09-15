@@ -24,7 +24,7 @@ import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'
 import { pgDecodeRow, pgEncode } from './columns.ts'
-import { buildPlans, resolveStructured, snapshotPlans, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
+import { buildPlans, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
 
 // The narrow slice of a node-postgres-style driver the adapter needs — `query(text,
 // values) → { rows }`, the shape both `pg.Client` and a Hyperdrive-backed client
@@ -232,6 +232,17 @@ export class PgAdapter implements PersistenceAdapter {
   private async compact(c: PgClient): Promise<void> {
     if (!this.retention) return
     await c.query(toPg(`DELETE FROM _oplog WHERE seq <= (SELECT MAX(seq) FROM _oplog) - ?`), [this.retention])
+  }
+
+  // The rows as they stand for these keys: what the write reads to authorize an
+  // 'owner' update or delete and to fan it out by its prior owner. Read on the
+  // adapter's own connection, as the snapshot is.
+  async readRows(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]> {
+    const plan = this.plans.get(channel)
+    if (!plan || plan.kind !== 'structured' || !keys.length) return []
+    const c = await this.conn()
+    const chunks = await Promise.all(readRowsStmts(plan, keys, 1000, pgEncode).map(({ sql, binds }) => c.query(toPg(sql), binds)))
+    return chunks.flatMap(({ rows }) => rows.map((r) => pgDecodeRow(r, plan.kinds)))
   }
 
   // `channel` narrows the snapshot to one collection — the re-register request

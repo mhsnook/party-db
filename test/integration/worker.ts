@@ -224,6 +224,49 @@ export class Authed extends Main {
   }
 }
 
+// Cookbook 5's access policies, enforced on DO-SQLite: a public catalog any
+// signed-in member adds to (`phrases`), and per-user cards only their owner reads
+// or writes (`cards`, via `ownerColumn`). The test's token IS the uid; a browser
+// socket sends it in `?token=`, a POST as a Bearer header.
+const phrasesCatalog = definePartyCollection({
+  name: 'phrases',
+  key: 'id',
+  schema: z.object({ id: z.string(), text: z.string() }),
+  access: { read: 'public', insert: 'authed' },
+})
+const ownedCards = definePartyCollection({
+  name: 'cards',
+  key: 'id',
+  schema: z.object({ id: z.string(), user_id: z.string().optional(), status: z.string() }),
+  ownerColumn: 'user_id',
+})
+
+export class Owned extends PartyDbServer {
+  collections: PartyCollection<any>[] = [phrasesCatalog, ownedCards]
+  oplogRetention = 50
+
+  auth = (req: Request): WriteIdentity | null => {
+    const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
+    return token ? { claims: { sub: token } } : null
+  }
+
+  onStart() {
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS phrases (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS cards (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL)`)
+    return super.onStart()
+  }
+
+  // A row the HOST hands to another user, with no POST and no write gate — the
+  // case where only the stored prior owner can tell the losing socket.
+  async onRequest(req: Request): Promise<Response> {
+    const url = new URL(req.url)
+    const to = url.searchParams.get('giveTo')
+    if (!to) return super.onRequest(req)
+    await this.commit([{ channel: 'cards', ops: [{ type: 'update', value: { id: url.searchParams.get('card')!, user_id: to } }] }])
+    return new Response('given')
+  }
+}
+
 // A room whose OWN host code writes rows — the case #41 opens: a job, an agent,
 // or anything running inside this Durable Object that is not a client POST.
 // `commit()` is the seam it goes through, so the rows get a seq, an `_oplog`

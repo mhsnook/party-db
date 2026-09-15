@@ -28,6 +28,7 @@ import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
 import { PartyDbCore, DEFAULT_MAX_WRITE_BYTES, DEFAULT_MAX_WRITE_OPS } from './core.ts'
+import { audienceTag, viewerFromTags, viewerTags } from './access.ts'
 
 export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
   static options = { hibernate: true }
@@ -49,7 +50,13 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // returned claims/role are injected into the write transaction (transaction-
   // local `SET`) and the app's own Row-Level Security policies decide what the
   // write may touch; a forged or unauthorized write comes back 403. Adapters with
-  // no RLS (embedded SQLite, D1) ignore the result, so this is a no-op there.
+  // no RLS (embedded SQLite, D1) ignore the result in the database itself.
+  //
+  // It is also the identity the collections' access policies judge (cookbook 5),
+  // on every adapter: the uid they compare against is the claims' `sub`. Writes
+  // resolve it fresh; a socket resolves it once, at connect, from its upgrade
+  // request (a browser sends the token in `?token=`), and keeps it until it
+  // reconnects.
   //
   // The library does NOT verify the token — you do, here: read the credential
   // (`getTokenFromRequest`), verify it however you verify JWTs (JWKS, shared
@@ -89,7 +96,13 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
     this.core = new PartyDbCore({
       collections: this.collections,
       adapter: this.createAdapter(),
-      broadcast: (message) => this.broadcast(message),
+      // 'all' is partyserver's own room-wide broadcast (§9's one serialization);
+      // any narrower audience is looked up by the tags `getConnectionTags` pinned
+      // to each socket at connect.
+      broadcast: (message, audience) => {
+        if (audience === 'all') return this.broadcast(message)
+        for (const conn of this.getConnections(audienceTag(audience))) conn.send(message)
+      },
       // `auth` threads as a live read: the core asks for the hook on every
       // write, so its presence — the fail-closed switch — is judged at write
       // time, exactly like the field read it replaces. The other options are
@@ -104,8 +117,16 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
     await this.core.init()
   }
 
+  // Pin the socket's user to it, as tags that survive hibernation, when some
+  // collection's reads depend on who is asking. A room whose reads are all public
+  // tags nothing and never calls `auth` here. Overriding this? Keep these tags:
+  // `return [...(await super.getConnectionTags(conn, ctx)), ...yours]`.
+  async getConnectionTags(_conn: Connection, ctx: ConnectionContext): Promise<string[]> {
+    return viewerTags(await this.core.resolveViewer(ctx.request))
+  }
+
   onConnect(conn: Connection, ctx: ConnectionContext): Promise<void> {
-    return this.core.connect((message) => conn.send(message), ctx.request.url)
+    return this.core.connect((message) => conn.send(message), ctx.request.url, viewerFromTags(conn.tags))
   }
 
   // The one frame a client sends up the socket: `{ snapshot: <channel> }`, from a
@@ -116,7 +137,7 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // `return super.onMessage(conn, message)` — the way `onStart` does above. An
   // override that doesn't chain leaves a re-registered collection empty.
   onMessage(conn: Connection, message: WSMessage): Promise<void> {
-    return this.core.handleMessage((reply) => conn.send(reply), message)
+    return this.core.handleMessage((reply) => conn.send(reply), message, viewerFromTags(conn.tags))
   }
 
   // controlled mode writes come over HTTP, not the (hibernating) socket.

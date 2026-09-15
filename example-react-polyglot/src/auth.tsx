@@ -3,16 +3,21 @@
 // is just typing a name, which becomes your uid. The transport sends that uid as
 // the token, and the server's `auth` reads it back (token === uid, no JWKS).
 //
-// 🚧 Enforcement of owner/access rules is unbuilt, so switching identity does NOT
-// (yet) hide another learner's decks/flashcards. It's here to show the intended
-// UX and where identity plugs in.
+// The server pins a socket's uid when the socket connects, so switching identity
+// has to reconnect: login() and logout() store the token for this tab and reload.
+// The new socket connects as the new user, and the server hands it only that
+// user's decks and flashcards.
 
 import { createContext, useContext, useState, type ReactNode } from 'react'
 
 // The token partyTransport sends. Module scope because the transport is built
-// before React mounts and reads it via getAccessToken; login()/logout() set it.
-let token: string | undefined
+// before React mounts and reads it via getAccessToken; it survives the reload
+// login()/logout() do, in this tab's sessionStorage.
+const TOKEN_KEY = 'polyglot:token'
+const token = sessionStorage.getItem(TOKEN_KEY) ?? undefined
 export const getAccessToken = () => token
+
+const meOf = (id: string | undefined): Me | null => (id ? { id, name: id.replace(/^user:/, '') } : null)
 
 export type Me = { id: string; name: string }
 type Auth = { me: Me | null; login: (name: string) => void; logout: () => void }
@@ -25,15 +30,14 @@ export function useAuth(): Auth {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [me, setMe] = useState<Me | null>(null)
+  const [me] = useState<Me | null>(() => meOf(token))
   const login = (name: string) => {
-    const id = `user:${name.trim().toLowerCase().replace(/\s+/g, '-')}`
-    token = id
-    setMe({ id, name: name.trim() })
+    sessionStorage.setItem(TOKEN_KEY, `user:${name.trim().toLowerCase().replace(/\s+/g, '-')}`)
+    location.reload()
   }
   const logout = () => {
-    token = undefined
-    setMe(null)
+    sessionStorage.removeItem(TOKEN_KEY)
+    location.reload()
   }
   return <AuthContext value={{ me, login, logout }}>{children}</AuthContext>
 }

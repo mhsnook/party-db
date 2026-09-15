@@ -1,4 +1,4 @@
-# Public catalog + per-user collections (roughshod RLS) 🚧
+# Public catalog + per-user collections (roughshod RLS) ✅
 
 A language-learning app has two kinds of data living in the same room:
 
@@ -15,12 +15,13 @@ identity's `sub` claim. No `authorize`, no per-row callbacks, no second copy of 
 That's a deliberately tiny subset of RLS ([`postgres-todo.md`](../postgres-todo.md) §5),
 but it's enough to run this whole app — even on SQLite in a Durable Object.
 
-> 🚧 **Proposed, not shipped.** This is API-first: the userspace code below is the
-> target, and the framework is written backwards from it. It also proposes a
-> *simpler* model than `postgres-todo.md` §5 — see **[What I changed, flag for
-> review](#what-i-changed-flag-for-review)** at the bottom. A runnable scaffold
-> (typechecks today; server-side enforcement still pending) lives in
-> [`example-react-polyglot`](../../example-react-polyglot/).
+> ✅ **Shipped** on every adapter: the four policies, both shorthands, owner-stamping on
+> insert, the stored-row check on update and delete, and the read filter at snapshot,
+> `?since` backlog, and per-socket fan-out. How it works and what it costs:
+> [`architecture.md`](../architecture.md) §17. Two parts of this recipe are still ahead
+> of the code, and each is marked where it appears: the owner column is not yet optional
+> on the insert *type*, and ownership by claims other than `sub` is not built. A runnable
+> version lives in [`example-react-polyglot`](../../example-react-polyglot/).
 
 ## The collections — one file, shared both sides
 
@@ -117,11 +118,10 @@ export class Main extends PartyDbServer {
   collections = collections
 
   // The entire auth model: turn a request into the caller's verified claims (or null
-  // for anon). ✅ The hook ships today and already runs on every write.
-  // 🚧 Proposed is what the framework does with it: resolve it ONCE at connect
-  // (pinning the uid to the socket) as well as per write, then enforce `owner === uid`
-  // at the three read choke points — snapshot, `?since` backlog, per-socket fan-out —
-  // and at the write gate. That's the RLS. The uid is the `sub` claim.
+  // for anon). The framework resolves it per write, and ONCE at connect (pinning the
+  // uid to the socket), then enforces `owner === uid` at the three read choke points —
+  // snapshot, `?since` backlog, per-socket fan-out — and at the write gate. That's the
+  // RLS. The uid is the `sub` claim.
   auth = async (req: Request): Promise<WriteIdentity | null> => {
     const token = getTokenFromRequest(req)
     if (!token) return null // anon: sees public rows, owns nothing
@@ -284,11 +284,22 @@ string-equality case, and the only ownership shape this recipe needs. Given that
 
 - **Insert** — you may **omit** `user_id`; party-db stamps it from your verified uid.
   Include it and it must match, or it's a 403. (That's why `learn()` above never mentions
-  it — the slick default is "don't hand-carry your own id.")
+  it — the slick default is "don't hand-carry your own id.") 🚧 The server stamps it
+  today, but the collection's insert *type* still follows your schema: declare the owner
+  column `.optional()` in the Zod schema, as `learn()` needs, until the type does it.
 - **Update / delete** — checked against the **stored** row, not just your payload, so you
   can only mutate rows you already own.
 - **Read** — `user_id = :uid` is applied at snapshot, `?since` backlog, and per-socket
-  fan-out, so a private row is only ever delivered to its owner's sockets.
+  fan-out, so a private row is only ever delivered to its owner's sockets. A socket's uid
+  is fixed at connect; a user who signs in or out reconnects to see the change.
+- **Handing a row over** — change `user_id` and the row moves: the new owner is sent it,
+  and the old owner is sent a delete, live and in any later `?since` replay. Your own
+  writes can't do this (an update may not set the column to someone else), so this is for
+  server code calling `commit()` — an admin tool, a transfer job.
+- **Your own id type** — `user_id` can be a `text` uuid or an `integer` foreign key to a
+  `SERIAL` users table. Owners compare as text, so an integer 1 matches the `sub` claim
+  `"1"` and you never rewrite a column to adopt a policy. A column that can't hold an id
+  at all — a boolean, a json document — is refused at boot, and doesn't compile.
 
 `ownerColumn` and `access` stay separate fields on purpose: the column says *who owns a
 row*, the policy says *which verbs consult that*. They can't collapse into one — an

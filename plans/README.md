@@ -27,7 +27,7 @@ update your row when done.
 | 014 | D1 adapter — second v1 persistence target (one `batch()` commits data + oplog + seq; `?since` preserved) | P1 | M | 001–004, 006 (**003, 004 hard**) | DONE |
 | 015 | Postgres harness — real PG in CI (`wal_level=logical`) + workerd connectivity spike | P1 | M | — | DONE |
 | 016 | PostgresAdapter — mode 3 first rung (v1 semantics, oplog beside the data, SQLSTATE classification) | P1 | L | **015 (hard)** | DONE |
-| 017 | Access policies — RLS in the JS layer (A: cookbook 5 string policies · B: cookbook 6 expression rules) | P1 | L | — (coordinate 011, 016) | TODO |
+| 017 | Access policies — RLS in the JS layer (A: cookbook 5 string policies · B: cookbook 6 expression rules) | P1 | L | — (coordinate 011, 016) | A: SHIPPED v0.0.5 (#33, #59) · A2 (below): TODO · B: TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
@@ -62,6 +62,65 @@ REJECTED (with one-line rationale — finding fixed independently or approach ab
   it never touches the adapters' write internals, but 016 and 017 both edit
   `party-db-server.ts` (classifier seam vs. gates), and 011/013/017 all extend
   `PartyCollection` types: whoever lands second rebases, nobody forks.
+
+### 017 A2 — what access policies still owe, after v0.0.5
+
+Stage A shipped the four policies, owner stamping, the prior-row check, prior-owner
+routing, and the read filter at snapshot, `?since` delta and fan-out
+(`docs/architecture.md` §17). These are the known gaps, in the order they're worth
+doing. Nothing here is a regression; each is named as unbuilt in §17 or found by the
+review on #59.
+
+1. **Re-authenticate the transport without a page reload.** A socket keeps the uid
+   it connected with, so signing in or out only takes effect on reconnect, and
+   `example-react-polyglot` reloads the tab to get one. That is the opposite of what
+   a local-first library is for. The client needs a way to redial when the token
+   changes; the server side already works.
+2. **Put the owner predicate in the UPDATE and DELETE (Postgres, D1).** The
+   prior-row read and the write are two statements. `serialize` makes them atomic for
+   one room, which is the whole story on the DO's embedded SQLite and not on a shared
+   database. Check-then-write is racy; write-guarded-then-explain is not — guard the
+   statement, and read only to tell a 403 from §16's 409. Same seam B's compiled
+   `WHERE` needs.
+3. **Stop the client sending `previousValue`.** It is dead weight: TanStack DB never
+   reads the one we send. Checked against `@tanstack/db` 0.6.10 — `sync.write()`
+   spreads the message into the pending op, every consumer of a synced transaction
+   reads only `key`, `type` and `value`, and what subscribers finally see is rebuilt by
+   `enrichChangeMessage` from the collection's own `syncedData` and optimistic
+   snapshots. Sending it is also the whole reason the field means two things: the
+   client's optimistic copy on a public collection, the server's stored row on an
+   owner-read one. Drop it from `toEvent`, stop echoing it down, and the slot is
+   unambiguously server-authored.
+
+   No new field, no rename, and nothing to reconcile in already-stored entries — which
+   is why this is cheap. The only read-path consumer is `priorOf`, reached only for an
+   `'owner'` read, and there every op that reaches the `_oplog` already carries a
+   server-read prior: an update that matched no row is §16's 409 and never commits, and
+   a delete carries its row in `value`, not `previousValue`. Client hearsay survives
+   only on collections whose reads short-circuit before `opFor` ever looks.
+
+   Narrowing that stored row to the key and the owner column is a separate, deferrable
+   win. That one IS a stored-op shape change, so it pays the read-side fallback the
+   durable-state contract describes (CLAUDE.md → "Three kinds of contract"). Do not
+   bundle the two.
+4. **Make the fan-out's recipients explicit rather than implied by row data.** A
+   delete of a row that is already gone still has to reach the writer, so
+   `applyPriorRows` invents a row carrying their uid — and that invented row is
+   persisted and replayed. Routing intent should be an argument
+   (`audiencesOf(access, batch, writer?)`), not fabricated data. Server-internal, no
+   wire or storage change. Note the naive fix is worse: letting the no-op delete keep
+   its payload routes it to whatever owner the client claimed.
+5. **Reuse the fan-out's own frame for the write acknowledgement.** `fanOut` already
+   builds the writer's frame; `handleWrite` then walks every op again to build
+   `readable`. Needs `commitSection` to return what it broadcast. Server-internal, and
+   nothing gates it.
+6. **Move `access`/`ownerColumn` off the core `PartyCollection`** (#33's first
+   bullet), so a Postgres-native user who never opts in does not see them, and split
+   `access.ts` on purity — the pure half (`policiesOf`, `canRead`, `opFor`,
+   `visibleTo`) is exactly the client-side predictor #33 asks for, and today it is
+   unreachable from the client only because of where the file sits.
+7. **`ownerColumns` for claims other than `sub`**, and SQL-side read filtering so a
+   snapshot stops reading whole tables and filtering in JS.
 
 ## Findings considered and rejected
 

@@ -275,3 +275,32 @@ describe('SqliteAdapter — injection safety', () => {
     expect(() => new SqliteAdapter(engine, [{ name: 'bad; drop', key: 'id' } as any])).toThrow(/unsafe SQL identifier/)
   })
 })
+
+describe('SqliteAdapter — readRows (the write gate’s stored-row read)', () => {
+  it('reads structured rows by key, decoded to the schema’s shape, and skips missing keys', async () => {
+    const { adapter } = setup()
+    await adapter.write([ins('todos', { id: 'a', text: 'one', done: true }), ins('todos', { id: 'b', text: 'two', done: false })])
+    const rows = await adapter.readRows('todos', ['a', 'missing'])
+    expect(rows).toEqual([{ id: 'a', text: 'one', done: true, meta: null }])
+  })
+
+  it('reads blob documents by key', async () => {
+    const { adapter } = setup()
+    await adapter.write([ins('logs', { id: 'l1', level: 'info' })])
+    expect(await adapter.readRows('logs', ['l1'])).toEqual([{ id: 'l1', level: 'info' }])
+  })
+
+  it('reads more keys than one statement binds, in chunks', async () => {
+    const { adapter, db } = setup()
+    const insert = db.prepare(`INSERT INTO todos (id, text) VALUES (?, ?)`)
+    for (let i = 0; i < 1200; i++) insert.run(`t${i}`, `row ${i}`)
+    const keys = Array.from({ length: 1200 }, (_, i) => `t${i}`)
+    expect(await adapter.readRows('todos', keys)).toHaveLength(1200)
+  })
+
+  it('reads nothing for an unknown channel or no keys', async () => {
+    const { adapter } = setup()
+    expect(await adapter.readRows('nope', ['a'])).toEqual([])
+    expect(await adapter.readRows('todos', [])).toEqual([])
+  })
+})

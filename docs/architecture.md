@@ -506,14 +506,19 @@ story (`postgres-todo.md`), not something `commit` can close.
 `PartyDbCore` (`src/server/core.ts`) holds the core functionality of a room:
 
 - the adapter, which the host builds over its own storage
-- `connect(send, url)` — the `?since` cursor parse, `replaySince` vs `snapshot`,
-  sent atomically through the write queue (§8, plan 004)
+- `connect(send, url, viewer?)` — the `?since` cursor parse, `replaySince` vs
+  `snapshot`, sent atomically through the write queue (§8, plan 004), filtered to
+  what the socket's user may read (§17)
+- `broadcast(message, audience)` — the host's fan-out, handed the audience each
+  frame is for: `'all'`, `'authed'`, or `{ uid }` (§17)
 - `handleWrite(req)` — the POST path: size/shape caps, the `auth` → `anonRole`
   identity gate (§10a), classification of database rejections
 - `commit(batches, identity?)` — the write → seq → broadcast section (§14)
 
-- `handleMessage(send, message)` — the one frame a client sends up the socket,
-  `{ snapshot: <channel> }` (§8a), answered through that same queue
+- `handleMessage(send, message, viewer?)` — the one frame a client sends up the
+  socket, `{ snapshot: <channel> }` (§8a), answered through that same queue
+- `resolveViewer(req)` — who a connecting socket belongs to, for the access
+  policies (§17); the host pins it to the socket and passes it back in
 
 `PartyDbServer` is a thin subclass over the core: its `onStart` builds the default
 adapter and the core, `onConnect` / `onMessage` / `onRequest` forward to it, `commit`
@@ -616,10 +621,121 @@ for, so it stays a success: the op is logged, fans out, and every client's
 optimistic removal settles instead of rolling back and putting the row on screen again.
 
 An update of a row your RLS policy makes invisible is a miss like any other (§10a) —
-alice learns her write went nowhere, rather than believing it landed. Note what this
-does NOT cover: a row that becomes invisible to OTHER readers (an unpublish, an
-archive) still needs per-connection fan-out, which we don't have — see
-[`unspecified.md`](./unspecified.md) → subscription/filtering.
+alice learns her write went nowhere, rather than believing it landed. A row that
+becomes invisible to OTHER readers is the harder half: §17 covers the one shape it
+knows, an `ownerColumn` reassigned, by fanning the prior row out as a delete. Any
+other predicate (an unpublish, an archive) still needs per-connection filtering we
+don't have — see [`unspecified.md`](./unspecified.md) → subscription/filtering.
+
+## 17. Access policies: four choke points, judged in JS
+
+A collection declares who may read, insert, update, and delete it — `access` and
+`ownerColumn`, with the shorthands of cookbook 5. party-db enforces that
+declaration itself, the same way on every adapter:
+
+- **The uid** is the verified identity's `sub` claim, from the `auth` hook (§10a).
+  A write resolves it fresh. A socket resolves it once, at connect, from its
+  upgrade request, and `PartyDbServer` pins it to the socket as partyserver tags
+  (`party-db:uid:<uid>`, `party-db:authed`), which survive hibernation and index
+  `getConnections(tag)`. A room whose reads are all public never calls `auth` on
+  connect and tags nothing.
+- **The write gate** runs before any transaction opens: each op's verb against its
+  policy — `'none'` is a 403, and `'authed'` or `'owner'` with no uid is a 401. An
+  `'owner'` insert stamps the owner column from the uid when it is absent and
+  refuses any other value (403); an update may not set it to someone else.
+- **The prior row** is read inside the write queue, through the adapter's
+  `readRows`, for every update and delete on a collection with an `'owner'` rule.
+  It does two jobs, and they do not select the same ops — see "A row that changes
+  hands" below.
+- **The snapshot and the `?since` delta** carry only the rows the socket's user may
+  read. A snapshot batch goes out even when it is empty, so the client's
+  collection still truncates and turns ready; a delta batch with nothing visible
+  is dropped.
+- **The fan-out** keeps §9's single serialization for a public collection: the host
+  gets one `broadcast(message, 'all')`. An `'owner'` batch splits into one frame
+  per owner, each sent as `broadcast(message, { uid })`; `'authed'` goes out once
+  as `broadcast(message, 'authed')`; `'none'` goes nowhere. Still synchronous,
+  still inside the serialized section.
+- **The write's answer** (`WriteAck`) lists only the batches the writer may read,
+  so a client never waits on a seq that will not stream back to it (§7). A write
+  to a collection the writer cannot read comes back with an empty `accepted`: the
+  row is committed, and the client's optimistic copy drops with nothing to replace
+  it. That is correct and it is also invisible — a write-only collection
+  (`read: 'none'`) looks to the UI like a write that vanished.
+
+### A row that changes hands
+
+A row can leave a viewer's reach without being deleted: reassign the owner column
+and it is simply gone for whoever had it. The row as it stands AFTER the write
+cannot express that — it names only the new owner. So the fan-out reads the row as
+it stood BEFORE the write and sends to both: the new owner gets the row (as an
+insert, since their collection has never seen the key, and with no `previousValue`,
+because the former owner is not their business), and the old owner gets a delete.
+
+That prior row is stamped onto the op — a delete carries it as its value, an
+update as `previousValue` — so it rides into the `_oplog` and every later `?since`
+replay routes the same way. Without it the miss is permanent, not a dropped frame:
+the oplog entry names only the new owner, so a reconnecting client is never
+corrected either, and the row sits on their screen until retention forces a full
+snapshot.
+
+This is why the prior row is read for two independent reasons, and why gating on
+the write policy alone is wrong (`needsPriorRow`):
+
+- **to authorize** — an `'owner'` update or delete must match the STORED owner, not
+  the one the payload claims.
+- **to route** — an `'owner'` READ has to know the prior owner, whatever the write
+  policy says. A collection that reads as `'owner'` but deletes as `'authed'` lets
+  a moderator remove anyone's row, and then the payload's owner column is the one
+  thing that must not decide who hears about it.
+
+A trusted host write through `commit()` (§14) skips the gate but still reads the
+prior row, because it still has to reach the right sockets — which is what lets
+host code reassign an owner at all.
+
+### What it costs, and where the queue's guarantee stops
+
+A room with no `access` or `ownerColumn` behaves exactly as before — no `auth`
+call on connect, no tags, one broadcast to `'all'`. An enforced room pays the
+`auth` hook once per connect, a JS filter over each snapshot and delta (the
+adapters still read whole tables, as they already did), one prior-row read per
+written channel that carries an owner update or delete, and one serialization per
+owner in a batch instead of one per batch. Schema-less (blob) collections are
+enforced the same way; the owner column is a key in the stored document.
+
+The prior-row read and the write are two statements, not one. `serialize` makes
+them atomic **with respect to this room**, which is the whole story on the DO's
+embedded SQLite, where the DO is the only writer. It is NOT the whole story on D1
+or Postgres, where the same tables are reachable by other services, jobs and
+triggers (`pg-adapter.ts` says as much about the WAL rung). There, an owner
+changed between the read and the commit is judged on the stale value. Closing that
+means putting the owner predicate in the UPDATE and DELETE themselves and reading
+only to tell a 403 from §16's 409 — check-then-write is racy, write-guarded-then-
+explain is not. That is the same seam cookbook 6's compiled `WHERE` has to land
+on, and it is not built.
+
+**A user id is compared as text.** The `sub` claim is a string (JWT spec) and a
+database's own user id is an integer as often as it is a uuid, so the two meet in
+`idOf` rather than in your schema: `user_id` 1 owns what `sub` `"1"` owns. We never
+ask you to change your tables to adopt a policy, and a `SERIAL` primary key is the
+common case, not an exotic one. The stamped uid goes in as an ordinary bound value
+— SQLite converts it by column affinity, Postgres by the target column's inferred
+parameter type — so it lands as a real integer, not the text `'1'`. What is NOT an
+id is nobody: null, a boolean, a document, `NaN`. They never stringify into an
+owner (no `"null"`, no `"[object Object]"`).
+
+Boot refuses what it cannot enforce as written: an `'owner'` policy with no
+`ownerColumn`, an `ownerColumn` the schema lacks or types as something that cannot
+be an id at all (a boolean, an object — it would match nothing and hide every row
+from its own owner rather than fail), an `'owner'` policy on an adapter with no
+`readRows`. In TypeScript the column's type is caught earlier still: `ownerColumn`
+is typed `UidColumn<T>`, which keeps the string and number columns. A room that
+declares policies but has no `auth` hook boots with a warning: every request is
+anonymous.
+
+It is roughshod RLS, not a security kernel. A socket keeps the uid it connected
+with until it reconnects. Owner by claims other than `sub` (`ownerColumns`),
+SQL-side read filtering, and expression read rules (cookbook 6) are not built.
 
 ## Layering
 

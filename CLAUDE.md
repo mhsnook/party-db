@@ -55,8 +55,14 @@ Vocabulary, used exactly this way everywhere:
 - **We never create or migrate your tables.** `_oplog` is the only table party-db owns.
 - **Every value is bound; every identifier comes from the schema allowlist** (`assertIdent` in
   `src/server/columns.ts`), never from a payload's keys.
-- **`access` and `ownerColumn` are declared surface, not enforcement** (issue #33). `warnUnenforcedAccess`
-  warns loudly at boot. Do not treat them as security.
+- **Access policies are enforced at four choke points** (`docs/architecture.md` §17): the
+  write gate, the snapshot, the `?since` delta, and the fan-out. A public collection keeps
+  the one-serialization broadcast. Host `commit()` skips the write gate, never the read filter.
+- **An owner write reads the row as it stood BEFORE it, and routes by both owners.** The
+  post-image alone cannot say a row left someone's reach, and the `_oplog` stores the
+  post-image — so a row changing hands would strand on the old owner's client through every
+  reconnect. `needsPriorRow` gates that read on the READ policy as well as the write policy
+  (`docs/architecture.md` §17 → "A row that changes hands").
 - **An update writes only the columns it changed, and must hit a row.** `toEvent` sends
   `mutation.changes` + the key; a zero-row UPDATE is a `MissedUpdateError` → 409
   `code: 'missing-row'`, never a phantom op in the `_oplog` (`docs/architecture.md` §16).
@@ -65,9 +71,9 @@ Vocabulary, used exactly this way everywhere:
 - **The wire is mode-invariant.** A client cannot tell which mode its room runs. Changing mode is a
   server-only migration.
 
-### Two kinds of contract — only one binds
+### Three kinds of contract — two of them bind
 
-Two different things get called "the contract" in review. Keep them apart:
+Three different things get called "the contract" in review. Keep them apart:
 
 - **The userspace contract** — everything app code touches: the exported API (`createPartyDb`,
   `partyTransport`, `PartyDbServer`, `PartyDbCore` and its options), the TanStack DB behavior,
@@ -78,6 +84,13 @@ Two different things get called "the contract" in review. Keep them apart:
   protocol version fields, or migration paths for them — there is no independently-versioned party
   to protect. The one real skew, a stale browser tab running the old client against a redeployed
   room, is accepted pre-1.0: the tab reloads.
+- **Durable state** — the `_oplog`, and the shape of the ops stored in it. It is neither of the
+  above: we own it, so it is not userspace, but it outlives the deploy, so lockstep does not cover
+  it. Lockstep's premise is that there is no independently-versioned party to protect. Here there
+  is one — a later version of us. An entry written today is replayed by whatever ships next, so
+  changing what goes into `ops` costs a read-side fallback until retention ages the old entries
+  out. That is not a migration path, it is reading your own old data. Before you change a stored
+  op's shape, ask what the next version will see.
 
 When an issue or plan says "no wire changes", read it as "no userspace-visible changes" unless it
 says otherwise. The `?proto=party-db` marker (PR #44) is the model: a wire addition, invisible to
@@ -106,7 +119,9 @@ Four files hold the whole contract. Read them before changing anything under `sr
   `Omit<ChangeMessage, 'key'>`), `WriteBatch`, `SequencedBatch`, `Cursor`, `WriteAck`, `WriteReject`,
   and `SnapshotRequest` — the one frame a client sends UP the socket (`docs/architecture.md` §8a).
 - **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access? }`, the one
-  collection interface both sides import, plus `definePartyCollection` for inference.
+  collection interface both sides import, plus `definePartyCollection` for inference. `ownerColumn`
+  is typed `UidColumn<T>` — a string or number column, since a `SERIAL` user id is as common as a
+  uuid. Owners compare as text (`idOf`), so `user_id` 1 matches the `sub` claim "1".
 - **`src/server/persistence.ts`** — `PersistenceAdapter` (the storage seam), `WriteIdentity`,
   `WriteRejection`.
 - **`src/client/sync-client.ts`** — `Transport` (the two-method down/up seam) and `SyncClientOptions`.
@@ -130,7 +145,8 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`
 - `SqliteAdapter` / `D1Adapter` / `PgAdapter` — each implements `init` / `write` / `snapshot` / `replaySince`;
   `PgAdapter` adds `classifyError` and `verifyAnonRole`
-- `warnUnenforcedAccess` / `unenforcedAccessCollections` — `src/server/access.ts`
+- `policiesOf` / `gateWrite` / `needsPriorRow` / `applyPriorRows` / `opFor` / `visibleTo` / `audiencesOf` / `viewerTags` / `viewerFromTags` — `src/server/access.ts`, the access policies
+  (`opFor` is the one op-level read filter; the snapshot, the delta, the fan-out and the ack all go through it)
 
 ## Commands
 

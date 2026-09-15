@@ -16,7 +16,7 @@ import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
-import { blobStmt, buildPlans, resolveStructured, snapshotPlans, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
+import { blobStmt, buildPlans, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
 
 // The narrow slice of a SQLite handle the adapter needs. In the DO it's
 // `ctx.storage.sql` + `ctx.storage.transactionSync`; in tests it's a node:sqlite
@@ -129,6 +129,19 @@ export class SqliteAdapter implements PersistenceAdapter {
     const { sql, binds } = blobStmt(plan, { ...op, value })
     this.engine.exec(sql, ...binds)
     return { ...op, value }
+  }
+
+  // The rows as they stand for these keys: what the write reads to authorize an
+  // 'owner' update or delete and to fan it out by its prior owner. Structured rows
+  // decode to the schema's shape; blob rows parse back to the stored document.
+  async readRows(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]> {
+    const plan = this.plans.get(channel)
+    if (!plan || !keys.length) return []
+    const decode =
+      plan.kind === 'structured'
+        ? (r: Record<string, unknown>) => decodeRow(r, plan.kinds)
+        : (r: Record<string, unknown>) => JSON.parse(r.data as string) as Record<string, unknown>
+    return readRowsStmts(plan, keys, 500).flatMap(({ sql, binds }) => this.engine.exec(sql, ...binds).toArray().map(decode))
   }
 
   // `channel` narrows the snapshot to one collection — the re-register request
