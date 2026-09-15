@@ -9,6 +9,8 @@ import {
   AccessDenied,
   ANONYMOUS,
   applyPriorRows,
+  canRead,
+  idOf,
   audiencesOf,
   audienceTag,
   checkAccess,
@@ -81,13 +83,15 @@ describe('checkAccess — what cannot be enforced refuses to start', () => {
     expect(() => checkAccess(loose({ name: 'cards', key: 'id', schema, ownerColumn: 'nope' }))).toThrow(/does not declare/)
   })
 
-  it('refuses an ownerColumn the schema types as anything but a string', () => {
-    const numeric = z.object({ id: z.string(), user_id: z.number(), text: z.string() })
-    expect(() => checkAccess(loose({ name: 'cards', key: 'id', schema: numeric, ownerColumn: 'user_id' }))).toThrow(/types as number/)
+  it('refuses an ownerColumn that cannot be an id at all', () => {
+    for (const [bad, shown] of [[z.boolean(), /types as boolean/], [z.object({ a: z.string() }), /types as object/]] as const) {
+      const s = z.object({ id: z.string(), user_id: bad, text: z.string() })
+      expect(() => checkAccess(loose({ name: 'cards', key: 'id', schema: s, ownerColumn: 'user_id' }))).toThrow(shown)
+    }
   })
 
-  it('accepts every Zod string subtype, so a uuid or email uid is not refused', () => {
-    for (const uid of [z.uuid(), z.email(), z.string().nullable(), z.string().optional(), z.iso.datetime()]) {
+  it('accepts any id a real users table holds: a serial, a uuid, an email, a bigint', () => {
+    for (const uid of [z.number(), z.int(), z.bigint(), z.uuid(), z.email(), z.string().nullable(), z.iso.datetime()]) {
       const s = z.object({ id: z.string(), user_id: uid, text: z.string() })
       expect(() => checkAccess(loose({ name: 'cards', key: 'id', schema: s, ownerColumn: 'user_id' }))).not.toThrow()
     }
@@ -290,6 +294,27 @@ describe('needsPriorRow — why the row is read', () => {
   it('needs nothing for a collection with no owner anywhere', () => {
     const open = accessOf(definePartyCollection({ name: 'todos', key: 'id', schema }))
     expect(needsPriorRow(open, { type: 'delete', value: {} })).toBe(false)
+  })
+})
+
+describe('idOf — a user id compares as text', () => {
+  it('matches a SERIAL column against the string sub claim', () => {
+    expect(idOf(1)).toBe('1')
+    expect(idOf(9007199254740993n)).toBe('9007199254740993')
+    expect(idOf('alice')).toBe('alice')
+  })
+
+  it('makes anything that cannot be an id nobody, never a stringified shape', () => {
+    for (const v of [null, undefined, '', true, false, {}, [], NaN, Infinity]) expect(idOf(v)).toBeNull()
+  })
+
+  it("does not let an unowned row be read by a viewer whose uid spells a shape", () => {
+    const numeric = accessOf(
+      definePartyCollection<{ id: string; user_id?: number; text: string }>({ name: 'cards', key: 'id', ownerColumn: 'user_id' }),
+    )
+    expect(canRead(numeric, { id: '1', user_id: 1, text: 'a' }, { uid: '1' })).toBe(true)
+    expect(canRead(numeric, { id: '1', user_id: 2, text: 'a' }, { uid: '1' })).toBe(false)
+    expect(canRead(numeric, { id: '1', text: 'a' }, { uid: 'null' })).toBe(false)
   })
 })
 

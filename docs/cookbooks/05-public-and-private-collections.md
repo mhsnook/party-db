@@ -295,9 +295,11 @@ string-equality case, and the only ownership shape this recipe needs. Given that
 - **Handing a row over** — change `user_id` and the row moves: the new owner is sent it,
   and the old owner is sent a delete, live and in any later `?since` replay. Your own
   writes can't do this (an update may not set the column to someone else), so this is for
-  server code calling `commit()` — an admin tool, a transfer job. The column has to be a
-  string, since it is compared to the `sub` claim; TypeScript enforces that on
-  `ownerColumn`, and the server refuses to start otherwise.
+  server code calling `commit()` — an admin tool, a transfer job.
+- **Your own id type** — `user_id` can be a `text` uuid or an `integer` foreign key to a
+  `SERIAL` users table. Owners compare as text, so an integer 1 matches the `sub` claim
+  `"1"` and you never rewrite a column to adopt a policy. A column that can't hold an id
+  at all — a boolean, a json document — is refused at boot, and doesn't compile.
 
 `ownerColumn` and `access` stay separate fields on purpose: the column says *who owns a
 row*, the policy says *which verbs consult that*. They can't collapse into one — an

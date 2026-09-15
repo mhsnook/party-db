@@ -79,6 +79,18 @@ export function accessOf(collection: PartyCollection<any>): CollectionAccess {
   }
 }
 
+// A row's owner value as the rules compare it: text. The `sub` claim is always a
+// string (JWT spec), and a database's own user id is as often an integer, so the
+// two meet here rather than in the app's schema — `user_id` 1 owns what `sub` "1"
+// owns. Anything that cannot be an id — null, a boolean, a document — is nobody,
+// never the string "null" or "[object Object]".
+export function idOf(value: unknown): string | null {
+  if (typeof value === 'string') return value === '' ? null : value
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null
+  if (typeof value === 'bigint') return String(value)
+  return null
+}
+
 // The uid the rules compare against: the verified identity's `sub` claim.
 export function uidOf(identity: WriteIdentity | null | undefined): string | null {
   const sub = identity?.claims?.sub
@@ -99,12 +111,13 @@ export function checkAccess(collection: PartyCollection<any>): void {
   if (!columns) return // schema-less (blob): no declared columns to check against
   const column = columns.find((c) => c.name === ownerColumn)
   if (!column) throw new Error(`collection "${name}" names ownerColumn "${ownerColumn}", which its schema does not declare`)
-  // A uid is the `sub` claim, a string. A column of any other type compares equal
-  // to nothing, which would hide every row from its own owner rather than fail.
-  if (column.tag !== undefined && column.tag !== 'string') {
+  // A string or a number can be a user id, and both compare as text (`idOf`). A
+  // boolean or a document cannot be one at all: it would match nothing and hide
+  // every row from its own owner rather than fail.
+  if (column.kind !== 'scalar') {
     throw new Error(
-      `collection "${name}" names ownerColumn "${ownerColumn}", which its schema types as ${column.tag}. ` +
-        'An owner column holds a uid, so declare it as a string.',
+      `collection "${name}" names ownerColumn "${ownerColumn}", which its schema types as ${column.tag ?? column.kind}. ` +
+        'An owner column holds a user id, so declare it as a string or a number.',
     )
   }
 }
@@ -204,9 +217,7 @@ export function audiencesOf(access: CollectionAccess, batch: SequencedBatch): { 
 // The uids one op concerns: who owns the row now, and who owned it before. A row
 // with no owner is nobody's to read.
 function ownersOf(access: CollectionAccess, op: WriteEvent): string[] {
-  const now = ownerOf(access, op.value)
-  const before = ownerOf(access, priorOf(op))
-  const uids = [now, before].filter((uid): uid is string => typeof uid === 'string' && uid !== '')
+  const uids = [ownerOf(access, op.value), ownerOf(access, priorOf(op))].filter((uid): uid is string => uid !== null)
   return uids.length === 2 && uids[0] === uids[1] ? [uids[0]] : uids
 }
 
@@ -252,11 +263,13 @@ function gateOp(access: CollectionAccess, channel: string, op: WriteEvent, viewe
   const column = access.ownerColumn!
   const value = op.value as Record<string, unknown> | null
   if (value === null || typeof value !== 'object') throw new AccessDenied(400, `op value must be an object on "${channel}"`, channel)
+  // presence is read raw (an absent column is stamped); the comparison is by id,
+  // so a client sending the number 1 for a SERIAL column matches the claim "1".
   const owner = value[column]
   if (op.type === 'insert' && (owner === undefined || owner === null)) {
     return { ...op, value: { ...value, [column]: viewer.uid } }
   }
-  if (op.type !== 'delete' && owner !== undefined && owner !== viewer.uid) {
+  if (op.type !== 'delete' && owner !== undefined && idOf(owner) !== viewer.uid) {
     throw new AccessDenied(403, `"${column}" must be your own id on "${channel}"`, channel)
   }
   return op
@@ -318,7 +331,7 @@ export function applyPriorRows(
       if (!needsPriorRow(access, op)) return op
       const value = op.value as Record<string, unknown> | null
       const row = rows.get(String(value?.[access.key]))
-      if (viewer && access.policies[op.type] === 'owner' && row && row[access.ownerColumn!] !== viewer.uid) {
+      if (viewer && access.policies[op.type] === 'owner' && row && idOf(row[access.ownerColumn!]) !== viewer.uid) {
         throw new AccessDenied(403, `that row on "${batch.channel}" is not yours to ${op.type}`, batch.channel)
       }
       if (op.type === 'delete') return { ...op, value: row ?? stampOwner(access, value, viewer) }
@@ -337,8 +350,9 @@ function stampOwner(access: CollectionAccess, value: Record<string, unknown> | n
   return row
 }
 
-function ownerOf(access: CollectionAccess, row: unknown): unknown {
-  return access.ownerColumn === undefined ? undefined : (row as Record<string, unknown> | null)?.[access.ownerColumn]
+function ownerOf(access: CollectionAccess, row: unknown): string | null {
+  if (access.ownerColumn === undefined) return null
+  return idOf((row as Record<string, unknown> | null)?.[access.ownerColumn])
 }
 
 // ---- pinning a user to a socket ----

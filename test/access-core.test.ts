@@ -30,10 +30,15 @@ const auth = (req: Request): WriteIdentity | null => {
 
 type Socket = { tags: string[]; frames: SequencedBatch[] }
 
-async function room(opts: { collections?: PartyCollection<any>[]; adapter?: (a: SqliteAdapter) => PersistenceAdapter } = {}) {
+async function room(
+  opts: { collections?: PartyCollection<any>[]; adapter?: (a: SqliteAdapter) => PersistenceAdapter; ddl?: string[] } = {},
+) {
   const { engine, db } = memoryEngine()
-  db.exec(`CREATE TABLE phrases (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
-  db.exec(`CREATE TABLE cards (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL)`)
+  const ddl = opts.ddl ?? [
+    `CREATE TABLE phrases (id TEXT PRIMARY KEY, text TEXT NOT NULL)`,
+    `CREATE TABLE cards (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL)`,
+  ]
+  for (const stmt of ddl) db.exec(stmt)
   const cols = opts.collections ?? collections
   const sqlite = new SqliteAdapter(engine, cols)
   const sockets: Socket[] = []
@@ -287,5 +292,57 @@ describe('access — a malformed write body', () => {
       expect(res.body.error).toMatch(/insert\/update\/delete/)
     }
     expect(db.prepare(`SELECT COUNT(*) AS n FROM cards`).get()).toEqual({ n: 0 })
+  })
+})
+
+// `users.id` is a SERIAL as often as it is a uuid, and party-db never asks you to
+// change your tables. The `sub` claim is a string either way, so the whole round
+// trip has to survive an integer owner column.
+describe('access — an integer user id', () => {
+  const numbered = definePartyCollection({
+    name: 'cards',
+    key: 'id',
+    schema: z.object({ id: z.string(), user_id: z.number().optional(), status: z.string() }),
+    ownerColumn: 'user_id',
+  })
+  const numericRoom = () =>
+    room({
+      collections: [numbered],
+      ddl: [`CREATE TABLE cards (id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, status TEXT NOT NULL)`],
+    })
+
+  it('stamps the uid into the integer column as a number, and reads the row back to its owner', async () => {
+    const { post, connect, db } = await numericRoom()
+    expect((await post([{ channel: 'cards', ops: [{ type: 'insert', value: { id: 'c1', status: 'learning' } }] }], '1')).status).toBe(200)
+    const stored = db.prepare(`SELECT user_id, typeof(user_id) AS t FROM cards WHERE id = 'c1'`).get()
+    expect(stored).toEqual({ user_id: 1, t: 'integer' })
+
+    const [one, two] = [await connect('1'), await connect('2')]
+    expect(ids(one.frames, 'cards')).toEqual(['c1'])
+    expect(ids(two.frames, 'cards')).toEqual([])
+  })
+
+  it('fans a write out to the owner, whose socket is tagged by the same id', async () => {
+    const { post, connect } = await numericRoom()
+    const [one, two] = [await connect('1'), await connect('2')]
+    await post([{ channel: 'cards', ops: [{ type: 'insert', value: { id: 'c1', status: 'learning' } }] }], '1')
+    expect(ids(one.frames.filter((f) => !f.reset), 'cards')).toEqual(['c1'])
+    expect(two.frames.filter((f) => !f.reset)).toEqual([])
+  })
+
+  it('takes the number the client sent for its own id, and refuses another', async () => {
+    const { post } = await numericRoom()
+    const send = (user_id: number, token: string) =>
+      post([{ channel: 'cards', ops: [{ type: 'insert', value: { id: `c-${user_id}-${token}`, user_id, status: 'x' } }] }], token)
+    expect((await send(1, '1')).status).toBe(200)
+    expect((await send(2, '1')).status).toBe(403)
+  })
+
+  it('checks an update and a delete against the stored integer owner', async () => {
+    const { post } = await numericRoom()
+    await post([{ channel: 'cards', ops: [{ type: 'insert', value: { id: 'c1', status: 'learning' } }] }], '1')
+    const edit = (token: string) => post([{ channel: 'cards', ops: [{ type: 'update', value: { id: 'c1', status: 'known' } }] }], token)
+    expect((await edit('2')).status).toBe(403)
+    expect((await edit('1')).status).toBe(200)
   })
 })

@@ -714,13 +714,24 @@ only to tell a 403 from §16's 409 — check-then-write is racy, write-guarded-t
 explain is not. That is the same seam cookbook 6's compiled `WHERE` has to land
 on, and it is not built.
 
+**A user id is compared as text.** The `sub` claim is a string (JWT spec) and a
+database's own user id is an integer as often as it is a uuid, so the two meet in
+`idOf` rather than in your schema: `user_id` 1 owns what `sub` `"1"` owns. We never
+ask you to change your tables to adopt a policy, and a `SERIAL` primary key is the
+common case, not an exotic one. The stamped uid goes in as an ordinary bound value
+— SQLite converts it by column affinity, Postgres by the target column's inferred
+parameter type — so it lands as a real integer, not the text `'1'`. What is NOT an
+id is nobody: null, a boolean, a document, `NaN`. They never stringify into an
+owner (no `"null"`, no `"[object Object]"`).
+
 Boot refuses what it cannot enforce as written: an `'owner'` policy with no
-`ownerColumn`, an `ownerColumn` the schema lacks or types as anything but a string
-(a uid is a string; a number column would match nothing and hide every row from
-its own owner), an `'owner'` policy on an adapter with no `readRows`. In TypeScript
-the column's type is caught earlier still: `ownerColumn` is typed `UidColumn<T>`,
-so naming a non-string column does not compile. A room that declares policies but
-has no `auth` hook boots with a warning: every request is anonymous.
+`ownerColumn`, an `ownerColumn` the schema lacks or types as something that cannot
+be an id at all (a boolean, an object — it would match nothing and hide every row
+from its own owner rather than fail), an `'owner'` policy on an adapter with no
+`readRows`. In TypeScript the column's type is caught earlier still: `ownerColumn`
+is typed `UidColumn<T>`, which keeps the string and number columns. A room that
+declares policies but has no `auth` hook boots with a warning: every request is
+anonymous.
 
 It is roughshod RLS, not a security kernel. A socket keeps the uid it connected
 with until it reconnects. Owner by claims other than `sub` (`ownerColumns`),

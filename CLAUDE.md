@@ -113,7 +113,8 @@ Four files hold the whole contract. Read them before changing anything under `sr
   and `SnapshotRequest` — the one frame a client sends UP the socket (`docs/architecture.md` §8a).
 - **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access? }`, the one
   collection interface both sides import, plus `definePartyCollection` for inference. `ownerColumn`
-  is typed `UidColumn<T>`: a uid is a string, so a non-string column does not compile.
+  is typed `UidColumn<T>` — a string or number column, since a `SERIAL` user id is as common as a
+  uuid. Owners compare as text (`idOf`), so `user_id` 1 matches the `sub` claim "1".
 - **`src/server/persistence.ts`** — `PersistenceAdapter` (the storage seam), `WriteIdentity`,
   `WriteRejection`.
 - **`src/client/sync-client.ts`** — `Transport` (the two-method down/up seam) and `SyncClientOptions`.

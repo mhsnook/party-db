@@ -28,14 +28,15 @@ export type Access =
   | AccessPolicy
   | { read?: AccessPolicy; insert?: AccessPolicy; update?: AccessPolicy; delete?: AccessPolicy }
 
-// The columns of `T` that can hold a uid. An `ownerColumn` is compared to the
-// verified `sub` claim, which is a string, so a number column matches nothing and
-// hides every row from its own owner instead of failing. A schema-less collection
-// has no typed columns, so every name stays allowed there and `checkAccess`'s boot
-// check is the only gate.
+// The columns of `T` that can hold a user id: a string or a number. `users.id` is
+// a SERIAL as often as it is a uuid, and we never ask you to change your tables,
+// so both sides are compared as text (`idOf`) — an integer 1 matches the `sub`
+// claim "1". What is refused is a column that cannot be an id at all: a boolean,
+// an object, an array. A schema-less collection has no typed columns, so every
+// name stays allowed there and `checkAccess`'s boot check is the only gate.
 export type UidColumn<T> = string extends keyof T
   ? keyof T & string
-  : { [K in keyof T]-?: NonNullable<T[K]> extends string ? K : never }[keyof T] & string
+  : { [K in keyof T]-?: NonNullable<T[K]> extends string | number | bigint ? K : never }[keyof T] & string
 
 export type PartyCollection<T extends object = Record<string, unknown>> = {
   name: string // channel === table name
