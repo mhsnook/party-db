@@ -292,6 +292,12 @@ string-equality case, and the only ownership shape this recipe needs. Given that
 - **Read** — `user_id = :uid` is applied at snapshot, `?since` backlog, and per-socket
   fan-out, so a private row is only ever delivered to its owner's sockets. A socket's uid
   is fixed at connect; a user who signs in or out reconnects to see the change.
+- **Handing a row over** — change `user_id` and the row moves: the new owner is sent it,
+  and the old owner is sent a delete, live and in any later `?since` replay. Your own
+  writes can't do this (an update may not set the column to someone else), so this is for
+  server code calling `commit()` — an admin tool, a transfer job. The column has to be a
+  string, since it is compared to the `sub` claim; TypeScript enforces that on
+  `ownerColumn`, and the server refuses to start otherwise.
 
 `ownerColumn` and `access` stay separate fields on purpose: the column says *who owns a
 row*, the policy says *which verbs consult that*. They can't collapse into one — an

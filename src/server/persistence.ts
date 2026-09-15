@@ -86,12 +86,17 @@ export interface PersistenceAdapter {
   // empty array is a complete delta (the client missed nothing).
   replaySince(since: number): Promise<SequencedBatch[] | null>
 
-  // Optional: the current rows for these keys in one collection, decoded to the
-  // schema's shape — what the write gate reads to check an 'owner' update or
-  // delete against the STORED row, inside the write queue so no write slips in
-  // between the check and the commit. Keys with no row are simply absent. A room
-  // that declares an 'owner' update or delete refuses to start on an adapter
-  // without it, rather than skip the check.
+  // Optional: the rows as they stand for these keys in one collection, decoded to
+  // the schema's shape — read inside the write queue, before the write, for two
+  // jobs: checking an 'owner' update or delete against the STORED row, and knowing
+  // who owned a row BEFORE the write so an 'owner' read fans it out to them too
+  // (docs/architecture.md §17). Keys with no row are simply absent. A room that
+  // declares any 'owner' rule refuses to start on an adapter without it, rather
+  // than skip either job.
+  //
+  // The queue makes this read and the write atomic for THIS room only. On a shared
+  // database (D1, Postgres) another writer can still move a row in between — §17
+  // says what closing that would take.
   readRows?(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]>
 
   // Optional: turn a `write()` failure into the client-facing rejection (→ 409),

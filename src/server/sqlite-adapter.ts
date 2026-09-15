@@ -131,20 +131,17 @@ export class SqliteAdapter implements PersistenceAdapter {
     return { ...op, value }
   }
 
-  // The stored rows for these keys: the write gate's read for an 'owner' update or
-  // delete. Structured rows decode to the schema's shape; blob rows parse back to
-  // the stored document.
+  // The rows as they stand for these keys: what the write reads to authorize an
+  // 'owner' update or delete and to fan it out by its prior owner. Structured rows
+  // decode to the schema's shape; blob rows parse back to the stored document.
   async readRows(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]> {
     const plan = this.plans.get(channel)
     if (!plan || !keys.length) return []
-    return readRowsStmts(plan, keys, 500).flatMap(({ sql, binds }) =>
-      this.engine
-        .exec(sql, ...binds)
-        .toArray()
-        .map((r) =>
-          plan.kind === 'structured' ? decodeRow(r, plan.kinds) : (JSON.parse(r.data as string) as Record<string, unknown>),
-        ),
-    )
+    const decode =
+      plan.kind === 'structured'
+        ? (r: Record<string, unknown>) => decodeRow(r, plan.kinds)
+        : (r: Record<string, unknown>) => JSON.parse(r.data as string) as Record<string, unknown>
+    return readRowsStmts(plan, keys, 500).flatMap(({ sql, binds }) => this.engine.exec(sql, ...binds).toArray().map(decode))
   }
 
   // `channel` narrows the snapshot to one collection — the re-register request

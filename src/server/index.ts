@@ -3,15 +3,7 @@ export { PartyDbCore, isPartyDbRequest, type PartyDbCoreOptions, type AuthHook }
 export { definePartyCollection, type PartyCollection } from '../schema.ts'
 export { authHooks, bearer, getTokenFromRequest, type AuthContext, type AuthDecision, type AuthKind, type Authorize } from './auth.ts'
 export { MissedUpdateError } from './persistence.ts'
-export {
-  audienceTag,
-  viewerFromTags,
-  viewerTags,
-  type Audience,
-  type Policies,
-  type Verb,
-  type Viewer,
-} from './access.ts'
+export { audienceTag, viewerFromTags, viewerTags, type Audience, type Viewer } from './access.ts'
 export type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'
 export { SqliteAdapter, type SqlEngine, type SqlResult } from './sqlite-adapter.ts'
 export { D1Adapter, type D1AdapterOptions } from './d1-adapter.ts'

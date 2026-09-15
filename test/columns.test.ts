@@ -17,15 +17,15 @@ describe('columnsOf (schema → injection-safe allowlist + codec)', () => {
       n: z.number().int().nullable().default(0),
     })
     expect(columnsOf(schema)).toEqual([
-      { name: 'id', kind: 'scalar' },
-      { name: 'text', kind: 'scalar' },
-      { name: 'done', kind: 'boolean' },
-      { name: 'meta', kind: 'json' },
-      { name: 'tags', kind: 'json' },
-      { name: 'dict', kind: 'json' },
-      { name: 'pair', kind: 'json' },
-      { name: 'flag', kind: 'boolean' },
-      { name: 'n', kind: 'scalar' },
+      { name: 'id', kind: 'scalar', tag: 'string' },
+      { name: 'text', kind: 'scalar', tag: 'string' },
+      { name: 'done', kind: 'boolean', tag: 'boolean' },
+      { name: 'meta', kind: 'json', tag: 'object' },
+      { name: 'tags', kind: 'json', tag: 'array' },
+      { name: 'dict', kind: 'json', tag: 'record' },
+      { name: 'pair', kind: 'json', tag: 'tuple' },
+      { name: 'flag', kind: 'boolean', tag: 'boolean' },
+      { name: 'n', kind: 'scalar', tag: 'number' },
     ])
   })
 
@@ -33,10 +33,10 @@ describe('columnsOf (schema → injection-safe allowlist + codec)', () => {
   // on its output side. Either way we want the base type, not the transform.
   it('unwraps a transform pipe from either side', () => {
     expect(columnsOf(z.object({ a: z.boolean().transform((v) => v) }))).toEqual([
-      { name: 'a', kind: 'boolean' },
+      { name: 'a', kind: 'boolean', tag: 'boolean' },
     ])
     expect(columnsOf(z.object({ a: z.preprocess((v) => v, z.array(z.string())) }))).toEqual([
-      { name: 'a', kind: 'json' },
+      { name: 'a', kind: 'json', tag: 'array' },
     ])
   })
 
@@ -50,10 +50,10 @@ describe('columnsOf (schema → injection-safe allowlist + codec)', () => {
       flag: zm.optional(zm.boolean()),
     })
     expect(columnsOf(schema)).toEqual([
-      { name: 'id', kind: 'scalar' },
-      { name: 'done', kind: 'boolean' },
-      { name: 'tags', kind: 'json' },
-      { name: 'flag', kind: 'boolean' },
+      { name: 'id', kind: 'scalar', tag: 'string' },
+      { name: 'done', kind: 'boolean', tag: 'boolean' },
+      { name: 'tags', kind: 'json', tag: 'array' },
+      { name: 'flag', kind: 'boolean', tag: 'boolean' },
     ])
   })
 

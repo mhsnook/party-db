@@ -28,6 +28,15 @@ export type Access =
   | AccessPolicy
   | { read?: AccessPolicy; insert?: AccessPolicy; update?: AccessPolicy; delete?: AccessPolicy }
 
+// The columns of `T` that can hold a uid. An `ownerColumn` is compared to the
+// verified `sub` claim, which is a string, so a number column matches nothing and
+// hides every row from its own owner instead of failing. A schema-less collection
+// has no typed columns, so every name stays allowed there and `checkAccess`'s boot
+// check is the only gate.
+export type UidColumn<T> = string extends keyof T
+  ? keyof T & string
+  : { [K in keyof T]-?: NonNullable<T[K]> extends string ? K : never }[keyof T] & string
+
 export type PartyCollection<T extends object = Record<string, unknown>> = {
   name: string // channel === table name
   key: keyof T & string // primary key field → getKey
@@ -37,7 +46,7 @@ export type PartyCollection<T extends object = Record<string, unknown>> = {
   // for fully private (owner on all four verbs). (Ownership that isn't a column ===
   // uid — e.g. "a friend of the owner" — is a later, function-based form; this
   // field stays the cheap, common case.)
-  ownerColumn?: keyof T & string
+  ownerColumn?: UidColumn<T>
   // Per-verb access rules. Omitted → 'public' on all four verbs, unless
   // `ownerColumn` is set, which defaults to 'owner' on all four.
   access?: Access

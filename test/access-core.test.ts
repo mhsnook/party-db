@@ -40,8 +40,10 @@ async function room(opts: { collections?: PartyCollection<any>[]; adapter?: (a: 
   const core = new PartyDbCore({
     collections: cols,
     adapter: opts.adapter ? opts.adapter(sqlite) : sqlite,
-    broadcast: (m) => sockets.forEach((s) => s.frames.push(JSON.parse(m))),
-    broadcastTo: (m, audience) => sockets.filter((s) => s.tags.includes(audienceTag(audience))).forEach((s) => s.frames.push(JSON.parse(m))),
+    broadcast: (m, audience) => {
+      const to = audience === 'all' ? sockets : sockets.filter((s) => s.tags.includes(audienceTag(audience)))
+      to.forEach((s) => s.frames.push(JSON.parse(m)))
+    },
     auth: () => auth,
   })
   await core.init()
@@ -196,14 +198,7 @@ describe('access — the reads', () => {
 })
 
 describe('access — boot checks and back-compat', () => {
-  it('refuses to start a private-read room with no broadcastTo', async () => {
-    const { engine, db } = memoryEngine()
-    db.exec(`CREATE TABLE cards (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL)`)
-    const core = new PartyDbCore({ collections: [cards], adapter: new SqliteAdapter(engine, [cards]), broadcast: () => {} })
-    await expect(core.init()).rejects.toThrow(/broadcastTo/)
-  })
-
-  it('refuses to start an owner update on an adapter that cannot read rows', async () => {
+  it('refuses to start an owner policy on an adapter that cannot read rows', async () => {
     const withoutReads = (a: SqliteAdapter): PersistenceAdapter => ({
       init: () => a.init(),
       write: (b) => a.write(b),
@@ -233,5 +228,64 @@ describe('access — boot checks and back-compat', () => {
     expect(alice.frames.find((f) => f.channel === 'notes')?.ops.map((o) => o.value)).toEqual([{ id: 'n1', body: 'mine', owner: 'alice' }])
     expect(bob.frames.find((f) => f.channel === 'notes')?.ops).toEqual([])
     expect((await post([{ channel: 'notes', ops: [{ type: 'update', value: { id: 'n1', body: 'theirs' } }] }], 'bob')).status).toBe(403)
+  })
+})
+
+// A row can stop being yours without being deleted — someone with a broader
+// delete policy removes it, or a host reassigns its owner column. The post-image
+// alone cannot carry that, and the `_oplog` stores the post-image, so getting it
+// wrong strands the row on the old owner's client through every reconnect.
+describe('access — a row that leaves your reach', () => {
+  const shared = definePartyCollection({
+    name: 'cards',
+    key: 'id',
+    schema: cardSchema,
+    ownerColumn: 'user_id',
+    // delete is 'authed': a moderator may remove anyone's card, so the payload's
+    // owner column is never checked and cannot be trusted to route by.
+    access: { read: 'owner', insert: 'owner', update: 'owner', delete: 'authed' },
+  })
+
+  it("sends the owner a delete when someone else removes their row, not the deleter's claim", async () => {
+    const { post, connect } = await room({ collections: [shared] })
+    await post(card('c1'), 'alice')
+    const [alice, mallory] = [await connect('alice'), await connect('mallory')]
+    const forged = [{ channel: 'cards', ops: [{ type: 'delete' as const, value: { id: 'c1', user_id: 'mallory', status: 'learning' } }] }]
+    expect((await post(forged, 'mallory')).status).toBe(200)
+    expect(ids(alice.frames.filter((f) => !f.reset), 'cards')).toEqual(['c1'])
+    expect(alice.frames.filter((f) => !f.reset).flatMap((f) => f.ops.map((o) => o.type))).toEqual(['delete'])
+    expect(mallory.frames.filter((f) => !f.reset)).toEqual([])
+  })
+
+  it('replays that delete to a socket that was offline for it', async () => {
+    const { post, connect } = await room({ collections: [shared] })
+    await post(card('c1'), 'alice')
+    const first = await connect('alice')
+    const seq = first.frames.find((f) => f.channel === 'cards')!.seq as number
+    await post([{ channel: 'cards', ops: [{ type: 'delete', value: { id: 'c1', user_id: 'mallory', status: 'learning' } }] }], 'mallory')
+    const back = await connect('alice', seq)
+    expect(back.frames.flatMap((f) => f.ops.map((o) => o.type))).toEqual(['delete'])
+  })
+
+  it('hands a host-reassigned row to its new owner and takes it from the old one', async () => {
+    const { core, post, connect } = await room()
+    await post(card('c1'), 'alice')
+    const [alice, bob] = [await connect('alice'), await connect('bob')]
+    await core.commit([{ channel: 'cards', ops: [{ type: 'update', value: { id: 'c1', user_id: 'bob' } }] }])
+    const live = (s: { frames: SequencedBatch[] }) => s.frames.filter((f) => !f.reset).flatMap((f) => f.ops.map((o) => o.type))
+    expect(live(alice)).toEqual(['delete'])
+    expect(live(bob)).toEqual(['insert'])
+  })
+})
+
+describe('access — a malformed write body', () => {
+  it('answers 400 rather than throwing out of the write handler', async () => {
+    const { post, db } = await room()
+    for (const ops of [[{ type: 'insert', value: null }], [{ type: 'upsert', value: { id: 'x' } }], ['nope']]) {
+      const res = await post([{ channel: 'cards', ops } as any], 'alice')
+      expect(res.status).toBe(400)
+      expect(res.body.error).toMatch(/insert\/update\/delete/)
+    }
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM cards`).get()).toEqual({ n: 0 })
   })
 })

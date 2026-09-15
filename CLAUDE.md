@@ -58,6 +58,11 @@ Vocabulary, used exactly this way everywhere:
 - **Access policies are enforced at four choke points** (`docs/architecture.md` §17): the
   write gate, the snapshot, the `?since` delta, and the fan-out. A public collection keeps
   the one-serialization broadcast. Host `commit()` skips the write gate, never the read filter.
+- **An owner write reads the row as it stood BEFORE it, and routes by both owners.** The
+  post-image alone cannot say a row left someone's reach, and the `_oplog` stores the
+  post-image — so a row changing hands would strand on the old owner's client through every
+  reconnect. `needsPriorRow` gates that read on the READ policy as well as the write policy
+  (`docs/architecture.md` §17 → "A row that changes hands").
 - **An update writes only the columns it changed, and must hit a row.** `toEvent` sends
   `mutation.changes` + the key; a zero-row UPDATE is a `MissedUpdateError` → 409
   `code: 'missing-row'`, never a phantom op in the `_oplog` (`docs/architecture.md` §16).
@@ -107,7 +112,8 @@ Four files hold the whole contract. Read them before changing anything under `sr
   `Omit<ChangeMessage, 'key'>`), `WriteBatch`, `SequencedBatch`, `Cursor`, `WriteAck`, `WriteReject`,
   and `SnapshotRequest` — the one frame a client sends UP the socket (`docs/architecture.md` §8a).
 - **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access? }`, the one
-  collection interface both sides import, plus `definePartyCollection` for inference.
+  collection interface both sides import, plus `definePartyCollection` for inference. `ownerColumn`
+  is typed `UidColumn<T>`: a uid is a string, so a non-string column does not compile.
 - **`src/server/persistence.ts`** — `PersistenceAdapter` (the storage seam), `WriteIdentity`,
   `WriteRejection`.
 - **`src/client/sync-client.ts`** — `Transport` (the two-method down/up seam) and `SyncClientOptions`.
@@ -131,7 +137,8 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`
 - `SqliteAdapter` / `D1Adapter` / `PgAdapter` — each implements `init` / `write` / `snapshot` / `replaySince`;
   `PgAdapter` adds `classifyError` and `verifyAnonRole`
-- `policiesOf` / `gateWrite` / `checkStored` / `visibleTo` / `audiencesOf` / `viewerTags` / `viewerFromTags` — `src/server/access.ts`, the access policies
+- `policiesOf` / `gateWrite` / `needsPriorRow` / `applyPriorRows` / `opFor` / `visibleTo` / `audiencesOf` / `viewerTags` / `viewerFromTags` — `src/server/access.ts`, the access policies
+  (`opFor` is the one op-level read filter; the snapshot, the delta, the fan-out and the ack all go through it)
 
 ## Commands
 

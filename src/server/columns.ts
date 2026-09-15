@@ -16,7 +16,11 @@ import type { StandardSchemaV1 } from '@standard-schema/spec'
 
 // A column's logical type, only as far as the value codec cares.
 export type ColumnKind = 'boolean' | 'json' | 'scalar'
-export type ColumnSpec = { name: string; kind: ColumnKind }
+// `tag` is the schema's own base type name ('string', 'number', 'enum'…), past the
+// Optional/Nullable/Default wrappers — undefined when the field is not a Zod node.
+// The codec only needs `kind`; `tag` answers a question the codec does not ask,
+// whether a column can hold a uid (`checkAccess`).
+export type ColumnSpec = { name: string; kind: ColumnKind; tag?: string }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/
 
@@ -35,10 +39,10 @@ const JSON_TAGS: ReadonlySet<unknown> = new Set(['object', 'array', 'record', 't
 export function columnsOf(schema: StandardSchemaV1 | undefined): ColumnSpec[] | null {
   const shape = zodDef(schema)?.shape
   if (!shape || typeof shape !== 'object') return null
-  return Object.entries(shape).map(([name, field]) => ({
-    name: assertIdent(name),
-    kind: kindOf(field),
-  }))
+  return Object.entries(shape).map(([name, field]) => {
+    const tag = baseTagOf(field)
+    return { name: assertIdent(name), kind: kindFromTag(tag), tag }
+  })
 }
 
 // Every Zod v4 node carries its definition at `_zod.def` — an own property on the
@@ -57,11 +61,12 @@ function typeTag(node: unknown): string | undefined {
   return typeof tag === 'string' ? tag : undefined
 }
 
-// Peel Optional/Nullable/Default and the transform wrapper to reach the base type,
-// then classify it. Unknown types are scalar (bound as-is). `.transform()` leaves
-// the base type on the pipe's `in` side, `z.preprocess()` on its `out` side, so we
-// follow the side that is not the transform.
-function kindOf(field: unknown): ColumnKind {
+// Peel Optional/Nullable/Default and the transform wrapper to reach the base type's
+// tag. `.transform()` leaves the base type on the pipe's `in` side, `z.preprocess()`
+// on its `out` side, so we follow the side that is not the transform. Every Zod v4
+// string subtype — `z.uuid()`, `z.email()`, `z.iso.datetime()`, branded, `.min()` —
+// reports 'string' here, so a tag comparison does not miss them.
+function baseTagOf(field: unknown): string | undefined {
   let cur: any = field
   while (true) {
     const tag = typeTag(cur)
@@ -71,7 +76,11 @@ function kindOf(field: unknown): ColumnKind {
       cur = typeTag(def.in) === 'transform' ? def.out : def.in
     } else break
   }
-  const tag = typeTag(cur)
+  return typeTag(cur)
+}
+
+// The value codec's view of a base tag. Anything we don't recognise binds as-is.
+function kindFromTag(tag: string | undefined): ColumnKind {
   if (tag === 'boolean') return 'boolean'
   if (JSON_TAGS.has(tag)) return 'json'
   return 'scalar'

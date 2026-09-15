@@ -236,11 +236,13 @@ export class ArticleAgent extends AIChatAgent<Env> {
     return isPartyDbRequest(ctx.request) ? ['party-db'] : []
   }
 
-  // Using access policies with an 'owner' or 'authed' read? The core also needs a
-  // `broadcastTo(msg, audience)`, and each socket's user: pin
-  // `viewerTags(await this.db.resolveViewer(ctx.request))` in getConnectionTags, pass
-  // `viewerFromTags(conn.tags)` to connect/handleMessage, and send to
-  // `this.getConnections(audienceTag(audience))`. PartyDbServer does exactly this.
+  // Using access policies with an 'owner' or 'authed' read? `broadcast` is handed
+  // the audience for each frame — 'all', 'authed', or { uid } — so send to
+  // `this.getConnections(audienceTag(audience))` for anything but 'all'. The core
+  // also needs each socket's user: pin
+  // `viewerTags(await this.db.resolveViewer(ctx.request))` in getConnectionTags and
+  // pass `viewerFromTags(conn.tags)` to connect/handleMessage. PartyDbServer does
+  // exactly this.
 
   onConnect(conn, ctx) {
     if (isPartyDbRequest(ctx.request)) return this.db.connect((m) => conn.send(m), ctx.request.url)

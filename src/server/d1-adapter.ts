@@ -138,8 +138,9 @@ export class D1Adapter implements PersistenceAdapter {
     })
   }
 
-  // The stored rows for these keys: the write gate's read for an 'owner' update or
-  // delete. One read batch(), chunked to D1's 100-bind limit per statement.
+  // The rows as they stand for these keys: what the write reads to authorize an
+  // 'owner' update or delete and to fan it out by its prior owner. One read
+  // batch(), chunked to D1's 100-bind limit per statement.
   async readRows(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]> {
     const plan = this.plans.get(channel)
     if (!plan || plan.kind !== 'structured' || !keys.length) return []

@@ -26,11 +26,10 @@ import {
   accessOf,
   AccessDenied,
   ANONYMOUS,
+  applyPriorRows,
   audiencesOf,
   checkAccess,
-  checkStored,
   gateWrite,
-  isOpen,
   storedKeysNeeded,
   uidOf,
   visibleTo,
@@ -38,7 +37,6 @@ import {
   type CollectionAccess,
   type Viewer,
 } from './access.ts'
-import { columnsOf } from './columns.ts'
 
 // The write-identity hook: resolve the writer's verified identity from a POST.
 // Full semantics on `PartyDbServer.auth`, which is this same hook as a field.
@@ -60,19 +58,16 @@ export interface PartyDbCoreOptions {
   // the storage target, built by the host over its own storage (its DO's SQLite,
   // a D1 binding, a Postgres connection). The core calls `init()` on it in `init`.
   adapter: PersistenceAdapter
-  // fan one committed frame out to every party-db subscriber. The host owns the
-  // sockets, so it decides which connections those are; the core calls this
-  // inline inside the serialized commit section, so send order equals seq order
-  // as long as the callback sends synchronously (a plain `conn.send` loop does).
-  broadcast: (message: string) => void
-  // fan one frame out to part of the room only: `'authed'` is every party-db
-  // socket with a signed-in user, `{ uid }` is that user's sockets. Required when
-  // any collection's read policy is 'owner' or 'authed' — `init()` refuses to
-  // start without it, so a host can never fan a private row out to everyone.
-  // Same synchronous-send rule as `broadcast`. Pin each socket's user at connect
-  // (`resolveViewer`), and look sockets up by it here; `viewerTags` and
-  // `audienceTag` are the tag scheme `PartyDbServer` uses.
-  broadcastTo?: (message: string, audience: Exclude<Audience, 'all'>) => void
+  // fan one committed frame out to the sockets allowed to read it. `audience` is
+  // `'all'` for a public collection (every party-db subscriber, the one-
+  // serialization fast path), `'authed'` for every socket with a signed-in user,
+  // or `{ uid }` for that user's sockets. The host owns the sockets, so it decides
+  // which connections those are: pin each socket's user at connect
+  // (`resolveViewer` + `viewerTags`) and look them up by `audienceTag(audience)`,
+  // as `PartyDbServer` does. The core calls this inline inside the serialized
+  // commit section, so send order equals seq order as long as the callback sends
+  // synchronously (a plain `conn.send` loop does).
+  broadcast: (message: string, audience: Audience) => void
   // read once per write: return the CURRENT identity hook, or undefined when
   // writes are anonymous. A getter rather than the hook itself so presence stays
   // live — whether a hook exists at write time decides fail-closed handling (no
@@ -98,9 +93,10 @@ export const DEFAULT_MAX_WRITE_OPS = 1_000
 export class PartyDbCore {
   private adapter: PersistenceAdapter
   private collections: PartyCollection<any>[]
-  private broadcast: (message: string) => void
-  private broadcastTo?: (message: string, audience: Exclude<Audience, 'all'>) => void
+  private broadcast: (message: string, audience: Audience) => void
   private access: Map<string, CollectionAccess>
+  // fixed by the declarations: does a connecting socket need a resolved identity?
+  private readsNeedIdentity: boolean
   private auth?: () => AuthHook | undefined
   private anonRole?: string
   private maxWriteBytes: number
@@ -115,8 +111,8 @@ export class PartyDbCore {
     this.adapter = opts.adapter
     this.collections = opts.collections
     this.broadcast = opts.broadcast
-    this.broadcastTo = opts.broadcastTo
     this.access = new Map(opts.collections.map((c) => [c.name, accessOf(c)]))
+    this.readsNeedIdentity = [...this.access.values()].some((a) => a.privateRead)
     this.auth = opts.auth
     this.anonRole = opts.anonRole
     this.maxWriteBytes = opts.maxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES
@@ -149,24 +145,25 @@ export class PartyDbCore {
   }
 
   // Refuse to start on an access declaration the room cannot enforce as written
-  // (cookbook 5): an 'owner' policy with no column, a column the schema lacks, a
-  // private read with no way to fan out privately, an 'owner' update or delete on
-  // an adapter that cannot read the stored row.
+  // (cookbook 5): an 'owner' policy with no column, a column the schema lacks or
+  // types as something other than a string, an 'owner' policy on an adapter that
+  // cannot read the stored row.
   private checkAccessConfig(): void {
-    for (const c of this.collections) checkAccess(c, columnsOf(c.schema)?.map((col) => col.name) ?? null)
+    for (const c of this.collections) checkAccess(c)
     const accesses = [...this.access.values()]
-    const privateRead = this.collections.filter((c) => ['owner', 'authed'].includes(this.access.get(c.name)!.policies.read))
-    if (privateRead.length && !this.broadcastTo) {
+    // Reading a prior row is what an 'owner' update or delete is authorized
+    // against AND what an 'owner' read is fanned out by, so the two reasons the
+    // adapter needs `readRows` are checked as one (`needsPriorRow`).
+    const needsPrior = this.collections.filter(
+      (c) => this.access.get(c.name)!.ownerRead || ['update', 'delete'].some((v) => this.access.get(c.name)!.policies[v as 'update'] === 'owner'),
+    )
+    if (needsPrior.length && !this.adapter.readRows) {
       throw new Error(
-        `collection(s) ${privateRead.map((c) => `"${c.name}"`).join(', ')} read as 'owner' or 'authed', ` +
-          'so the room needs a `broadcastTo` to fan their rows out to the right sockets only',
+        `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy, ` +
+          "so the room needs an adapter with readRows, to read the row as it stood before the write",
       )
     }
-    const storedCheck = accesses.some((a) => a.policies.update === 'owner' || a.policies.delete === 'owner')
-    if (storedCheck && !this.adapter.readRows) {
-      throw new Error("an 'owner' update or delete needs an adapter with readRows, to check the stored row's owner")
-    }
-    if (accesses.some((a) => !isOpen(a)) && !this.auth?.()) {
+    if (accesses.some((a) => !a.open) && !this.auth?.()) {
       console.warn(
         'party-db: collections declare access policies, but the room has no `auth` hook, so every request is ' +
           "anonymous: 'authed' and 'owner' verbs are refused, and their rows are never read.",
@@ -174,18 +171,11 @@ export class PartyDbCore {
     }
   }
 
-  // True when a connect needs to know who the socket belongs to: some collection
-  // reads as 'owner' or 'authed'. A room where every read is public never calls
-  // the `auth` hook on connect.
-  get readsNeedIdentity(): boolean {
-    return [...this.access.values()].some((a) => a.policies.read === 'owner' || a.policies.read === 'authed')
-  }
-
   // Resolve who a connecting socket belongs to, from its upgrade request, with the
   // same `auth` hook writes use. Pin the result to the socket (it survives
   // hibernation as a tag, see `viewerTags`) and pass it to `connect`,
-  // `handleMessage`, and `broadcastTo`'s lookup. A hook that throws, or a room
-  // with no private reads, resolves anonymous.
+  // `handleMessage`, and the audience lookup in `broadcast`. A hook that throws,
+  // or a room with no private reads, resolves anonymous.
   async resolveViewer(req: Request): Promise<Viewer> {
     const auth = this.auth?.()
     if (!auth || !this.readsNeedIdentity) return ANONYMOUS
@@ -196,9 +186,21 @@ export class PartyDbCore {
     }
   }
 
-  // `batch` as `viewer` may read it, or null for nothing to send.
+  // `batch` as `viewer` may read it, or null for nothing to send. A channel the
+  // room does not serve has no policy and nothing to filter.
   private visible(batch: SequencedBatch, viewer: Viewer): SequencedBatch | null {
-    return visibleTo(this.access.get(batch.channel), batch, viewer)
+    const access = this.access.get(batch.channel)
+    return access ? visibleTo(access, batch, viewer) : batch
+  }
+
+  // Send each batch this viewer may read, in order. The one send loop behind
+  // `connect` and `handleMessage`, so the read filter cannot be applied in one and
+  // forgotten in the other.
+  private sendVisible(send: (message: string) => void, batches: SequencedBatch[], viewer: Viewer): void {
+    for (const batch of batches) {
+      const visible = this.visible(batch, viewer)
+      if (visible) send(JSON.stringify(visible))
+    }
   }
 
   // Serve one party-db client's connect: a reconnecting client passes
@@ -220,10 +222,7 @@ export class PartyDbCore {
       const cursor = cursorParam(parsed.searchParams.get('since'))
       const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
       const batches = delta ?? (await this.adapter.snapshot())
-      for (const b of batches) {
-        const visible = this.visible(b, viewer)
-        if (visible) send(JSON.stringify(visible))
-      }
+      this.sendVisible(send, batches, viewer)
     })
   }
 
@@ -248,10 +247,7 @@ export class PartyDbCore {
       const batches = await this.adapter.snapshot(channel)
       // an adapter that ignores the argument hands back every channel; send only
       // the one that was asked for, as this socket's user may read it.
-      for (const b of batches) {
-        const visible = b.channel === channel ? this.visible(b, viewer) : null
-        if (visible) send(JSON.stringify(visible))
-      }
+      this.sendVisible(send, batches.filter((b) => b.channel === channel), viewer)
     })
   }
 
@@ -291,6 +287,17 @@ export class PartyDbCore {
         return Response.json({ error: `ops must be an array (channel: ${batch.channel})`, channel: batch.channel } satisfies WriteReject, {
           status: 400,
         })
+      }
+      // Every op is shaped here, before anything reads into it. The access gate
+      // and the statement builders both index `op.value` by column name, so a
+      // null or primitive value would throw out of them as a 500 rather than come
+      // back as the bad request it is.
+      const bad = batch.ops.find((op) => !isWritableOp(op))
+      if (bad) {
+        return Response.json(
+          { error: `each op needs a type of insert/update/delete and an object value (channel: ${batch.channel})`, channel: batch.channel } satisfies WriteReject,
+          { status: 400 },
+        )
       }
     }
     const opCount = body.reduce((n, b) => n + (b?.ops?.length ?? 0), 0)
@@ -334,21 +341,11 @@ export class PartyDbCore {
     // policy, the owner column stamped or checked, before any transaction opens.
     // The stored-row half of an 'owner' update or delete runs inside the queue.
     const viewer: Viewer = { uid: uidOf(identity) }
-    let gated: WriteBatch[]
-    try {
-      gated = gateWrite(this.access, body, viewer)
-    } catch (e) {
-      if (!(e instanceof AccessDenied)) throw e
-      return Response.json({ error: e.message, channel: e.channel } satisfies WriteReject, { status: e.status })
-    }
 
     let sequenced: SequencedBatch[]
     try {
-      sequenced = await this.commitSection(gated, identity ?? undefined, viewer)
+      sequenced = await this.commitSection(gateWrite(this.access, body, viewer), identity ?? undefined, viewer)
     } catch (e) {
-      if (e instanceof AccessDenied) {
-        return Response.json({ error: e.message, channel: e.channel } satisfies WriteReject, { status: e.status })
-      }
       // a constraint rejection is the database's verdict on the DATA — hand it
       // back faithfully (409) so the client can roll back and report it. Anything
       // else (missing table, adapter bug) is an internal fault: log the detail
@@ -361,7 +358,10 @@ export class PartyDbCore {
       // the SQLite-message regex. The rejection picks the status too — 409 for an
       // integrity conflict (default), 403 for an RLS denial — stripped from the
       // client body.
-      const rejection = e instanceof MissedUpdateError ? e.rejection : this.adapter.classifyError?.(e)
+      // an access refusal (401/403) and a missed update (409) both carry their own
+      // rejection, so they render through the one path the adapter's verdicts use.
+      const rejection =
+        e instanceof MissedUpdateError || e instanceof AccessDenied ? e.rejection : this.adapter.classifyError?.(e)
       if (rejection) {
         const { status = 409, ...reject } = rejection
         return Response.json(reject satisfies WriteReject, { status })
@@ -406,7 +406,10 @@ export class PartyDbCore {
   // 409/403/500; host code catches it however it reports its own failures.
   //
   // Host-authored writes skip the access policies' write gate — the host is
-  // trusted — but their fan-out still follows each collection's read policy.
+  // trusted — but their fan-out still follows each collection's read policy, so a
+  // write to an 'owner'-read collection still reads each row's prior owner. That
+  // is what lets a host reassign an owner column: the new owner is sent the row
+  // and the old owner is sent a delete.
   commit(batches: WriteBatch[], identity?: WriteIdentity): Promise<SequencedBatch[]> {
     return this.commitSection(batches, identity)
   }
@@ -416,8 +419,7 @@ export class PartyDbCore {
   // queue, so no other write can change that row between the check and the commit.
   private commitSection(batches: WriteBatch[], identity?: WriteIdentity, viewer?: Viewer): Promise<SequencedBatch[]> {
     return this.serialize(async () => {
-      const checked = viewer ? await this.checkOwners(batches, viewer) : batches
-      const sequenced = await this.adapter.write(checked, identity)
+      const sequenced = await this.adapter.write(await this.withPriorRows(batches, viewer), identity)
       // broadcast only after the commit succeeds, inline inside the queued
       // section, which is what keeps broadcast order == seq order.
       for (const batch of sequenced) this.fanOut(batch)
@@ -425,27 +427,43 @@ export class PartyDbCore {
     })
   }
 
-  private async checkOwners(batches: WriteBatch[], viewer: Viewer): Promise<WriteBatch[]> {
+  // Read each written row as it stands BEFORE the write, and stamp it onto the op.
+  // A `viewer` also gets the 'owner' update/delete authorized against it; a host
+  // write has no viewer and skips that, but still needs the read, because an
+  // 'owner' read fans out by who owned the row before as well as after.
+  //
+  // The channels are read concurrently: each is a round trip on D1 and Postgres,
+  // and this runs inside the queue, where the whole room waits on it.
+  private async withPriorRows(batches: WriteBatch[], viewer?: Viewer): Promise<WriteBatch[]> {
     const needed = storedKeysNeeded(this.access, batches)
     if (!needed.size) return batches
-    const stored = new Map<string, Map<string, Record<string, unknown>>>()
-    for (const [channel, keys] of needed) {
-      const key = this.access.get(channel)!.key
-      const rows = (await this.adapter.readRows?.(channel, keys)) ?? []
-      stored.set(channel, new Map(rows.map((row) => [String(row[key]), row])))
-    }
-    return checkStored(this.access, batches, stored, viewer)
+    const read = await Promise.all(
+      [...needed].map(async ([channel, keys]) => {
+        const key = this.access.get(channel)!.key
+        const rows = (await this.adapter.readRows?.(channel, keys)) ?? []
+        return [channel, new Map(rows.map((row) => [String(row[key]), row]))] as const
+      }),
+    )
+    return applyPriorRows(this.access, batches, new Map(read), viewer)
   }
 
   // Send one committed batch to the sockets allowed to read it: everyone for a
   // public collection (one serialization, §9's fast path), otherwise per audience.
   private fanOut(batch: SequencedBatch): void {
-    for (const { audience, batch: frame } of audiencesOf(this.access.get(batch.channel), batch)) {
-      const message = JSON.stringify(frame)
-      if (audience === 'all') this.broadcast(message)
-      else this.broadcastTo?.(message, audience)
-    }
+    const access = this.access.get(batch.channel)
+    if (!access) return this.broadcast(JSON.stringify(batch), 'all')
+    for (const { audience, batch: frame } of audiencesOf(access, batch)) this.broadcast(JSON.stringify(frame), audience)
   }
+}
+
+// One op's shape, checked before the access gate or a statement builder indexes
+// into it. The type has to be one we build SQL for, and the value an object,
+// because every path below reads it by column name.
+function isWritableOp(op: unknown): boolean {
+  if (typeof op !== 'object' || op === null) return false
+  const { type, value } = op as { type?: unknown; value?: unknown }
+  if (type !== 'insert' && type !== 'update' && type !== 'delete') return false
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 // Parse the `?since` query param into a usable cursor. null → snapshot: missing,

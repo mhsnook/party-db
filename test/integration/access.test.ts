@@ -95,3 +95,42 @@ describe('owned collections at the wire', () => {
     alice.ws.close()
   })
 })
+
+// A card that changes hands has to reach both sockets: the new owner's, and the
+// old owner's, which must be told the row is gone. Neither the live fan-out nor a
+// reconnect can read that off the row as it stands after the write.
+describe('owned collections — a card that changes hands', () => {
+  it("delivers it to the new owner and withdraws it from the old one", async () => {
+    const room = 'owned-handoff'
+    expect((await post(room, card('c1'), 'alice')).status).toBe(200)
+    const [alice, bob] = [await connect(room, 'alice'), await connect(room, 'bob')]
+    for (const s of [alice, bob]) await settled(s.frames)
+
+    const given = await SELF.fetch(url(room, { giveTo: 'bob', card: 'c1' }), { headers: roomHeader(room) })
+    expect(given.status).toBe(200)
+
+    await expect.poll(() => live(bob.frames).length).toBe(1)
+    await expect.poll(() => live(alice.frames).length).toBe(1)
+    expect(live(bob.frames)[0].ops.map((o) => o.type)).toEqual(['insert'])
+    expect(live(alice.frames)[0].ops.map((o) => o.type)).toEqual(['delete'])
+    // the new owner is not told who held it before
+    expect(live(bob.frames)[0].ops[0]).not.toHaveProperty('previousValue')
+    for (const s of [alice, bob]) s.ws.close()
+  })
+
+  it('replays the withdrawal to a socket that reconnects after missing it', async () => {
+    const room = 'owned-handoff-replay'
+    expect((await post(room, card('c2'), 'alice')).status).toBe(200)
+    const first = await connect(room, 'alice')
+    await settled(first.frames)
+    const seq = first.frames.find((f) => f.channel === 'cards')!.seq as number
+    first.ws.close()
+
+    expect((await SELF.fetch(url(room, { giveTo: 'bob', card: 'c2' }), { headers: roomHeader(room) })).status).toBe(200)
+
+    const back = await connect(room, 'alice', seq)
+    await expect.poll(() => back.frames.length).toBeGreaterThan(0)
+    expect(back.frames.flatMap((f) => f.ops.map((o) => o.type))).toEqual(['delete'])
+    back.ws.close()
+  })
+})

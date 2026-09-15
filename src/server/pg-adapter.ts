@@ -234,22 +234,19 @@ export class PgAdapter implements PersistenceAdapter {
     await c.query(toPg(`DELETE FROM _oplog WHERE seq <= (SELECT MAX(seq) FROM _oplog) - ?`), [this.retention])
   }
 
-  // `channel` narrows the snapshot to one collection — the re-register request
-  // (docs/architecture.md §8a). Unknown name → no batches.
-  // The stored rows for these keys: the write gate's read for an 'owner' update or
-  // delete. Read on the adapter's own connection, as the snapshot is.
+  // The rows as they stand for these keys: what the write reads to authorize an
+  // 'owner' update or delete and to fan it out by its prior owner. Read on the
+  // adapter's own connection, as the snapshot is.
   async readRows(channel: string, keys: unknown[]): Promise<Record<string, unknown>[]> {
     const plan = this.plans.get(channel)
     if (!plan || plan.kind !== 'structured' || !keys.length) return []
     const c = await this.conn()
-    const out: Record<string, unknown>[] = []
-    for (const { sql, binds } of readRowsStmts(plan, keys, 1000, pgEncode)) {
-      const { rows } = await c.query(toPg(sql), binds)
-      out.push(...rows.map((r) => pgDecodeRow(r, plan.kinds)))
-    }
-    return out
+    const chunks = await Promise.all(readRowsStmts(plan, keys, 1000, pgEncode).map(({ sql, binds }) => c.query(toPg(sql), binds)))
+    return chunks.flatMap(({ rows }) => rows.map((r) => pgDecodeRow(r, plan.kinds)))
   }
 
+  // `channel` narrows the snapshot to one collection — the re-register request
+  // (docs/architecture.md §8a). Unknown name → no batches.
   async snapshot(channel?: string): Promise<SequencedBatch[]> {
     const structured = snapshotPlans(this.plans, channel).filter((p): p is StructuredPlan => p.kind === 'structured')
     // nothing to read (an unknown or schema-less channel): don't open a transaction

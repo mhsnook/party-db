@@ -96,10 +96,11 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
     this.core = new PartyDbCore({
       collections: this.collections,
       adapter: this.createAdapter(),
-      broadcast: (message) => this.broadcast(message),
-      // the sockets an 'owner' or 'authed' collection's rows may reach, found by
-      // the tags `getConnectionTags` pinned at connect.
-      broadcastTo: (message, audience) => {
+      // 'all' is partyserver's own room-wide broadcast (§9's one serialization);
+      // any narrower audience is looked up by the tags `getConnectionTags` pinned
+      // to each socket at connect.
+      broadcast: (message, audience) => {
+        if (audience === 'all') return this.broadcast(message)
         for (const conn of this.getConnections(audienceTag(audience))) conn.send(message)
       },
       // `auth` threads as a live read: the core asks for the hook on every
