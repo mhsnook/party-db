@@ -1,5 +1,68 @@
 # Changes
 
+## 2026-09-15 - v0.0.5
+
+Access policies are enforced. `access` and `ownerColumn` shipped as declared-but-inert
+surface in v0.0.2; setting them changed nothing except a startup warning. They now
+decide who may read, insert, update and delete each collection, on every adapter
+(#33, #59). The recipe is unchanged from what cookbook 5 always showed:
+
+```ts
+definePartyCollection({ name: 'cards', key: 'id', schema, ownerColumn: 'user_id' })
+auth = (req) => ({ claims: { sub: uid } })
+```
+
+Breaking:
+
+- **A room that already declares `access` or `ownerColumn` now enforces it.** Before
+  this release those rooms served every row to everyone. If you declared a policy to
+  try it out, check it says what you meant before upgrading.
+- **`PartyDbCore`'s `broadcast` option takes an audience**: `broadcast(message,
+  audience)`, where `audience` is `'all'`, `'authed'`, or `{ uid }`. A composed host
+  (`docs/architecture.md` §15) sends to `getConnections(audienceTag(audience))` for
+  anything but `'all'`. `PartyDbServer` subclasses are untouched. This replaces the
+  optional second callback the feature first shipped with, so a private row cannot be
+  fanned out to everyone by an option nobody set.
+- **`ownerColumn` is typed `UidColumn<T>`**: a string or number column. A column the
+  schema types as anything else no longer compiles, and is refused at boot.
+- **A room with an `'owner'` policy needs an adapter with `readRows`**, or it refuses
+  to start. All three shipped adapters have it.
+
+Added:
+
+- The four policies (`'public'`, `'authed'`, `'owner'`, `'none'`) and both shorthands,
+  enforced at four choke points: the write gate, the snapshot, the `?since` delta, and
+  the fan-out. An `'owner'` insert stamps the owner column from your verified uid; a
+  forged one is a 403. An `'owner'` update or delete is checked against the stored row,
+  not the payload. A socket reads only its own user's rows. How it works and what it
+  costs: `docs/architecture.md` §17.
+- **A row can change hands.** Reassign an owner column with `commit()` and the new
+  owner is sent the row while the old owner is sent a delete — live, and in any later
+  `?since` replay. Nothing in the row as it stands after a write can say it left
+  someone's reach, so the write reads the row as it stood before and routes by both.
+- **A user id can be an integer.** `users.id` is a `SERIAL` as often as it is a uuid,
+  and party-db never asks you to change your tables. The `sub` claim is a string by the
+  JWT spec, so owners compare as text: `user_id` 1 owns what `sub` `"1"` owns.
+- `PersistenceAdapter.readRows?(channel, keys)` — the prior-row read, on all three
+  adapters.
+- `PartyDbCore.resolveViewer(req)`, and `PartyDbServer.getConnectionTags`, which pins a
+  socket's user to it as partyserver tags that survive hibernation.
+- `viewerTags`, `viewerFromTags`, `audienceTag`, and the `Viewer` and `Audience` types,
+  exported from `party-db/server` so a composed host can reuse the same scheme.
+- A malformed op in a write body is a 400 naming the problem, rather than an error out
+  of the statement builder.
+
+Known gaps, all named in `docs/architecture.md` §17:
+
+- A socket keeps the uid it connected with. Signing in or out takes effect on
+  reconnect; `example-react-polyglot` reloads the tab to get one.
+- The prior-row read and the write are two statements, made atomic by the room's write
+  queue. That covers the Durable Object's own SQLite, where the room is the only
+  writer. On D1 or Postgres another writer can still move a row in between.
+- Snapshots still read whole tables and filter in JavaScript.
+- Cookbook 6's expression rules, ownership by a claim other than `sub`, and a
+  client-side predictor are not built.
+
 ## 2026-09-03 - v0.0.4
 
 Fixed:
