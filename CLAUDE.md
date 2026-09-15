@@ -71,9 +71,9 @@ Vocabulary, used exactly this way everywhere:
 - **The wire is mode-invariant.** A client cannot tell which mode its room runs. Changing mode is a
   server-only migration.
 
-### Two kinds of contract — only one binds
+### Three kinds of contract — two of them bind
 
-Two different things get called "the contract" in review. Keep them apart:
+Three different things get called "the contract" in review. Keep them apart:
 
 - **The userspace contract** — everything app code touches: the exported API (`createPartyDb`,
   `partyTransport`, `PartyDbServer`, `PartyDbCore` and its options), the TanStack DB behavior,
@@ -84,6 +84,13 @@ Two different things get called "the contract" in review. Keep them apart:
   protocol version fields, or migration paths for them — there is no independently-versioned party
   to protect. The one real skew, a stale browser tab running the old client against a redeployed
   room, is accepted pre-1.0: the tab reloads.
+- **Durable state** — the `_oplog`, and the shape of the ops stored in it. It is neither of the
+  above: we own it, so it is not userspace, but it outlives the deploy, so lockstep does not cover
+  it. Lockstep's premise is that there is no independently-versioned party to protect. Here there
+  is one — a later version of us. An entry written today is replayed by whatever ships next, so
+  changing what goes into `ops` costs a read-side fallback until retention ages the old entries
+  out. That is not a migration path, it is reading your own old data. Before you change a stored
+  op's shape, ask what the next version will see.
 
 When an issue or plan says "no wire changes", read it as "no userspace-visible changes" unless it
 says otherwise. The `?proto=party-db` marker (PR #44) is the model: a wire addition, invisible to

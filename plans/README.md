@@ -82,22 +82,38 @@ review on #59.
    database. Check-then-write is racy; write-guarded-then-explain is not — guard the
    statement, and read only to tell a 403 from §16's 409. Same seam B's compiled
    `WHERE` needs.
-3. **Give the committed op a server-authored pre-image of its own.** `previousValue`
-   is a TanStack field carrying the client's optimistic copy on public collections and
-   the server's authoritative row on owner-read ones, indistinguishably, and both go
-   into the `_oplog`. A `prior` holding just the key and the owner column would be
-   honest about provenance and would stop owner-collection oplog entries carrying two
-   full rows.
+3. **Stop the client sending `previousValue`.** It is dead weight: TanStack DB never
+   reads the one we send. Checked against `@tanstack/db` 0.6.10 — `sync.write()`
+   spreads the message into the pending op, every consumer of a synced transaction
+   reads only `key`, `type` and `value`, and what subscribers finally see is rebuilt by
+   `enrichChangeMessage` from the collection's own `syncedData` and optimistic
+   snapshots. Sending it is also the whole reason the field means two things: the
+   client's optimistic copy on a public collection, the server's stored row on an
+   owner-read one. Drop it from `toEvent`, stop echoing it down, and the slot is
+   unambiguously server-authored.
+
+   No new field, no rename, and nothing to reconcile in already-stored entries — which
+   is why this is cheap. The only read-path consumer is `priorOf`, reached only for an
+   `'owner'` read, and there every op that reaches the `_oplog` already carries a
+   server-read prior: an update that matched no row is §16's 409 and never commits, and
+   a delete carries its row in `value`, not `previousValue`. Client hearsay survives
+   only on collections whose reads short-circuit before `opFor` ever looks.
+
+   Narrowing that stored row to the key and the owner column is a separate, deferrable
+   win. That one IS a stored-op shape change, so it pays the read-side fallback the
+   durable-state contract describes (CLAUDE.md → "Three kinds of contract"). Do not
+   bundle the two.
 4. **Make the fan-out's recipients explicit rather than implied by row data.** A
    delete of a row that is already gone still has to reach the writer, so
    `applyPriorRows` invents a row carrying their uid — and that invented row is
    persisted and replayed. Routing intent should be an argument
-   (`audiencesOf(access, batch, writer?)`), not fabricated data. Note the naive fix is
-   worse: letting the no-op delete keep its payload routes it to whatever owner the
-   client claimed.
+   (`audiencesOf(access, batch, writer?)`), not fabricated data. Server-internal, no
+   wire or storage change. Note the naive fix is worse: letting the no-op delete keep
+   its payload routes it to whatever owner the client claimed.
 5. **Reuse the fan-out's own frame for the write acknowledgement.** `fanOut` already
    builds the writer's frame; `handleWrite` then walks every op again to build
-   `readable`. Needs `commitSection` to return what it broadcast.
+   `readable`. Needs `commitSection` to return what it broadcast. Server-internal, and
+   nothing gates it.
 6. **Move `access`/`ownerColumn` off the core `PartyCollection`** (#33's first
    bullet), so a Postgres-native user who never opts in does not see them, and split
    `access.ts` on purity — the pure half (`policiesOf`, `canRead`, `opFor`,
