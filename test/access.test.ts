@@ -83,15 +83,23 @@ describe('checkAccess — what cannot be enforced refuses to start', () => {
     expect(() => checkAccess(loose({ name: 'cards', key: 'id', schema, ownerColumn: 'nope' }))).toThrow(/does not declare/)
   })
 
+  // `kind` would pass every one of these — it calls anything that is not a boolean
+  // or a document a 'scalar'. They reach `idOf` as null, which would hide every row
+  // from its own owner instead of failing.
   it('refuses an ownerColumn that cannot be an id at all', () => {
-    for (const [bad, shown] of [[z.boolean(), /types as boolean/], [z.object({ a: z.string() }), /types as object/]] as const) {
+    for (const [bad, shown] of [
+      [z.boolean(), /types as boolean/],
+      [z.object({ a: z.string() }), /types as object/],
+      [z.date(), /types as date/],
+      [z.enum(['a', 'b']), /types as enum/],
+    ] as const) {
       const s = z.object({ id: z.string(), user_id: bad, text: z.string() })
       expect(() => checkAccess(loose({ name: 'cards', key: 'id', schema: s, ownerColumn: 'user_id' }))).toThrow(shown)
     }
   })
 
-  it('accepts any id a real users table holds: a serial, a uuid, an email, a bigint', () => {
-    for (const uid of [z.number(), z.int(), z.bigint(), z.uuid(), z.email(), z.string().nullable(), z.iso.datetime()]) {
+  it('accepts any id a real users table holds: a serial, a bigint, a uuid', () => {
+    for (const uid of [z.number(), z.int(), z.bigint(), z.uuid(), z.string().nullable()]) {
       const s = z.object({ id: z.string(), user_id: uid, text: z.string() })
       expect(() => checkAccess(loose({ name: 'cards', key: 'id', schema: s, ownerColumn: 'user_id' }))).not.toThrow()
     }

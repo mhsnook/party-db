@@ -85,6 +85,18 @@ export function isSequencedBatch(value: unknown): value is SequencedBatch {
   return typeof frame.channel === 'string' && Array.isArray(frame.ops)
 }
 
+// One op's shape, checked at the edge before anything reads into it. The access
+// gate and the statement builders both index `op.value` by column name, so a null
+// or primitive value would throw out of them as a 500 rather than come back as the
+// bad request it is. Lives here with the other wire guards, and is the ONE place
+// that says what a writable op looks like — nothing downstream re-checks it.
+export function isWritableOp(value: unknown): value is WriteEvent {
+  if (typeof value !== 'object' || value === null) return false
+  const { type, value: row } = value as { type?: unknown; value?: unknown }
+  if (type !== 'insert' && type !== 'update' && type !== 'delete') return false
+  return typeof row === 'object' && row !== null && !Array.isArray(row)
+}
+
 // The one frame a client sends UP the socket: "re-send me this channel." The
 // reply is not a frame type of its own — the server answers with an ordinary
 // snapshot batch for that channel (`reset: true`, `ready: true`), to the asking

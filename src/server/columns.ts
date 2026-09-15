@@ -18,8 +18,8 @@ import type { StandardSchemaV1 } from '@standard-schema/spec'
 export type ColumnKind = 'boolean' | 'json' | 'scalar'
 // `tag` is the schema's own base type name ('string', 'number', 'enum'…), past the
 // Optional/Nullable/Default wrappers — undefined when the field is not a Zod node.
-// The codec only needs `kind`; `tag` answers a question the codec does not ask,
-// whether a column can hold a uid (`checkAccess`).
+// The codec only needs `kind`, which collapses everything that is not a boolean or
+// a document into 'scalar'; `canHoldUid` needs the distinction `kind` threw away.
 export type ColumnSpec = { name: string; kind: ColumnKind; tag?: string }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -84,6 +84,30 @@ function kindFromTag(tag: string | undefined): ColumnKind {
   if (tag === 'boolean') return 'boolean'
   if (JSON_TAGS.has(tag)) return 'json'
   return 'scalar'
+}
+
+// A row's owner value as the access rules compare it: text. The `sub` claim is
+// always a string (JWT spec) and a database's own user id is as often an integer,
+// so the two meet here rather than in the app's schema — `user_id` 1 owns what
+// `sub` "1" owns. Anything that cannot be an id is nobody, never the string
+// "null" or "[object Object]".
+export function idOf(value: unknown): string | null {
+  if (typeof value === 'string') return value === '' ? null : value
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null
+  if (typeof value === 'bigint') return String(value)
+  return null
+}
+
+// The base types `idOf` can turn into an id, so a boot check and the `UidColumn<T>`
+// type test the same set. An unintrospectable schema has no tag and cannot be
+// judged here; `idOf` still fails it closed at runtime.
+const UID_TAGS: ReadonlySet<string> = new Set(['string', 'number', 'bigint'])
+
+// Whether a column could hold a user id. `kind` is the wrong question — it lumps
+// every non-boolean, non-JSON type into 'scalar', so a date, an enum or a symbol
+// column would pass and then match nobody.
+export function canHoldUid(column: ColumnSpec): boolean {
+  return column.tag === undefined || UID_TAGS.has(column.tag)
 }
 
 // JS value → a value SQLite can bind (null | number | string | bigint). Driven by

@@ -13,7 +13,7 @@
 import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { AccessPolicy, PartyCollection } from '../schema.ts'
 import type { WriteIdentity, WriteRejection } from './persistence.ts'
-import { columnsOf } from './columns.ts'
+import { canHoldUid, columnsOf, idOf } from './columns.ts'
 
 export type Verb = 'read' | WriteEvent['type']
 
@@ -40,12 +40,13 @@ export type CollectionAccess = {
   key: string
   // every verb is 'public': behaves exactly as a collection with no declaration
   open: boolean
-  // reads depend on WHO is asking, so a socket needs a resolved identity and the
-  // fan-out needs an audience
-  privateRead: boolean
   // reads depend on the ROW's owner, so the fan-out has to know who owned it
   // before the write as well as after
   ownerRead: boolean
+  // some update or delete on this collection needs its prior row read — the
+  // collection-level form of `needsPriorRow`, so the boot check that demands
+  // `readRows` and the per-op read cannot answer differently
+  needsPrior: boolean
 }
 
 const every = (policy: AccessPolicy): Policies => ({ read: policy, insert: policy, update: policy, delete: policy })
@@ -74,32 +75,23 @@ export function accessOf(collection: PartyCollection<any>): CollectionAccess {
     ownerColumn: collection.ownerColumn,
     key: collection.key,
     open: Object.values(policies).every((policy) => policy === 'public'),
-    privateRead: policies.read === 'owner' || policies.read === 'authed',
     ownerRead: policies.read === 'owner',
+    needsPrior: policies.read === 'owner' || policies.update === 'owner' || policies.delete === 'owner',
   }
 }
 
-// A row's owner value as the rules compare it: text. The `sub` claim is always a
-// string (JWT spec), and a database's own user id is as often an integer, so the
-// two meet here rather than in the app's schema — `user_id` 1 owns what `sub` "1"
-// owns. Anything that cannot be an id — null, a boolean, a document — is nobody,
-// never the string "null" or "[object Object]".
-export function idOf(value: unknown): string | null {
-  if (typeof value === 'string') return value === '' ? null : value
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null
-  if (typeof value === 'bigint') return String(value)
-  return null
-}
+export { idOf } from './columns.ts'
 
-// The uid the rules compare against: the verified identity's `sub` claim.
+// The uid the rules compare against: the verified identity's `sub` claim, read by
+// the same rule as a row's owner column. Both sides of every comparison normalize
+// the same way, so a verifier that hands back a numeric `sub` is not an id on one
+// side and nobody on the other.
 export function uidOf(identity: WriteIdentity | null | undefined): string | null {
-  const sub = identity?.claims?.sub
-  return typeof sub === 'string' && sub !== '' ? sub : null
+  return idOf(identity?.claims?.sub)
 }
 
 // Fail at boot, not on the first request, when a declaration cannot be enforced
-// as written. A schema-less (blob) collection has no columns to check against, so
-// only the first rule applies to it.
+// as written.
 export function checkAccess(collection: PartyCollection<any>): void {
   const { policies, ownerColumn } = accessOf(collection)
   const name = collection.name
@@ -111,12 +103,9 @@ export function checkAccess(collection: PartyCollection<any>): void {
   if (!columns) return // schema-less (blob): no declared columns to check against
   const column = columns.find((c) => c.name === ownerColumn)
   if (!column) throw new Error(`collection "${name}" names ownerColumn "${ownerColumn}", which its schema does not declare`)
-  // A string or a number can be a user id, and both compare as text (`idOf`). A
-  // boolean or a document cannot be one at all: it would match nothing and hide
-  // every row from its own owner rather than fail.
-  if (column.kind !== 'scalar') {
+  if (!canHoldUid(column)) {
     throw new Error(
-      `collection "${name}" names ownerColumn "${ownerColumn}", which its schema types as ${column.tag ?? column.kind}. ` +
+      `collection "${name}" names ownerColumn "${ownerColumn}", which its schema types as ${column.tag}. ` +
         'An owner column holds a user id, so declare it as a string or a number.',
     )
   }
@@ -202,23 +191,22 @@ export function audiencesOf(access: CollectionAccess, batch: SequencedBatch): { 
   if (read === 'authed') return [{ audience: 'authed', batch }]
   if (read === 'none') return []
   const byOwner = new Map<string, WriteEvent[]>()
+  const add = (uid: string | null, op: WriteEvent | null) => {
+    if (uid === null || op === null) return
+    const ops = byOwner.get(uid)
+    if (ops) ops.push(op)
+    else byOwner.set(uid, [op])
+  }
+  // Each op's two owners are derived once here rather than re-read per audience:
+  // this runs inside the serialized commit section, where the room waits on it.
   for (const op of batch.ops) {
-    for (const uid of ownersOf(access, op)) {
-      const seen = opFor(access, op, { uid })
-      if (!seen) continue
-      const ops = byOwner.get(uid)
-      if (ops) ops.push(seen)
-      else byOwner.set(uid, [seen])
-    }
+    const prior = priorOf(op)
+    const before = ownerOf(access, prior)
+    const now = op.type === 'delete' ? null : ownerOf(access, op.value)
+    if (now !== null) add(now, now === before || prior === undefined ? op : { type: 'insert', value: op.value })
+    if (before !== null && before !== now) add(before, { type: 'delete', value: prior as Record<string, unknown> })
   }
   return [...byOwner].map(([uid, ops]) => ({ audience: { uid }, batch: { ...batch, ops } }))
-}
-
-// The uids one op concerns: who owns the row now, and who owned it before. A row
-// with no owner is nobody's to read.
-function ownersOf(access: CollectionAccess, op: WriteEvent): string[] {
-  const uids = [ownerOf(access, op.value), ownerOf(access, priorOf(op))].filter((uid): uid is string => uid !== null)
-  return uids.length === 2 && uids[0] === uids[1] ? [uids[0]] : uids
 }
 
 // ---- writes ----
@@ -229,7 +217,7 @@ function ownersOf(access: CollectionAccess, op: WriteEvent): string[] {
 export class AccessDenied extends Error {
   readonly rejection: WriteRejection
 
-  constructor(status: 400 | 401 | 403, message: string, readonly channel: string) {
+  constructor(status: 401 | 403, message: string, readonly channel: string) {
     super(message)
     this.name = 'AccessDenied'
     this.rejection = { error: message, channel, status }
@@ -251,9 +239,11 @@ export function gateWrite(accessByChannel: Map<string, CollectionAccess>, batche
   })
 }
 
+// Every op reaching here has passed `isWritableOp` (protocol.ts): its type is one
+// of the three, and its value is a plain object. Re-checking that would be a third
+// spelling of one rule.
 function gateOp(access: CollectionAccess, channel: string, op: WriteEvent, viewer: Viewer): WriteEvent {
   const policy = access.policies[op.type]
-  if (policy === undefined) throw new AccessDenied(400, `unknown op type on "${channel}"`, channel)
   if (policy === 'public') return op
   if (policy === 'none') throw new AccessDenied(403, `${op.type} is not allowed on "${channel}"`, channel)
   if (viewer.uid === null) throw new AccessDenied(401, `${op.type} on "${channel}" requires a signed-in user`, channel)
@@ -261,8 +251,7 @@ function gateOp(access: CollectionAccess, channel: string, op: WriteEvent, viewe
 
   // 'owner': the owner column must be the writer's own uid, never someone else's.
   const column = access.ownerColumn!
-  const value = op.value as Record<string, unknown> | null
-  if (value === null || typeof value !== 'object') throw new AccessDenied(400, `op value must be an object on "${channel}"`, channel)
+  const value = op.value as Record<string, unknown>
   // presence is read raw (an absent column is stamped); the comparison is by id,
   // so a client sending the number 1 for a SERIAL column matches the claim "1".
   const owner = value[column]
@@ -291,19 +280,24 @@ export function needsPriorRow(access: CollectionAccess, op: WriteEvent): boolean
 
 // The keys whose stored rows the write needs, grouped by channel and deduped.
 export function storedKeysNeeded(accessByChannel: Map<string, CollectionAccess>, batches: WriteBatch[]): Map<string, unknown[]> {
-  const needed = new Map<string, Set<unknown>>()
+  const needed = new Map<string, unknown[]>()
+  const seen = new Map<string, Set<unknown>>()
   for (const batch of batches) {
     const access = accessByChannel.get(batch.channel)
     if (!access) continue
     for (const op of batch.ops) {
       if (!needsPriorRow(access, op)) continue
       const key = (op.value as Record<string, unknown> | null)?.[access.key]
-      const keys = needed.get(batch.channel)
-      if (keys) keys.add(key)
-      else needed.set(batch.channel, new Set([key]))
+      let keys = seen.get(batch.channel)
+      if (!keys) seen.set(batch.channel, (keys = new Set()))
+      if (keys.has(key)) continue
+      keys.add(key)
+      const list = needed.get(batch.channel)
+      if (list) list.push(key)
+      else needed.set(batch.channel, [key])
     }
   }
-  return new Map([...needed].map(([channel, keys]) => [channel, [...keys]]))
+  return needed
 }
 
 // The stored-row half of the write, run inside the queue so no other write of this

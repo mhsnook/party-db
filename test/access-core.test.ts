@@ -80,6 +80,9 @@ const card = (id: string, status = 'learning', extra: Record<string, unknown> = 
 ]
 const ids = (frames: SequencedBatch[], channel: string) =>
   frames.filter((f) => f.channel === channel).flatMap((f) => f.ops.map((op) => (op.value as { id: string }).id))
+// what arrived AFTER the snapshot: the fan-out, which is what most of these assert
+const live = (s: { frames: SequencedBatch[] }) => s.frames.filter((f) => !f.reset)
+const types = (s: { frames: SequencedBatch[] }) => live(s).flatMap((f) => f.ops.map((o) => o.type))
 
 describe('access — the write gate', () => {
   it("stamps the writer's uid on an owner insert", async () => {
@@ -103,7 +106,7 @@ describe('access — the write gate', () => {
     const drop = await post([{ channel: 'cards', ops: [{ type: 'delete', value: { id: 'c1' } }] }], 'alice')
     expect([edit.status, drop.status]).toEqual([403, 403])
     expect(edit.body).toMatchObject({ channel: 'cards' })
-    expect(bob.frames.filter((f) => !f.reset)).toEqual([])
+    expect(live(bob)).toEqual([])
   })
 
   it('lets an owner update and delete their own row', async () => {
@@ -140,7 +143,6 @@ describe('access — the reads', () => {
   it("fans a private row out to its owner's sockets only, and the catalog to everyone", async () => {
     const { post, connect } = await room()
     const [alice, alsoAlice, bob, anon] = [await connect('alice'), await connect('alice'), await connect('bob'), await connect()]
-    const live = (s: Socket) => s.frames.filter((f) => !f.reset)
     await post(card('a1'), 'alice')
     expect(live(alice).map((f) => ids([f], 'cards'))).toEqual([['a1']])
     expect(live(alsoAlice)).toHaveLength(1)
@@ -165,8 +167,8 @@ describe('access — the reads', () => {
     await post(card('a1'), 'alice')
     const [alice, bob] = [await connect('alice'), await connect('bob')]
     await post([{ channel: 'cards', ops: [{ type: 'delete', value: { id: 'a1', user_id: 'bob' } }] }], 'alice')
-    expect(alice.frames.filter((f) => !f.reset).flatMap((f) => f.ops.map((o) => o.type))).toEqual(['delete'])
-    expect(bob.frames.filter((f) => !f.reset)).toEqual([])
+    expect(types(alice)).toEqual(['delete'])
+    expect(live(bob)).toEqual([])
   })
 
   it('answers a write with only the batches the writer can read', async () => {
@@ -197,8 +199,8 @@ describe('access — the reads', () => {
         ],
       },
     ])
-    expect(ids(alice.frames.filter((f) => !f.reset), 'cards')).toEqual(['a1'])
-    expect(ids(bob.frames.filter((f) => !f.reset), 'cards')).toEqual(['b1'])
+    expect(ids(live(alice), 'cards')).toEqual(['a1'])
+    expect(ids(live(bob), 'cards')).toEqual(['b1'])
   })
 })
 
@@ -257,9 +259,9 @@ describe('access — a row that leaves your reach', () => {
     const [alice, mallory] = [await connect('alice'), await connect('mallory')]
     const forged = [{ channel: 'cards', ops: [{ type: 'delete' as const, value: { id: 'c1', user_id: 'mallory', status: 'learning' } }] }]
     expect((await post(forged, 'mallory')).status).toBe(200)
-    expect(ids(alice.frames.filter((f) => !f.reset), 'cards')).toEqual(['c1'])
-    expect(alice.frames.filter((f) => !f.reset).flatMap((f) => f.ops.map((o) => o.type))).toEqual(['delete'])
-    expect(mallory.frames.filter((f) => !f.reset)).toEqual([])
+    expect(ids(live(alice), 'cards')).toEqual(['c1'])
+    expect(types(alice)).toEqual(['delete'])
+    expect(live(mallory)).toEqual([])
   })
 
   it('replays that delete to a socket that was offline for it', async () => {
@@ -277,9 +279,8 @@ describe('access — a row that leaves your reach', () => {
     await post(card('c1'), 'alice')
     const [alice, bob] = [await connect('alice'), await connect('bob')]
     await core.commit([{ channel: 'cards', ops: [{ type: 'update', value: { id: 'c1', user_id: 'bob' } }] }])
-    const live = (s: { frames: SequencedBatch[] }) => s.frames.filter((f) => !f.reset).flatMap((f) => f.ops.map((o) => o.type))
-    expect(live(alice)).toEqual(['delete'])
-    expect(live(bob)).toEqual(['insert'])
+    expect(types(alice)).toEqual(['delete'])
+    expect(types(bob)).toEqual(['insert'])
   })
 })
 
@@ -326,8 +327,8 @@ describe('access — an integer user id', () => {
     const { post, connect } = await numericRoom()
     const [one, two] = [await connect('1'), await connect('2')]
     await post([{ channel: 'cards', ops: [{ type: 'insert', value: { id: 'c1', status: 'learning' } }] }], '1')
-    expect(ids(one.frames.filter((f) => !f.reset), 'cards')).toEqual(['c1'])
-    expect(two.frames.filter((f) => !f.reset)).toEqual([])
+    expect(ids(live(one), 'cards')).toEqual(['c1'])
+    expect(live(two)).toEqual([])
   })
 
   it('takes the number the client sent for its own id, and refuses another', async () => {

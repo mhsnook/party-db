@@ -77,6 +77,7 @@ describe.skipIf(!PG_URL)('an integer owner column (real Postgres)', () => {
   const insert = (id: string, extra: Record<string, unknown> = {}): WriteBatch[] => [
     { channel: 'cards', ops: [{ type: 'insert', value: { id, status: 'learning', ...extra } }] },
   ]
+  const types = (s: { frames: SequencedBatch[] }) => s.frames.filter((f) => !f.reset).flatMap((f) => f.ops.map((o) => o.type))
 
   it('stamps the string sub claim into the integer column, and it lands as an integer', async () => {
     const { post } = await room()
@@ -99,14 +100,17 @@ describe.skipIf(!PG_URL)('an integer owner column (real Postgres)', () => {
     const { post, connect } = await room()
     const [one, two] = [await connect('1'), await connect('2')]
     await post(insert('c1'), '1')
-    expect(one.frames.filter((f) => !f.reset).flatMap((f) => f.ops.map((o) => o.type))).toEqual(['insert'])
-    expect(two.frames.filter((f) => !f.reset)).toEqual([])
+    expect(types(one)).toEqual(['insert'])
+    expect(types(two)).toEqual([])
   })
 
-  it('refuses a forged integer owner, and checks update and delete against the stored one', async () => {
+  // The forged-owner refusal is decided in `gateOp` from the payload and the claim,
+  // with no driver involved, so it belongs in the node lane. What needs a real
+  // database is the stored-row check: the owner it compares came back through
+  // `readRows` as a JS number.
+  it('checks an update against the stored integer owner', async () => {
     const { post } = await room()
     await post(insert('c1'), '1')
-    expect((await post(insert('c9', { user_id: 2 }), '1')).status).toBe(403)
     const edit = [{ channel: 'cards', ops: [{ type: 'update' as const, value: { id: 'c1', status: 'known' } }] }]
     expect((await post(edit, '2')).status).toBe(403)
     expect((await post(edit, '1')).status).toBe(200)
@@ -117,8 +121,7 @@ describe.skipIf(!PG_URL)('an integer owner column (real Postgres)', () => {
     await post(insert('c1'), '1')
     const [one, two] = [await connect('1'), await connect('2')]
     await core.commit([{ channel: 'cards', ops: [{ type: 'update', value: { id: 'c1', user_id: 2 } }] }])
-    const live = (s: { frames: SequencedBatch[] }) => s.frames.filter((f) => !f.reset).flatMap((f) => f.ops.map((o) => o.type))
-    expect(live(one)).toEqual(['delete'])
-    expect(live(two)).toEqual(['insert'])
+    expect(types(one)).toEqual(['delete'])
+    expect(types(two)).toEqual(['insert'])
   })
 })

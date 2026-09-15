@@ -12,6 +12,7 @@
 
 import {
   isSnapshotRequest,
+  isWritableOp,
   parseFrame,
   PROTO_PARAM,
   PROTO_VALUE,
@@ -112,7 +113,7 @@ export class PartyDbCore {
     this.collections = opts.collections
     this.broadcast = opts.broadcast
     this.access = new Map(opts.collections.map((c) => [c.name, accessOf(c)]))
-    this.readsNeedIdentity = [...this.access.values()].some((a) => a.privateRead)
+    this.readsNeedIdentity = [...this.access.values()].some((a) => a.policies.read === 'owner' || a.policies.read === 'authed')
     this.auth = opts.auth
     this.anonRole = opts.anonRole
     this.maxWriteBytes = opts.maxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES
@@ -146,24 +147,24 @@ export class PartyDbCore {
 
   // Refuse to start on an access declaration the room cannot enforce as written
   // (cookbook 5): an 'owner' policy with no column, a column the schema lacks or
-  // types as something other than a string, an 'owner' policy on an adapter that
-  // cannot read the stored row.
+  // types as something that cannot be a user id, an 'owner' policy on an adapter
+  // that cannot read the prior row.
   private checkAccessConfig(): void {
     for (const c of this.collections) checkAccess(c)
-    const accesses = [...this.access.values()]
     // Reading a prior row is what an 'owner' update or delete is authorized
-    // against AND what an 'owner' read is fanned out by, so the two reasons the
-    // adapter needs `readRows` are checked as one (`needsPriorRow`).
-    const needsPrior = this.collections.filter(
-      (c) => this.access.get(c.name)!.ownerRead || ['update', 'delete'].some((v) => this.access.get(c.name)!.policies[v as 'update'] === 'owner'),
-    )
-    if (needsPrior.length && !this.adapter.readRows) {
-      throw new Error(
-        `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy, ` +
-          "so the room needs an adapter with readRows, to read the row as it stood before the write",
-      )
+    // against AND what an 'owner' read is fanned out by, so one flag
+    // (`CollectionAccess.needsPrior`) answers for both — the boot check and the
+    // per-op read cannot disagree about which collections need `readRows`.
+    if (!this.adapter.readRows) {
+      const needsPrior = this.collections.filter((c) => this.access.get(c.name)!.needsPrior)
+      if (needsPrior.length) {
+        throw new Error(
+          `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy, ` +
+            'so the room needs an adapter with readRows, to read the row as it stood before the write',
+        )
+      }
     }
-    if (accesses.some((a) => !a.open) && !this.auth?.()) {
+    if ([...this.access.values()].some((a) => !a.open) && !this.auth?.()) {
       console.warn(
         'party-db: collections declare access policies, but the room has no `auth` hook, so every request is ' +
           "anonymous: 'authed' and 'owner' verbs are refused, and their rows are never read.",
@@ -288,21 +289,20 @@ export class PartyDbCore {
           status: 400,
         })
       }
-      // Every op is shaped here, before anything reads into it. The access gate
-      // and the statement builders both index `op.value` by column name, so a
-      // null or primitive value would throw out of them as a 500 rather than come
-      // back as the bad request it is.
-      const bad = batch.ops.find((op) => !isWritableOp(op))
-      if (bad) {
+    }
+    // The op cap is counted before any op is shaped: a body far over it is
+    // rejected without walking every op it carries, which is what the cap is for.
+    const opCount = body.reduce((n, b) => n + b.ops.length, 0)
+    if (this.maxWriteOps > 0 && opCount > this.maxWriteOps) {
+      return Response.json({ error: `write carries too many ops (max ${this.maxWriteOps})` } satisfies WriteReject, { status: 413 })
+    }
+    for (const batch of body) {
+      if (batch.ops.some((op) => !isWritableOp(op))) {
         return Response.json(
           { error: `each op needs a type of insert/update/delete and an object value (channel: ${batch.channel})`, channel: batch.channel } satisfies WriteReject,
           { status: 400 },
         )
       }
-    }
-    const opCount = body.reduce((n, b) => n + (b?.ops?.length ?? 0), 0)
-    if (this.maxWriteOps > 0 && opCount > this.maxWriteOps) {
-      return Response.json({ error: `write carries too many ops (max ${this.maxWriteOps})` } satisfies WriteReject, { status: 413 })
     }
 
     // resolve the writer's identity fresh for THIS POST, before opening any
@@ -454,16 +454,6 @@ export class PartyDbCore {
     if (!access) return this.broadcast(JSON.stringify(batch), 'all')
     for (const { audience, batch: frame } of audiencesOf(access, batch)) this.broadcast(JSON.stringify(frame), audience)
   }
-}
-
-// One op's shape, checked before the access gate or a statement builder indexes
-// into it. The type has to be one we build SQL for, and the value an object,
-// because every path below reads it by column name.
-function isWritableOp(op: unknown): boolean {
-  if (typeof op !== 'object' || op === null) return false
-  const { type, value } = op as { type?: unknown; value?: unknown }
-  if (type !== 'insert' && type !== 'update' && type !== 'delete') return false
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 // Parse the `?since` query param into a usable cursor. null → snapshot: missing,
