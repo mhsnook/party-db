@@ -1,8 +1,14 @@
 name: CI
 
+# `push` is scoped to main. It used to be `['**']`, which, together with the
+# `pull_request` trigger below, ran this whole workflow TWICE for every commit
+# on a branch with an open PR — two Postgres containers, two examples matrices.
+# A PR now gets one run, on the merge result, which is the tree that matters,
+# plus one run on main after the merge. A branch with no PR open gets no run —
+# open the PR to get CI on it.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 jobs:
@@ -42,9 +48,10 @@ jobs:
       # pnpm version comes from package.json's `packageManager` field.
       - uses: pnpm/action-setup@v4
 
+      # node version comes from .nvmrc, so it lives in one place.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -84,9 +91,10 @@ jobs:
       # pnpm version comes from package.json's `packageManager` field.
       - uses: pnpm/action-setup@v4
 
+      # node version comes from .nvmrc, so it lives in one place.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
           cache-dependency-path: |
             pnpm-lock.yaml
