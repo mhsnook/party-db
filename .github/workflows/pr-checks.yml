@@ -115,6 +115,28 @@ jobs:
         with:
           ref: ${{ github.base_ref }}
 
+      # Everything that DEFINES the measurement comes from head, not from the
+      # base branch's own copy. Both trees have to be measured by the same
+      # scripts and judged by the same compiler flags, or a PR that edits a
+      # script or tightens a tsconfig reads as a PR that broke the codebase.
+      #
+      # `.nvmrc` is on this list, and it has to arrive BEFORE setup-node runs:
+      # the base branch may not have the file at all — main did not, on the PR
+      # that introduced this workflow — and setup-node then fails with nothing
+      # to read.
+      #
+      # One `git checkout` per file: a single call listing all of them fails as
+      # a whole when any one path is missing, which would silently leave the base
+      # tree measured by its own older configs.
+      - name: Fetch scripts, tsconfigs and .nvmrc from head
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.head.sha }}"
+          git checkout "${{ github.event.pull_request.head.sha }}" -- .github/ci/
+          for f in .nvmrc tsconfig.base.json tsconfig.client.json tsconfig.server.json tsconfig.integration.json; do
+            git checkout "${{ github.event.pull_request.head.sha }}" -- "$f" ||
+              echo "no $f on head, leaving the base copy in place"
+          done
+
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -124,30 +146,6 @@ jobs:
       - name: Install
         id: install
         run: pnpm install --frozen-lockfile
-
-      # The script lives on the head branch, so fetch it rather than using the
-      # base branch's copy. Both trees must be measured by the SAME script, or a
-      # change to the script itself shows up as a change in the codebase.
-      - name: Fetch check scripts from head
-        run: |
-          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.head.sha }}"
-          git checkout "${{ github.event.pull_request.head.sha }}" -- .github/ci/
-
-      # The tsconfigs are the typechecker's configuration, and they are part of
-      # the measurement for the same reason the scripts are. A PR that turns on
-      # a stricter flag would otherwise leave the base tree judged by the old
-      # flag, so every file that flag touches reads as newly broken and the PR
-      # cannot merge.
-      #
-      # One `git checkout` per file: a single call listing all of them fails as
-      # a whole when any one path is missing, which would silently leave the base
-      # tree measured by its own older configs.
-      - name: Fetch tsconfigs from head
-        run: |
-          for f in tsconfig.base.json tsconfig.client.json tsconfig.server.json tsconfig.integration.json; do
-            git checkout "${{ github.event.pull_request.head.sha }}" -- "$f" ||
-              echo "no $f on head, leaving the base copy in place"
-          done
 
       - name: Static checks
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
