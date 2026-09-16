@@ -28,6 +28,14 @@ concurrency:
   # no red X to explain why. Let a PR run finish.
   cancel-in-progress: false
 
+# Every `run:` step gets `bash -eo pipefail`. The default shell is `bash -e`
+# with NO pipefail, so a piped step reports the LAST command's exit status:
+# `node gate.cjs | tee` means the gate can never fail the run, and
+# `pnpm build | tee` records a failed build as a success.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # ── The PR's tree ─────────────────────────────────────────────────────
   head:
