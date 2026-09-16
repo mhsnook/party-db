@@ -161,6 +161,13 @@ Four files hold the whole contract. Read them before changing anything under `sr
 | `cd <example> && pnpm build` | that example's site (vite) — run before `build:worker`, which needs `dist/` |
 | `cd <example> && pnpm build:worker` | bundles that example's worker exactly as a deploy would, without deploying |
 
+**Two workflows run on a PR.** `ci.yml` is the pass/fail gate: typecheck, build, all three test
+lanes against the disposable Postgres, `pnpm publish --dry-run`, and the examples matrix.
+`pr-checks.yml` is the delta report: it measures the PR's tree and the base branch's tree with the
+same scripts (`.github/ci/`) and posts one comment saying which type errors this PR added or
+resolved, whether it broke or fixed the build, and how the unit suite did. It runs `pnpm test`
+only — the Postgres lanes stay in `ci.yml` rather than starting a second container.
+
 There is no lint gate yet (plan 012 is TODO). The `test:pg` lane and `test/integration/pg-connect.test.ts`
 need a real Postgres at `PG_URL`; without it they skip, so `pnpm test` stays green with no Docker.
 The README's Testing section has the `docker run` line CI uses.
