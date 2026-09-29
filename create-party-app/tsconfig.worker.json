@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2023"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "composite": true,
+    "tsBuildInfoFile": "node_modules/.tmp/worker.tsbuildinfo",
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "outDir": "node_modules/.tmp/worker-types",
+    "types": []
+  },
+  "include": [
+    "worker-configuration.d.ts",
+    "worker",
+    "party-app/server.ts",
+    "party-app/protocol.ts",
+    "shared"
+  ]
+}
