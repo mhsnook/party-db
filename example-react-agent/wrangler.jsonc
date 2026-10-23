@@ -1,0 +1,12 @@
+{
+  // one Durable Object serves party-db's socket and POST /write on /parties/board/*
+  // and the Agents SDK's socket on /agents/board/*, on :8787
+  "name": "party-db-example-react-agent",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "Board", "class_name": "Board" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Board"] }]
+}
