@@ -73,10 +73,10 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
-      # one broken example shouldn't hide the state of the other three
+      # one broken example shouldn't hide the state of the other four
       fail-fast: false
       matrix:
-        example: [example, example-react, example-react-polyglot, example-react-rdbms]
+        example: [example, example-react, example-react-polyglot, example-react-rdbms, example-react-agent]
 
     steps:
       - uses: actions/checkout@v4

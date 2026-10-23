@@ -77,6 +77,8 @@ transparent, RDBMS, and Postgres CRUD.
 
 **Examples:**
 
+- [React + Agents SDK](./example-react-agent/README.md) (a Cloudflare `Agent` holds the core:
+humans and an agent write the same collections, the agent's fiber survives a restart)
 - [React + RDBMS](./example-react-rdbms/README.md) (structured SQLite/D1 + auth, from Milestone 1)
 - [React · Polyglot](./example-react-polyglot/README.md) (🚧 public catalog + per-user
 collections — the API-first scaffold for [cookbook 05](./docs/cookbooks/05-public-and-private-collections.md))
@@ -200,9 +202,9 @@ one, because only the oplog feeds the stream. See
 ## A Server that can't subclass holds the core instead
 
 `PartyDbServer` is a thin subclass over `PartyDbCore`. If your Durable Object
-already extends another partyserver `Server` — an agents-SDK `AIChatAgent`, say —
-you can't subclass `PartyDbServer` too. Hold the core instead: construct it in
-`onStart`, call `init()`, and forward `onConnect` / `onMessage` / `onRequest` to it.
+already extends another base class — an agents-SDK `Agent`, say — you can't
+subclass `PartyDbServer` too. Hold the core instead: construct it in `onStart`,
+call `init()`, and forward `onConnect` / `onMessage` / `onRequest` to it.
 
 The party-db client marks every connect and write POST with `?proto=party-db`,
 and the server exports `isPartyDbRequest`, so your server can route party-db
@@ -268,7 +270,11 @@ The core sends the same wire frames a `PartyDbServer` room sends, on the
 connections you route to it — nothing is namespaced onto a shared socket
 ([architecture §15](./docs/architecture.md)). `commit()` works the same way
 here: `this.db.commit(batches)`. The tested copy of this pattern is `Composed`
-in `test/integration/worker.ts`.
+in `test/integration/worker.ts`; the agents-SDK copy is
+[`example-react-agent`](./example-react-agent/README.md), which also records
+what that package changes: the SDK runs `onFiberRecovered` before `onStart`, so
+there the core is built in the constructor, and `shouldSendProtocolMessages`
+keeps the SDK's own frames off party-db's sockets.
 
 ## What an update writes
 

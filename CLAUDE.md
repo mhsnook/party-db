@@ -166,8 +166,8 @@ need a real Postgres at `PG_URL`; without it they skip, so `pnpm test` stays gre
 The README's Testing section has the `docker run` line CI uses.
 
 **The examples are the userspace gate.** Nothing in `test/` sits outside the public surface,
-so the four example apps are the only thing that compiles party-db the way an app does —
-importing it from `../../src`. CI typechecks AND builds all four (the `examples` job);
+so the five example apps are the only thing that compiles party-db the way an app does —
+importing it from `../../src`. CI typechecks AND builds all five (the `examples` job);
 v0.0.2 shipped a broken `example-react-polyglot` because it did neither. Typecheck catches
 the source; the two builds catch what tsc never reads — `vite.config.ts`, `wrangler.jsonc`,
 and how a dependency resolves for the browser and for the workers runtime. Two rules when you touch them: run BOTH

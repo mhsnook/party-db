@@ -527,10 +527,13 @@ Every subclass knob (`createAdapter`, `auth`, `anonRole`, the caps) maps to a
 constructor option on the core.
 
 The core exists for the host that cannot subclass `PartyDbServer` — one that already
-extends another partyserver `Server`, such as an agents-SDK `AIChatAgent`
-(scribble-harness's Article Agent, the first consumer, #43). That host holds the core
-instead: it constructs the core in its `onStart` over its own storage, calls
-`init()`, and forwards its `onConnect` / `onMessage` / `onRequest` events. Forwarding
+extends another base class, such as an agents-SDK `Agent` (scribble-harness's Article
+Agent, the first consumer, #43; `example-react-agent`, the copy in this repo). That
+host holds the core instead: it constructs the core over its own storage, calls
+`init()`, and forwards its `onConnect` / `onMessage` / `onRequest` events. `onStart`
+is the usual place to build it; a host whose SDK runs recovery hooks before `onStart`
+(the agents SDK calls `onFiberRecovered` first) builds it in the constructor and has
+`onStart` await `init()`. Forwarding
 `onMessage` is what serves §8a's snapshot request; a host may forward every message,
 since the core drops any frame that is not its own — but it forwards *as well as*
 running its own dispatch, never instead of it, or the host loses its own protocol.
@@ -560,7 +563,10 @@ wrapper running before the host's `onConnect` can send a frame of its own to a
 connection party-db is about to claim — the scribble-harness pilot's chat stream
 does (mhsnook/scribble-harness#92). So the client drops any frame that is not a
 `SequencedBatch` instead of buffering it under a missing channel (#48), which
-makes a stray host frame noise rather than a leak.
+makes a stray host frame noise rather than a leak. A host that can tell its wrapper
+not to should: the agents SDK's `shouldSendProtocolMessages(conn, ctx)` returning
+`false` for a marked connect keeps its identity, state and MCP frames off that
+socket entirely.
 
 We considered letting party-db frames share one socket with the host's own protocol,
 and rejected it: the frames would need a namespace, which changes the wire and the
