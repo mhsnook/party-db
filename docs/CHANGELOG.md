@@ -1,5 +1,13 @@
 # Changes
 
+## Unreleased
+
+- **`snapshot: false` on a collection.** A connecting client gets no rows for it,
+  only the ready marker at the room's seq, and tails the fan-out from there. The
+  table and the `_oplog` are unchanged, so a reconnect inside retention is still a
+  delta; a cursor past retention restarts the feed empty (`docs/architecture.md`
+  §8b).
+
 ## 2026-09-15 - v0.0.5
 
 Access policies are enforced. `access` and `ownerColumn` shipped as declared-but-inert

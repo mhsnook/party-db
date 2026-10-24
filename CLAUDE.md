@@ -118,7 +118,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - **`src/protocol.ts`** — the wire, and it is deliberately tiny: `WriteEvent` (= TanStack's
   `Omit<ChangeMessage, 'key'>`), `WriteBatch`, `SequencedBatch`, `Cursor`, `WriteAck`, `WriteReject`,
   and `SnapshotRequest` — the one frame a client sends UP the socket (`docs/architecture.md` §8a).
-- **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access? }`, the one
+- **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access?, snapshot? }`, the one
   collection interface both sides import, plus `definePartyCollection` for inference. `ownerColumn`
   is typed `UidColumn<T>` — a string or number column, since a `SERIAL` user id is as common as a
   uuid. Owners compare as text (`idOf`), so `user_id` 1 matches the `sub` claim "1".

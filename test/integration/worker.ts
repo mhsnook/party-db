@@ -53,6 +53,14 @@ export class Main extends PartyDbServer {
   }
 }
 
+// `Main` plus an `events` feed declared `snapshot: false` (architecture §8b): a
+// connecting client gets no rows for it, only the ready marker, and tails the
+// fan-out from there. Blob-stored so the DO needs no table for it; `todos` stays
+// so the same connect proves the other channel still snapshots in full.
+export class Tailed extends Main {
+  collections = [todos, definePartyCollection({ name: 'events', key: 'id', snapshot: false })]
+}
+
 // A party whose `untabled` collection declares a schema but no CREATE TABLE — a
 // write to it fails inside the adapter (no such table), the reliably-internal
 // fault for the 500 path. Kept separate from `Main` so Main's snapshot shape

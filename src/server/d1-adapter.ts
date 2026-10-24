@@ -25,6 +25,7 @@ import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
 import {
   buildPlans,
+  emptySnapshot,
   oplogInsertStmt,
   readRowsStmts,
   resolveStructured,
@@ -158,13 +159,17 @@ export class D1Adapter implements PersistenceAdapter {
     const structured = snapshotPlans(this.plans, channel).filter((p): p is StructuredPlan => p.kind === 'structured')
     // nothing to read (an unknown or schema-less channel): don't spend a round trip
     if (!structured.length) return []
+    // a `snapshot: false` collection costs no table read, only its slot in the
+    // watermark query everyone shares.
+    const read = structured.filter((p) => p.snapshot)
     const results = await this.d1.batch<Record<string, unknown>>([
       this.d1.prepare(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`),
-      ...structured.map((p) => this.d1.prepare(`SELECT * FROM "${p.name}"`)),
+      ...read.map((p) => this.d1.prepare(`SELECT * FROM "${p.name}"`)),
     ])
     const seq = Number((results[0].results[0] as { s: number }).s)
-    return structured.map((plan, i) => {
-      const rows = results[i + 1].results.map((r) => decodeRow(r, plan.kinds))
+    return structured.map((plan) => {
+      if (!plan.snapshot) return emptySnapshot(plan, seq)
+      const rows = results[read.indexOf(plan) + 1].results.map((r) => decodeRow(r, plan.kinds))
       return { channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true, reset: true }
     })
   }

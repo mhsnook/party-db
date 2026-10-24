@@ -20,6 +20,8 @@ export default defineConfig({
           Main: { className: 'Main', useSQLite: true },
           Guarded: { className: 'Guarded', useSQLite: true },
           Faulty: { className: 'Faulty', useSQLite: true },
+          // one collection declared `snapshot: false`: no connect-time rows, live tail only.
+          Tailed: { className: 'Tailed', useSQLite: true },
           // the server-layer identity gate (auth, fail-closed default), SQLite-backed.
           Authed: { className: 'Authed', useSQLite: true },
           // writes rows from its own host code through `commit()`, not a POST.

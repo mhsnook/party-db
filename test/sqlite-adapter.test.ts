@@ -304,3 +304,42 @@ describe('SqliteAdapter — readRows (the write gate’s stored-row read)', () =
     expect(await adapter.readRows('todos', [])).toEqual([])
   })
 })
+
+describe('SqliteAdapter — a `snapshot: false` collection (architecture §8b)', () => {
+  // the feed keeps its table and its oplog entries; only the connect-time read is skipped
+  const feed = definePartyCollection({ name: 'events', key: 'id', snapshot: false })
+
+  function tailSetup() {
+    const base = setup()
+    const adapter = new SqliteAdapter(base.engine, [...collections, feed])
+    adapter.init()
+    return { ...base, adapter }
+  }
+
+  it('snapshot sends no rows for it, but still ready + reset at the room seq', async () => {
+    const { adapter } = tailSetup()
+    await adapter.write([ins('events', { id: 'e1', kind: 'join' })]) // seq 1
+    await adapter.write([ins('todos', { id: 'a', text: 'x', done: false })]) // seq 2
+    const snap = await adapter.snapshot()
+    const events = snap.find((b) => b.channel === 'events')!
+    expect(events).toEqual({ channel: 'events', seq: 2, ops: [], ready: true, reset: true })
+    // the other collections still snapshot in full
+    expect(snap.find((b) => b.channel === 'todos')!.ops).toHaveLength(1)
+  })
+
+  it('the one-channel snapshot (the re-register reply) is empty too', async () => {
+    const { adapter } = tailSetup()
+    await adapter.write([ins('events', { id: 'e1', kind: 'join' })])
+    expect(await adapter.snapshot('events')).toEqual([{ channel: 'events', seq: 1, ops: [], ready: true, reset: true }])
+  })
+
+  it('its writes still land in the table and the oplog, so a delta replays them', async () => {
+    const { db, adapter } = tailSetup()
+    await adapter.write([ins('events', { id: 'e1', kind: 'join' })])
+    await adapter.write([ins('events', { id: 'e2', kind: 'leave' })])
+    expect(db.prepare(`SELECT COUNT(*) c FROM events`).get()).toEqual({ c: 2 })
+    const delta = await adapter.replaySince(1)
+    expect(delta!.map((b) => b.seq)).toEqual([2])
+    expect(delta![0].ops[0].value).toEqual({ id: 'e2', kind: 'leave' })
+  })
+})
