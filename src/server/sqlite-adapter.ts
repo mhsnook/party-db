@@ -16,7 +16,7 @@ import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
-import { blobStmt, buildPlans, emptySnapshot, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
+import { blobStmt, buildPlans, oplogSnapshot, readRowsStmts, recentBatchesStmt, resolveStructured, snapshotPlans, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
 
 // The narrow slice of a SQLite handle the adapter needs. In the DO it's
 // `ctx.storage.sql` + `ctx.storage.transactionSync`; in tests it's a node:sqlite
@@ -158,8 +158,8 @@ export class SqliteAdapter implements PersistenceAdapter {
       const seq = Number(this.engine.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
       const out: SequencedBatch[] = []
       for (const plan of plans) {
-        if (!plan.snapshot) {
-          out.push(emptySnapshot(plan, seq))
+        if (plan.snapshot !== true) {
+          out.push(oplogSnapshot(plan, seq, this.recent(plan)))
           continue
         }
         const rows =
@@ -172,6 +172,12 @@ export class SqliteAdapter implements PersistenceAdapter {
       }
       return out
     })
+  }
+
+  private recent(plan: Plan): WriteEvent[][] {
+    if (typeof plan.snapshot !== 'object') return []
+    const { sql, binds } = recentBatchesStmt(plan, plan.snapshot.last)
+    return this.engine.exec(sql, ...binds).toArray().map((r) => JSON.parse(r.ops as string) as WriteEvent[])
   }
 
   // The delta a reconnecting client missed — oplog entries after `since`, in

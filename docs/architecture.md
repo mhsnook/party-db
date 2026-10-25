@@ -256,10 +256,13 @@ a delta **appends** to the client's state; a re-snapshot **replaces** it, sendin
 `reset: true` causing the client collection to `truncate()` before marking `ready`.
 
 A collection declared `snapshot: false` skips this one step. On connect it gets no
-rows, only the `ready` marker at the room's seq, and tails from there. Everything
-else above applies unchanged: the table, the `_oplog`, the `?since` delta, and the
-re-snapshot when the cursor is older than retention, which for this collection is
-the same empty batch.
+rows, only the `ready` marker at the room's seq, and tails from there. Declared
+`snapshot: { last: n }`, it gets the rows the newest n `_oplog` batches for that
+channel left behind, collapsed per key, so a feed opens on its recent activity. The
+limit counts batches, so a burst of close-together writes loads a little more, and
+`oplogRetention` caps how far back n can reach. Everything else above applies
+unchanged: the table, the `_oplog`, the `?since` delta, and the re-snapshot when
+the cursor is older than retention, which for these collections is the same batch.
 
 Prior art: TanStack DB's own SQLite persistence family
 (`@tanstack/db-sqlite-persistence-core`, behind `browser-db-sqlite-persistence`

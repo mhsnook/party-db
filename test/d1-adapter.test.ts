@@ -248,3 +248,23 @@ describe('D1Adapter — a `snapshot: false` collection (architecture §8)', () =
     expect(await adapter.snapshot()).toEqual([{ channel: 'events', seq: 1, ops: [], ready: true, reset: true }])
   })
 })
+
+describe('D1Adapter — a `snapshot: { last: n }` collection (architecture §8)', () => {
+  const recent = definePartyCollection({ name: 'events', key: 'id', schema: z.object({ id: z.string(), kind: z.string() }), snapshot: { last: 2 } })
+  const ev = (id: string, kind: string): WriteBatch => ({ channel: 'events', ops: [{ type: 'insert', value: { id, kind } }] })
+
+  it('reads the newest n oplog batches in the same read batch() as the other tables', async () => {
+    const fake = new FakeD1()
+    fake.db.exec(TODOS_DDL)
+    fake.db.exec(`CREATE TABLE events (id TEXT PRIMARY KEY, kind TEXT NOT NULL)`)
+    const adapter = new D1Adapter(asD1(fake), [todos, recent])
+    await adapter.init()
+    for (const i of [1, 2, 3]) await adapter.write([ev(`e${i}`, 'tick')])
+    await adapter.write([ins({ id: 'a', text: '1' })]) // seq 4
+    const snap = await adapter.snapshot()
+    const events = snap.find((b) => b.channel === 'events')!
+    expect(events).toMatchObject({ seq: 4, ready: true, reset: true })
+    expect(events.ops.map((o) => (o.value as { id: string }).id)).toEqual(['e2', 'e3'])
+    expect(snap.find((b) => b.channel === 'todos')!.ops).toHaveLength(1)
+  })
+})
