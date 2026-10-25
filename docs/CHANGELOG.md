@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## 2026-10-25 - v0.0.6
 
 - **`snapshot: false` on a collection.** A connecting client gets no rows for it and
   tails from there. Reconnects still fill the gap (`docs/architecture.md` §8).
