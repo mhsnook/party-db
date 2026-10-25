@@ -19,6 +19,14 @@ doc once that milestone starts; until then a short design note lives at the bott
     `(req) => WriteIdentity | null` — is shipped; only `writeSchema` and its `ctx` are
     open. The lib stays out of validation — it just hands Zod the one thing the row
     can't carry: who is asking. See [cookbook 2](./cookbooks/02-server-validation.md).
+- **A bounded backfill for `snapshot: false` collections.** A feed that tails from
+  now (architecture §8) often wants "the last 50" first. The room keeps the
+  history, so this is a read of the newest `_oplog` entries for that channel,
+  `ORDER BY seq DESC LIMIT n`, replayed oldest-first ahead of the ready marker. The
+  limit counts batches, not rows: a burst of close-together activity loads a little
+  more. Two things to settle first: the per-collection `n` (config, or carried on
+  the re-register frame), and how TanStack DB applies a delete for a key the client
+  never held, which such a window can contain.
 - **Subscription / filtering.** Today the server broadcasts every channel and the
   client ignores unknowns. A `subscribe(channels[])` control message would let the
   server send only relevant batches + backlog. Matters as channel count grows. The

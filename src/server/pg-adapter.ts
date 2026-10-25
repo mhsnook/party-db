@@ -24,7 +24,7 @@ import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'
 import { pgDecodeRow, pgEncode } from './columns.ts'
-import { buildPlans, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
+import { buildPlans, emptySnapshot, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
 
 // The narrow slice of a node-postgres-style driver the adapter needs — `query(text,
 // values) → { rows }`, the shape both `pg.Client` and a Hyperdrive-backed client
@@ -261,6 +261,10 @@ export class PgAdapter implements PersistenceAdapter {
       const seq = Number(seqRes.rows[0].s)
       const out: SequencedBatch[] = []
       for (const plan of structured) {
+        if (!plan.snapshot) {
+          out.push(emptySnapshot(plan, seq))
+          continue
+        }
         const { rows } = await c.query(`SELECT * FROM "${plan.name}"`)
         const decoded = rows.map((r) => pgDecodeRow(r, plan.kinds))
         // `reset`: a snapshot replaces the channel (client truncates first);

@@ -215,3 +215,36 @@ describe('D1Adapter — readRows (the write gate’s stored-row read)', () => {
     expect(rows[0]).toMatchObject({ id: 't0', text: 'row 0', done: false })
   })
 })
+
+describe('D1Adapter — a `snapshot: false` collection (architecture §8)', () => {
+  const events = definePartyCollection({ name: 'events', key: 'id', schema: z.object({ id: z.string(), kind: z.string() }), snapshot: false })
+
+  async function tailSetup() {
+    const fake = new FakeD1()
+    fake.db.exec(TODOS_DDL)
+    fake.db.exec(`CREATE TABLE events (id TEXT PRIMARY KEY, kind TEXT NOT NULL)`)
+    const adapter = new D1Adapter(asD1(fake), [todos, events])
+    await adapter.init()
+    return { fake, adapter }
+  }
+
+  it('snapshot reads no rows for it, but still ready + reset at the room seq', async () => {
+    const { fake, adapter } = await tailSetup()
+    await adapter.write([{ channel: 'events', ops: [{ type: 'insert', value: { id: 'e1', kind: 'join' } }] }]) // seq 1
+    await adapter.write([ins({ id: 'a', text: '1' })]) // seq 2
+    const snap = await adapter.snapshot()
+    expect(snap.find((b) => b.channel === 'events')).toEqual({ channel: 'events', seq: 2, ops: [], ready: true, reset: true })
+    expect(snap.find((b) => b.channel === 'todos')!.ops).toHaveLength(1)
+    // the table was never SELECTed — the row is there, the snapshot just skipped it
+    expect(fake.rows(`SELECT COUNT(*) c FROM events`)[0].c).toBe(1)
+  })
+
+  it('a room where every collection opts out still answers with the watermark', async () => {
+    const fake = new FakeD1()
+    fake.db.exec(`CREATE TABLE events (id TEXT PRIMARY KEY, kind TEXT NOT NULL)`)
+    const adapter = new D1Adapter(asD1(fake), [events])
+    await adapter.init()
+    await adapter.write([{ channel: 'events', ops: [{ type: 'insert', value: { id: 'e1', kind: 'join' } }] }])
+    expect(await adapter.snapshot()).toEqual([{ channel: 'events', seq: 1, ops: [], ready: true, reset: true }])
+  })
+})

@@ -16,7 +16,7 @@ import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
-import { blobStmt, buildPlans, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
+import { blobStmt, buildPlans, emptySnapshot, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
 
 // The narrow slice of a SQLite handle the adapter needs. In the DO it's
 // `ctx.storage.sql` + `ctx.storage.transactionSync`; in tests it's a node:sqlite
@@ -158,6 +158,10 @@ export class SqliteAdapter implements PersistenceAdapter {
       const seq = Number(this.engine.exec(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`).one().s)
       const out: SequencedBatch[] = []
       for (const plan of plans) {
+        if (!plan.snapshot) {
+          out.push(emptySnapshot(plan, seq))
+          continue
+        }
         const rows =
           plan.kind === 'structured'
             ? this.engine.exec(`SELECT * FROM "${plan.name}"`).toArray().map((r) => decodeRow(r, plan.kinds))

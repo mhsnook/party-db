@@ -255,6 +255,12 @@ A delta and a re-snapshot are different kinds of message, and the wire says whic
 a delta **appends** to the client's state; a re-snapshot **replaces** it, sending a
 `reset: true` causing the client collection to `truncate()` before marking `ready`.
 
+A collection declared `snapshot: false` skips this one step. On connect it gets no
+rows, only the `ready` marker at the room's seq, and tails from there. Everything
+else above applies unchanged: the table, the `_oplog`, the `?since` delta, and the
+re-snapshot when the cursor is older than retention, which for this collection is
+the same empty batch.
+
 Prior art: TanStack DB's own SQLite persistence family
 (`@tanstack/db-sqlite-persistence-core`, behind `browser-db-sqlite-persistence`
 et al.) converged on the same design for its client-side cache — an `applied_tx`

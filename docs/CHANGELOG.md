@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+- **`snapshot: false` on a collection.** A connecting client gets no rows for it and
+  tails from there. Reconnects still fill the gap (`docs/architecture.md` §8).
+
 ## 2026-09-15 - v0.0.5
 
 Access policies are enforced. `access` and `ownerColumn` shipped as declared-but-inert

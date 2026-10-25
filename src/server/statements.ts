@@ -18,7 +18,7 @@
 // with `?`, every identifier comes from the schema allowlist (assertIdent), never
 // from the payload's keys.
 
-import type { WriteEvent } from '../protocol.ts'
+import type { SequencedBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError } from './persistence.ts'
 import { assertIdent, columnsOf, decodeRow, encode, type ColumnKind, type ColumnSpec } from './columns.ts'
@@ -29,8 +29,9 @@ export type StructuredPlan = {
   key: string
   cols: ColumnSpec[]
   kinds: Map<string, ColumnKind>
+  snapshot: boolean
 }
-export type BlobPlan = { kind: 'blob'; name: string; key: string }
+export type BlobPlan = { kind: 'blob'; name: string; key: string; snapshot: boolean }
 export type Plan = StructuredPlan | BlobPlan
 
 // Read each collection into its persistence plan: a schema we can introspect →
@@ -43,11 +44,12 @@ export function buildPlans(collections: PartyCollection<any>[]): Map<string, Pla
     const name = assertIdent(c.name)
     const key = assertIdent(c.key)
     const cols = columnsOf(c.schema)
+    const snapshot = c.snapshot !== false
     plans.set(
       name,
       cols
-        ? { kind: 'structured', name, key, cols, kinds: new Map(cols.map((col) => [col.name, col.kind])) }
-        : { kind: 'blob', name, key },
+        ? { kind: 'structured', name, key, cols, kinds: new Map(cols.map((col) => [col.name, col.kind])), snapshot }
+        : { kind: 'blob', name, key, snapshot },
     )
   }
   return plans
@@ -60,6 +62,13 @@ export function snapshotPlans(plans: Map<string, Plan>, channel?: string): Plan[
   if (channel === undefined) return [...plans.values()]
   const plan = plans.get(channel)
   return plan ? [plan] : []
+}
+
+// The snapshot batch for a collection declared `snapshot: false` (architecture
+// §8): no rows, but still `reset` + `ready` and the room's current seq, so the
+// client marks the collection ready and its next reconnect is a `?since` delta.
+export function emptySnapshot(plan: Plan, seq: number): SequencedBatch {
+  return { channel: plan.name, seq, ops: [], ready: true, reset: true }
 }
 
 export type Statement = { sql: string; binds: unknown[] }
