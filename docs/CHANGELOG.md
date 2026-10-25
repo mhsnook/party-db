@@ -2,8 +2,13 @@
 
 ## 2026-10-25 - v0.0.6
 
+Added:
+
 - **`snapshot: false` on a collection.** A connecting client gets no rows for it and
-  tails from there. Reconnects still fill the gap (`docs/architecture.md` §8).
+  tails from there. Reconnects still fill the gap (`docs/architecture.md` §8) (#61).
+- **`snapshot: { last: n }` on a collection.** A connecting client gets the rows the
+  newest n `_oplog` batches for that channel left behind, then tails from there.
+- An options list in the README: per collection, per room, per client.
 
 ## 2026-09-15 - v0.0.5
 
