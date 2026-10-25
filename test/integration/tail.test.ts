@@ -1,4 +1,4 @@
-// A collection declared `snapshot: false` (architecture §8b), end to end in
+// A collection declared `snapshot: false` (architecture §8), end to end in
 // workerd against the `Tailed` party. The room keeps the table and the `_oplog`
 // exactly as for any collection; what changes is the connect: no rows, only the
 // ready marker at the room's seq. So a fresh client tails from now, a brief

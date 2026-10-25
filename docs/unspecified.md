@@ -20,7 +20,7 @@ doc once that milestone starts; until then a short design note lives at the bott
     open. The lib stays out of validation — it just hands Zod the one thing the row
     can't carry: who is asking. See [cookbook 2](./cookbooks/02-server-validation.md).
 - **A bounded backfill for `snapshot: false` collections.** A feed that tails from
-  now (architecture §8b) often wants "the last 50" first. The room keeps the
+  now (architecture §8) often wants "the last 50" first. The room keeps the
   history, so this is a read of the newest `_oplog` entries for that channel,
   `ORDER BY seq DESC LIMIT n`, replayed oldest-first ahead of the ready marker. The
   limit counts batches, not rows: a burst of close-together activity loads a little

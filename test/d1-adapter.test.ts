@@ -216,7 +216,7 @@ describe('D1Adapter — readRows (the write gate’s stored-row read)', () => {
   })
 })
 
-describe('D1Adapter — a `snapshot: false` collection (architecture §8b)', () => {
+describe('D1Adapter — a `snapshot: false` collection (architecture §8)', () => {
   const events = definePartyCollection({ name: 'events', key: 'id', schema: z.object({ id: z.string(), kind: z.string() }), snapshot: false })
 
   async function tailSetup() {

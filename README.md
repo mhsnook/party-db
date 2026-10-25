@@ -300,19 +300,14 @@ for. Your optimistic removal settles instead of rolling back, and the delete tha
 out is a no-op for every client that no longer holds the row. Nothing flickers back
 onto the screen.
 
-## A collection that tails instead of loading
-
-A feed collection — a chat, an activity log — can skip the connect-time load:
+## A collection that skips the snapshot
 
 ```ts
 definePartyCollection({ name: 'events', key: 'id', schema: eventSchema, snapshot: false })
 ```
 
-A connecting client gets no rows for it, only the ready marker, and then receives
-every write from that moment on. The server keeps the table and the `_oplog` as for
-any collection, so a reconnect still replays what the client missed. A client whose
-cursor has fallen out of `oplogRetention` starts the feed again from now. See
-`docs/architecture.md` §8b.
+A connecting client gets no rows for it and tails from there. Reconnects still fill
+the gap.
 
 ## onAuthError callback
 

@@ -54,7 +54,7 @@ export type PartyCollection<T extends object = Record<string, unknown>> = {
   // `false` skips the connect-time load: a connecting client gets no rows for this
   // collection, only a `ready` marker, and tails the fan-out from there. The table
   // and the `_oplog` are untouched, so a reconnect still replays what it missed
-  // (docs/architecture.md §8b). Default `true`.
+  // (docs/architecture.md §8). Default `true`.
   snapshot?: boolean
 }
 

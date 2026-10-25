@@ -65,7 +65,7 @@ export function snapshotPlans(plans: Map<string, Plan>, channel?: string): Plan[
 }
 
 // The snapshot batch for a collection declared `snapshot: false` (architecture
-// §8b): no rows, but still `reset` + `ready` and the room's current seq, so the
+// §8): no rows, but still `reset` + `ready` and the room's current seq, so the
 // client marks the collection ready and its next reconnect is a `?since` delta.
 export function emptySnapshot(plan: Plan, seq: number): SequencedBatch {
   return { channel: plan.name, seq, ops: [], ready: true, reset: true }

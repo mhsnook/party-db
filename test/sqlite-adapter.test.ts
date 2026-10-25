@@ -305,7 +305,7 @@ describe('SqliteAdapter — readRows (the write gate’s stored-row read)', () =
   })
 })
 
-describe('SqliteAdapter — a `snapshot: false` collection (architecture §8b)', () => {
+describe('SqliteAdapter — a `snapshot: false` collection (architecture §8)', () => {
   // the feed keeps its table and its oplog entries; only the connect-time read is skipped
   const feed = definePartyCollection({ name: 'events', key: 'id', snapshot: false })
 

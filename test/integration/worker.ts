@@ -53,7 +53,7 @@ export class Main extends PartyDbServer {
   }
 }
 
-// `Main` plus an `events` feed declared `snapshot: false` (architecture §8b): a
+// `Main` plus an `events` feed declared `snapshot: false` (architecture §8): a
 // connecting client gets no rows for it, only the ready marker, and tails the
 // fan-out from there. Blob-stored so the DO needs no table for it; `todos` stays
 // so the same connect proves the other channel still snapshots in full.

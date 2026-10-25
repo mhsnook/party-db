@@ -255,6 +255,12 @@ A delta and a re-snapshot are different kinds of message, and the wire says whic
 a delta **appends** to the client's state; a re-snapshot **replaces** it, sending a
 `reset: true` causing the client collection to `truncate()` before marking `ready`.
 
+A collection declared `snapshot: false` skips this one step. On connect it gets no
+rows, only the `ready` marker at the room's seq, and tails from there. Everything
+else above applies unchanged: the table, the `_oplog`, the `?since` delta, and the
+re-snapshot when the cursor is older than retention, which for this collection is
+the same empty batch.
+
 Prior art: TanStack DB's own SQLite persistence family
 (`@tanstack/db-sqlite-persistence-core`, behind `browser-db-sqlite-persistence`
 et al.) converged on the same design for its client-side cache — an `applied_tx`
@@ -312,42 +318,6 @@ UI action rather than a network event. So a client that re-registers in a loop c
 queue full-table reads ahead of the room's writes. Accepted pre-1.0, and named here
 so it isn't rediscovered: the fix, when it's wanted, is to coalesce a channel's
 in-flight request per connection rather than to rate-limit the door.
-
-### 8b. A collection can opt out of the snapshot
-
-Some collections are feeds: a chat, an activity log, a notification stream. A client
-opening one wants what happens from now, not every row the table holds. Declare it
-`snapshot: false`:
-
-```ts
-definePartyCollection({ name: 'events', key: 'id', schema: eventSchema, snapshot: false })
-```
-
-The room keeps the table and the `_oplog` exactly as for any other collection. Only
-the connect-time read changes: instead of `SELECT *`, the adapter sends an empty
-batch for that channel — `reset: true`, `ready: true`, and the room's current `seq`.
-The client marks the collection ready, records the seq as its cursor, and tails the
-fan-out from there. Every other collection on the socket still snapshots in full.
-
-The oplog now does real work for that channel. A brief disconnect reconnects with
-`?since` and gets exactly the writes it missed, so the feed heals with no gap and no
-reload. The re-register frame (§8a) gets the same empty reply. Access policies (§17)
-are unchanged: there is nothing to filter at the snapshot, and the delta and the
-fan-out filter as before.
-
-Two consequences follow from "no snapshot", and are the same decision as §8's
-"never a gappy delta":
-
-- **A cursor older than retention restarts the feed empty.** The server has nothing
-  to replay and, for this channel, no snapshot to send, so the client truncates and
-  starts again from now. Raise `oplogRetention` on a room where that matters.
-- **TanStack GC empties it for good.** A collection whose last subscriber leaves is
-  cleaned up, and its re-register asks for a snapshot we will not send. Give a feed
-  collection a long `gcTime`, or accept that reopening it starts from now.
-
-A per-connection override — one tab snapshots, another tails the same channel — is
-not built. It would need the adapter's `snapshot` to take a per-connection channel
-set. Nothing in the config-only form blocks it.
 
 ## 9. Broadcast inline, after commit, before responding
 
