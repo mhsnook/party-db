@@ -300,14 +300,37 @@ for. Your optimistic removal settles instead of rolling back, and the delete tha
 out is a no-op for every client that no longer holds the row. Nothing flickers back
 onto the screen.
 
-## A collection that skips the snapshot
+## Options
 
-```ts
-definePartyCollection({ name: 'events', key: 'id', schema: eventSchema, snapshot: false })
-```
+Per collection, on `definePartyCollection`:
 
-A connecting client gets no rows for it and tails from there. Reconnects still fill
-the gap.
+| Option | Default | What it does |
+| --- | --- | --- |
+| `name` | — | the channel, which is also your table name |
+| `key` | — | the primary key column |
+| `schema` | none | a Zod or StandardSchema; omitted, the room stores the collection as opaque blobs (embedded only) |
+| `ownerColumn` | none | the column that must equal the writer's uid for an `'owner'` policy; set alone, it makes the collection fully private |
+| `access` | `'public'` | who may read, insert, update and delete: one policy, or one per verb (`docs/architecture.md` §17) |
+| `snapshot` | `true` | `false` sends a connecting client no rows for this collection; it tails from there, and reconnects still fill the gap |
+
+Per room, as class fields on your `PartyDbServer` subclass:
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `collections` | `[]` | the collections this room serves |
+| `oplogRetention` | `10_000` | `_oplog` rows kept per room; a client whose cursor is older gets a fresh snapshot. `0` keeps everything |
+| `maxWriteBytes` | 1 MiB | a larger `POST /write` body is rejected 413. `0` disables the check |
+| `maxWriteOps` | `1_000` | a POST with more ops across all batches is rejected 413. `0` disables the check |
+| `auth` | none | resolves the writer's verified identity from the request; set, an anonymous write is rejected 401 |
+| `anonRole` | none | the Postgres role an anonymous write runs as, when `auth` is set. Postgres only |
+| `createAdapter()` | embedded SQLite | override to persist into D1 or Postgres |
+
+Per client, the third argument of `createPartyDb`:
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `settleTimeoutMs` | `30_000` | a write whose seq has not streamed back by then rejects. `Infinity` waits forever |
+| `compareCursor` | numeric | how two cursors order, for an authority whose seq is not a number |
 
 ## onAuthError callback
 
