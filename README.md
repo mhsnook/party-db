@@ -311,7 +311,7 @@ Per collection, on `definePartyCollection`:
 | `schema` | none | a Zod or StandardSchema; omitted, the room stores the collection as opaque blobs (embedded only) |
 | `ownerColumn` | none | the column that must equal the writer's uid for an `'owner'` policy; set alone, it makes the collection fully private |
 | `access` | `'public'` | who may read, insert, update and delete: one policy, or one per verb (`docs/architecture.md` §17) |
-| `snapshot` | `true` | `false` sends a connecting client no rows for this collection; it tails from there, and reconnects still fill the gap |
+| `snapshot` | `true` | `false` sends a connecting client no rows for this collection; `{ last: n }` sends the rows its newest n writes left behind. Either way it tails from there, and reconnects still fill the gap |
 
 Per room, as class fields on your `PartyDbServer` subclass:
 

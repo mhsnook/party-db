@@ -29,10 +29,13 @@ export type StructuredPlan = {
   key: string
   cols: ColumnSpec[]
   kinds: Map<string, ColumnKind>
-  snapshot: boolean
+  snapshot: SnapshotPlan
 }
-export type BlobPlan = { kind: 'blob'; name: string; key: string; snapshot: boolean }
+export type BlobPlan = { kind: 'blob'; name: string; key: string; snapshot: SnapshotPlan }
 export type Plan = StructuredPlan | BlobPlan
+// `PartyCollection.snapshot` with the default filled in: `true` reads the table,
+// `false` reads nothing, `{ last }` reads the newest oplog batches for the channel.
+export type SnapshotPlan = boolean | { last: number }
 
 // Read each collection into its persistence plan: a schema we can introspect →
 // structured CRUD against your real columns; otherwise the schema-agnostic blob
@@ -44,7 +47,7 @@ export function buildPlans(collections: PartyCollection<any>[]): Map<string, Pla
     const name = assertIdent(c.name)
     const key = assertIdent(c.key)
     const cols = columnsOf(c.schema)
-    const snapshot = c.snapshot !== false
+    const snapshot = snapshotOf(c)
     plans.set(
       name,
       cols
@@ -64,11 +67,41 @@ export function snapshotPlans(plans: Map<string, Plan>, channel?: string): Plan[
   return plan ? [plan] : []
 }
 
-// The snapshot batch for a collection declared `snapshot: false` (architecture
-// §8): no rows, but still `reset` + `ready` and the room's current seq, so the
-// client marks the collection ready and its next reconnect is a `?since` delta.
-export function emptySnapshot(plan: Plan, seq: number): SequencedBatch {
-  return { channel: plan.name, seq, ops: [], ready: true, reset: true }
+function snapshotOf(c: PartyCollection<any>): SnapshotPlan {
+  const s = c.snapshot
+  if (s === undefined || typeof s === 'boolean') return s ?? true
+  if (!Number.isInteger(s.last) || s.last < 1) {
+    throw new Error(`collection "${c.name}": snapshot.last must be a positive integer, got ${JSON.stringify(s.last)}`)
+  }
+  return { last: s.last }
+}
+
+// The newest `n` oplog batches for one channel, newest first. Each row's `ops` is
+// the stored JSON (text on SQLite and D1, already parsed on Postgres).
+export function recentBatchesStmt(plan: Plan, n: number): Statement {
+  return { sql: `SELECT ops FROM _oplog WHERE channel = ? ORDER BY seq DESC LIMIT ?`, binds: [plan.name, n] }
+}
+
+// The snapshot batch for a collection that does not read its table (architecture
+// §8): `reset` + `ready` at the room's current seq, so the client marks it ready
+// and its next reconnect is a `?since` delta. `recent` is what `recentBatchesStmt`
+// read, newest first; empty for `snapshot: false`.
+//
+// The stored ops are post-images, so a key's newest op is its current state:
+// collapse the window per key and send each surviving row as an insert, exactly
+// as a full snapshot would. A key whose newest op is a delete is sent as nothing —
+// the client has no row to remove, and an update or delete of a key the client
+// never held is the one apply TanStack DB is not promised to tolerate.
+export function oplogSnapshot(plan: Plan, seq: number, recent: WriteEvent[][]): SequencedBatch {
+  const latest = new Map<string, WriteEvent | null>()
+  for (let i = recent.length - 1; i >= 0; i--) {
+    for (const op of recent[i]) {
+      const key = String((op.value as Record<string, unknown>)[plan.key])
+      latest.set(key, op.type === 'delete' ? null : { type: 'insert', value: op.value })
+    }
+  }
+  const ops = [...latest.values()].filter((op): op is WriteEvent => op !== null)
+  return { channel: plan.name, seq, ops, ready: true, reset: true }
 }
 
 export type Statement = { sql: string; binds: unknown[] }

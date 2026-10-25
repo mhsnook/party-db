@@ -343,3 +343,53 @@ describe('SqliteAdapter — a `snapshot: false` collection (architecture §8)', 
     expect(delta![0].ops[0].value).toEqual({ id: 'e2', kind: 'leave' })
   })
 })
+
+describe('SqliteAdapter — a `snapshot: { last: n }` collection (architecture §8)', () => {
+  const recent = definePartyCollection({ name: 'events', key: 'id', snapshot: { last: 3 } })
+
+  function recentSetup() {
+    const base = setup()
+    const adapter = new SqliteAdapter(base.engine, [...collections, recent])
+    adapter.init()
+    return { ...base, adapter }
+  }
+  const ev = (id: string, kind: string) => ins('events', { id, kind })
+  const idsOf = (b: { ops: { value: unknown }[] }) => b.ops.map((o) => (o.value as { id: string }).id)
+
+  it('sends the rows the newest n batches left behind, oldest first, as a reset snapshot', async () => {
+    const { adapter } = recentSetup()
+    for (const i of [1, 2, 3, 4, 5]) await adapter.write([ev(`e${i}`, 'tick')])
+    await adapter.write([ins('todos', { id: 'a', text: 'x', done: false })]) // seq 6, another channel
+    const snap = (await adapter.snapshot()).find((b) => b.channel === 'events')!
+    expect(snap).toMatchObject({ seq: 6, ready: true, reset: true })
+    expect(idsOf(snap)).toEqual(['e3', 'e4', 'e5'])
+    expect(snap.ops.every((o) => o.type === 'insert')).toBe(true)
+  })
+
+  it('collapses the window per key: an update is the row, a delete removes it', async () => {
+    const { adapter } = recentSetup()
+    await adapter.write([ev('e1', 'join')])
+    await adapter.write([{ channel: 'events', ops: [{ type: 'update', value: { id: 'e1', kind: 'rejoin' } }] }])
+    await adapter.write([ev('e2', 'join')])
+    await adapter.write([{ channel: 'events', ops: [{ type: 'delete', value: { id: 'e2' } }] }])
+    const snap = (await adapter.snapshot('events'))[0]
+    expect(snap.ops).toEqual([{ type: 'insert', value: { id: 'e1', kind: 'rejoin' } }])
+  })
+
+  it('counts batches, not rows: one busy batch is one of the n', async () => {
+    const { adapter } = recentSetup()
+    await adapter.write([ev('old', 'tick')])
+    await adapter.write([{ channel: 'events', ops: ['a', 'b', 'c', 'd'].map((id) => ({ type: 'insert' as const, value: { id, kind: 'burst' } })) }])
+    await adapter.write([ev('x', 'tick')])
+    await adapter.write([ev('y', 'tick')])
+    const snap = (await adapter.snapshot('events'))[0]
+    expect(idsOf(snap)).toEqual(['a', 'b', 'c', 'd', 'x', 'y'])
+  })
+
+  it('rejects a `last` that is not a positive integer at construction', () => {
+    const { engine } = memoryEngine()
+    for (const last of [0, -1, 1.5, NaN]) {
+      expect(() => new SqliteAdapter(engine, [definePartyCollection({ name: 'events', key: 'id', snapshot: { last } })])).toThrow(/snapshot\.last/)
+    }
+  })
+})

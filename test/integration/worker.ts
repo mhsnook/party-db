@@ -53,12 +53,17 @@ export class Main extends PartyDbServer {
   }
 }
 
-// `Main` plus an `events` feed declared `snapshot: false` (architecture §8): a
-// connecting client gets no rows for it, only the ready marker, and tails the
-// fan-out from there. Blob-stored so the DO needs no table for it; `todos` stays
-// so the same connect proves the other channel still snapshots in full.
+// `Main` plus two feeds (architecture §8): `events`, declared `snapshot: false`, so
+// a connecting client gets no rows for it, only the ready marker; and `recent`,
+// declared `snapshot: { last: 2 }`, so it gets the rows the newest two oplog
+// batches left behind. Both blob-stored so the DO needs no table for them; `todos`
+// stays so the same connect proves a full snapshot still happens beside them.
 export class Tailed extends Main {
-  collections = [todos, definePartyCollection({ name: 'events', key: 'id', snapshot: false })]
+  collections = [
+    todos,
+    definePartyCollection({ name: 'events', key: 'id', snapshot: false }),
+    definePartyCollection({ name: 'recent', key: 'id', snapshot: { last: 2 } }),
+  ]
 }
 
 // A party whose `untabled` collection declares a schema but no CREATE TABLE — a

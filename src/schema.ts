@@ -51,11 +51,13 @@ export type PartyCollection<T extends object = Record<string, unknown>> = {
   // Per-verb access rules. Omitted → 'public' on all four verbs, unless
   // `ownerColumn` is set, which defaults to 'owner' on all four.
   access?: Access
-  // `false` skips the connect-time load: a connecting client gets no rows for this
-  // collection, only a `ready` marker, and tails the fan-out from there. The table
-  // and the `_oplog` are untouched, so a reconnect still replays what it missed
-  // (docs/architecture.md §8). Default `true`.
-  snapshot?: boolean
+  // What a connecting client gets for this collection before it tails the fan-out
+  // (docs/architecture.md §8). `true`, the default: every row. `false`: no rows,
+  // only the `ready` marker. `{ last: n }`: the rows the newest n `_oplog` batches
+  // for this channel left behind, so a feed opens on its recent activity. The table
+  // and the `_oplog` are untouched either way, so a reconnect still replays what
+  // it missed.
+  snapshot?: boolean | { last: number }
 }
 
 // Identity helper: gives you inference on `key` against the schema's type without
