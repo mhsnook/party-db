@@ -25,7 +25,7 @@ import { docSchema, type Doc } from './schema.ts'
 const JWKS = createRemoteJWKSet(new URL(jwksUrl)) // your IdP's public keys
 
 export class Room extends PartyDbServer {
-  collections = [definePartyCollection<Doc>({ name: 'docs', key: 'id', schema: docSchema })]
+  collections = [definePartyCollection({ name: 'docs', key: 'id', schema: docSchema })]
 
   // Resolve identity per POST. Return the verified claims → injected as
   // `request.jwt.claims`; return null for an anonymous write. A throw is a 401.

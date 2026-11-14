@@ -16,7 +16,7 @@ const PASSWORD = 's3cret'
 
 // 🆕 (1) share the zod schema so writes CRUD real columns of a table you own; you bring it, so it lives in ./migrations, applied on start.
 export class Main extends PartyDbServer {
-  collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
+  collections = [definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })]
 
   // 🆕 (2) the storage target is a runtime switch, flipped in wrangler.jsonc, not
   // in code: if a D1 binding is configured (`env.DB`), persist the `todos` table AND

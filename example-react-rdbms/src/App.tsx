@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import type { Collection } from '@tanstack/db'
 import { useLiveQuery } from '@tanstack/react-db'
 import { todoSchema, type Todo } from './schema.ts'
 import { createPartyDb, partyTransport, definePartyCollection, WriteError } from '../../src/client/index.ts'
@@ -10,13 +9,10 @@ import { AuthProvider, useAuth, getToken } from './auth.tsx'
 const transport = partyTransport({ host: location.host, room: 'rdbms', token: getToken })
 
 export const { db } = createPartyDb(transport, [
-  definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema }),
+  definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema }),
 ])
 
-// As in the other example, re-asserting the row type is only needed because this
-// app lives inside the library's repo (two copies of @tanstack/db). Types work
-// natively in regular usage.
-const todos = db.todos as unknown as Collection<Todo, string>
+const todos = db.todos
 
 function LoginBar() {
   const { loggedIn, login, logout } = useAuth()

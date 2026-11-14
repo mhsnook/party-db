@@ -3,7 +3,7 @@
 
 import PartySocket from 'partysocket'
 import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
-import { wireCollections, type PartyCollectionConfig } from './collection.ts'
+import { wireCollections, type DbOf, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
 import { isSequencedBatch, parseFrame, PROTO_PARAM, PROTO_VALUE } from '../protocol.ts'
 
@@ -118,7 +118,7 @@ export function partyTransport(opts: {
   }
 }
 
-export function createPartyDb<C extends PartyCollectionConfig<any>[]>(
+export function createPartyDb<const C extends readonly PartyCollectionConfig<any, string>[]>(
   transport: Transport,
   configs: C,
   options?: SyncClientOptions,
@@ -126,7 +126,7 @@ export function createPartyDb<C extends PartyCollectionConfig<any>[]>(
   const client = new SyncClient(transport, options)
   const { db, persist } = wireCollections(client, configs)
   return {
-    db,
+    db: db as DbOf<C>,
     // the mutationFn for cross-collection atomic writes via TanStack's
     // documented createTransaction({ mutationFn: persist }).
     persist,

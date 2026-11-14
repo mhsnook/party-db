@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import type { Collection } from '@tanstack/db'
 import { eq } from '@tanstack/db'
 import { useLiveQuery } from '@tanstack/react-db'
 import { createPartyDb, partyTransport, WriteError } from '../../src/client/index.ts'
@@ -10,12 +9,10 @@ import { AuthProvider, useAuth, getAccessToken } from './auth.tsx'
 const transport = partyTransport({ host: location.host, room: 'polyglot', token: getAccessToken })
 export const { db } = createPartyDb(transport, collections)
 
-// Re-assert row types only because this app lives inside the library's repo (two
-// copies of @tanstack/db). In normal usage `db.public_phrases` is already typed.
-const languages = db.public_languages as unknown as Collection<Language, string>
-const phrases = db.public_phrases as unknown as Collection<Phrase, string>
-const decks = db.user_decks as unknown as Collection<Deck, string>
-const flashcards = db.user_flashcards as unknown as Collection<Flashcard, string>
+const languages = db.public_languages
+const phrases = db.public_phrases
+const decks = db.user_decks
+const flashcards = db.user_flashcards
 
 // surface a rejected write instead of a silent rollback
 function useWriteError() {

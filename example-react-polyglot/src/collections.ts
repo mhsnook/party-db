@@ -46,9 +46,9 @@ export type Flashcard = z.infer<typeof flashcardSchema>
 
 export const collections = [
   // public read, members-only insert, no edits/deletes (unnamed verbs deny by default)
-  definePartyCollection<Language>({ name: 'public_languages', key: 'id', schema: languageSchema, access: { read: 'public', insert: 'authed' } }),
-  definePartyCollection<Phrase>({ name: 'public_phrases', key: 'id', schema: phraseSchema, access: { read: 'public', insert: 'authed' } }),
+  definePartyCollection({ name: 'public_languages', key: 'id', schema: languageSchema, access: { read: 'public', insert: 'authed' } }),
+  definePartyCollection({ name: 'public_phrases', key: 'id', schema: phraseSchema, access: { read: 'public', insert: 'authed' } }),
   // per-user — `ownerColumn` alone is sugar for fully-private (owner read + owner write)
-  definePartyCollection<Deck>({ name: 'user_decks', key: 'id', schema: deckSchema, ownerColumn: 'user_id' }),
-  definePartyCollection<Flashcard>({ name: 'user_flashcards', key: 'id', schema: flashcardSchema, ownerColumn: 'user_id' }),
+  definePartyCollection({ name: 'user_decks', key: 'id', schema: deckSchema, ownerColumn: 'user_id' }),
+  definePartyCollection({ name: 'user_flashcards', key: 'id', schema: flashcardSchema, ownerColumn: 'user_id' }),
 ]

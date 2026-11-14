@@ -4,6 +4,7 @@ export {
   definePartyCollection,
   type PartyCollection,
   type PartyCollectionConfig,
+  type DbOf,
 } from './collection.ts'
 export { createPartyDb, partyTransport } from './party-db.ts'
 export { WriteError, TransportError, AuthError, ClosedError } from './errors.ts'

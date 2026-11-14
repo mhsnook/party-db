@@ -38,9 +38,15 @@ export type UidColumn<T> = string extends keyof T
   ? keyof T & string
   : { [K in keyof T]-?: NonNullable<T[K]> extends string | number | bigint ? K : never }[keyof T] & string
 
-export type PartyCollection<T extends object = Record<string, unknown>> = {
-  name: string // channel === table name
-  key: keyof T & string // primary key field → getKey
+// `Name` and `Key` keep the literal collection name and key column, so
+// `createPartyDb` can type `db.todos` as `Collection<Todo, string>`.
+export type PartyCollection<
+  T extends object = Record<string, unknown>,
+  Name extends string = string,
+  Key extends keyof T & string = keyof T & string,
+> = {
+  name: Name // channel === table name
+  key: Key // primary key field → getKey
   schema?: StandardSchemaV1<T> // shared Zod/StandardSchema: types + validation
   // The column whose value must equal the writer's uid for any 'owner' rule. This
   // is the simple string-equality fast path; naming it with no `access` is sugar
@@ -65,8 +71,17 @@ export type PartyCollection<T extends object = Record<string, unknown>> = {
   snapshot?: boolean
 }
 
-// Identity helper: gives you inference on `key` against the schema's type without
-// widening. Same value back; it only exists for the types.
-export function definePartyCollection<T extends object>(cfg: PartyCollection<T>) {
+// Identity helper: infers the row type from `schema` and keeps `name` literal, so
+// `createPartyDb` returns `db.<name>` typed by that row. Same value back; it only
+// exists for the types.
+//
+// Passing the row type explicitly (`definePartyCollection<Todo>(...)`) checks `key`
+// against it, but TypeScript then cannot infer the name: that collection is typed
+// on `db` as `Collection<any>`, as before. Let the schema carry the type instead.
+export function definePartyCollection<
+  T extends object = Record<string, unknown>,
+  const Name extends string = string,
+  const Key extends keyof T & string = keyof T & string,
+>(cfg: PartyCollection<T, Name, Key>): PartyCollection<T, Name, Key> {
   return cfg
 }

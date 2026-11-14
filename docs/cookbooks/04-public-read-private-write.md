@@ -21,7 +21,7 @@ const authorize = (req: Request, { kind }: AuthContext) => {
 }
 
 export class Main extends PartyDbServer {
-  collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
+  collections = [definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })]
 }
 
 export default {

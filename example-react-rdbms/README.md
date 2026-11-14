@@ -42,7 +42,7 @@ No setup needed: the app data goes to the DO's own SQLite, and the room creates 
 ```ts
 export class Main extends PartyDbServer {
   // share the schema so writes CRUD into REAL columns, not a blob
-  collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
+  collections = [definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })]
 
   // the storage target is a runtime switch: a D1 binding → D1, else embedded SQLite.
   createAdapter(): PersistenceAdapter {

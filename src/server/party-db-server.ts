@@ -9,7 +9,7 @@
 // server:
 //
 //   export class Room extends PartyDbServer {
-//     collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
+//     collections = [definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })]
 //     // create YOUR tables however you migrate them; we only CRUD over them:
 //     onStart() {
 //       this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS todos (...)`)

@@ -19,7 +19,25 @@ import { definePartyCollection, type PartyCollection } from '../schema.ts'
 // defined in ../schema.ts, imported on both sides. Re-exported here (plus the
 // legacy `PartyCollectionConfig` alias) so client imports keep working.
 export { definePartyCollection, type PartyCollection }
-export type PartyCollectionConfig<T extends object> = PartyCollection<T>
+export type PartyCollectionConfig<T extends object, Name extends string = string> = PartyCollection<T, Name>
+
+// The TanStack collection a config becomes: its row type, keyed by the type of its
+// key column (TanStack's `string | number` when the column can't be told).
+type KeyOf<T, K> = K extends keyof T ? (T[K] extends string | number ? T[K] : string | number) : string | number
+type CollectionOf<C> = C extends PartyCollection<infer T, string, infer K> ? Collection<T, KeyOf<T, K>> : never
+
+// Configs whose name TypeScript kept as a literal, keyed by that name.
+type Named<C extends readonly PartyCollection<any, string>[]> = {
+  [K in C[number] as string extends K['name'] ? never : K['name']]: CollectionOf<K>
+}
+
+// `db`, typed by collection name. A config whose name widened to `string` (an
+// explicit `definePartyCollection<Row>(...)`, or a config built at runtime) can't be
+// keyed, so `db` also accepts any name as `Collection<any>`, which is what every
+// collection was before names were typed.
+export type DbOf<C extends readonly PartyCollection<any, string>[]> = string extends C[number]['name']
+  ? Named<C> & { [name: string]: Collection<any> }
+  : Named<C>
 
 // exported for unit tests: a single TanStack mutation → one wire WriteEvent.
 // An update sends the fields it changed plus the key, never the whole row (§16).
@@ -59,7 +77,7 @@ export function makePersist(
 
 // internal: wire N collection configs onto one SyncClient. Returns the
 // collections plus the shared `persist` mutationFn.
-export function wireCollections(client: SyncClient, configs: PartyCollectionConfig<any>[]) {
+export function wireCollections(client: SyncClient, configs: readonly PartyCollectionConfig<any>[]) {
   // weak: we only ever look a collection up by identity, so this must not be the
   // thing keeping every collection (and its rows) alive.
   const configOf = new WeakMap<Collection<any>, PartyCollection<any>>()

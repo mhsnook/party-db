@@ -41,7 +41,7 @@ export type Post = z.infer<typeof postSchema>
 export type Viewer = { uid: string | null; friends: string[] }
 
 export const collections = [
-  definePartyCollection<Post, Viewer>({
+  definePartyCollection({
     name: 'posts',
     key: 'id',
     schema: postSchema,
@@ -51,7 +51,7 @@ export const collections = [
       // Return a serializable EXPRESSION, not a raw boolean — that's what lets the
       // one rule compile to a SQL WHERE (snapshot/backlog) and an in-memory predicate
       // (fan-out). `post` is the row's columns; `viewer` is your cached context.
-      read: (post, viewer) =>
+      read: (post, viewer: Viewer) =>
         or(
           eq(post.visibility, 'public'),
           eq(post.author_id, viewer.uid),
