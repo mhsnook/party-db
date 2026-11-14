@@ -1,5 +1,8 @@
 node_modules
 dist
+# Playwright's output from `pnpm test:e2e`
+test-results
+playwright-report
 
 # installed by `npx skills add` — personal agent tooling, not party-db code
 skills-lock.json

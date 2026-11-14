@@ -422,6 +422,7 @@ you trade for the socket.
 | `pnpm test` | fast node unit suite — no external services |
 | `pnpm test:integration` | the real DO/WebSocket path inside workerd (miniflare) |
 | `pnpm test:pg` | Postgres driver checks (node + workerd lanes) — needs a Postgres |
+| `EXAMPLE=<dir> pnpm test:e2e` | one example app, served and driven in Chromium by its own `e2e/` tests |
 
 The `pnpm test:pg` lane (and the `pg-connect` integration test) talk to a **real
 Postgres** over `PG_URL`. Without it they **skip**, so a plain `pnpm test` /
@@ -439,6 +440,15 @@ pnpm test:pg && pnpm test:integration
 
 `wal_level=logical` is set from day one — it costs nothing and the v2 WAL story
 ([`postgres-todo.md`](./docs/postgres-todo.md)) needs it.
+
+Each example app has its own browser tests in `<example>/e2e/`, run against this
+checkout's `src/`. `pnpm test:e2e` starts that example's worker and Vite site, then
+opens two or three tabs on the same room. Every example uses ports 8787 and 5173, so
+run them one at a time, after both installs (the root, then the example):
+
+```sh
+EXAMPLE=example-react pnpm test:e2e
+```
 
 ## Files
 
