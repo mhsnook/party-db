@@ -61,6 +61,25 @@ export class Tailed extends Main {
   collections = [todos, definePartyCollection({ name: 'events', key: 'id', snapshot: false })]
 }
 
+// `Main` plus `comments`, sliced by `thread_id` (architecture §18): a client loads
+// only the threads its live queries ask for, and a write to one thread reaches
+// only the sockets watching it.
+export const comments = definePartyCollection({
+  name: 'comments',
+  key: 'id',
+  schema: z.object({ id: z.string(), thread_id: z.string(), body: z.string() }),
+  sliceBy: 'thread_id',
+})
+
+export class Threads extends Main {
+  collections = [todos, comments]
+
+  onStart() {
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS comments (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, body TEXT NOT NULL)`)
+    return super.onStart()
+  }
+}
+
 // A party whose `untabled` collection declares a schema but no CREATE TABLE — a
 // write to it fails inside the adapter (no such table), the reliably-internal
 // fault for the 500 path. Kept separate from `Main` so Main's snapshot shape

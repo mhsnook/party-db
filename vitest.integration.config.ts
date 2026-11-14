@@ -22,6 +22,8 @@ export default defineConfig({
           Faulty: { className: 'Faulty', useSQLite: true },
           // one collection declared `snapshot: false`: no connect-time rows, live tail only.
           Tailed: { className: 'Tailed', useSQLite: true },
+          // `comments` sliced by thread: rows load and fan out per thread.
+          Threads: { className: 'Threads', useSQLite: true },
           // the server-layer identity gate (auth, fail-closed default), SQLite-backed.
           Authed: { className: 'Authed', useSQLite: true },
           // writes rows from its own host code through `commit()`, not a POST.

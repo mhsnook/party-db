@@ -2,11 +2,13 @@
 // collections, routes each incoming batch to its channel, and lets a writer
 // await a specific seq's arrival (the settlement signal).
 
-import { applyBatch, type ChannelSink } from './apply.ts'
-import { SeqTracker, type CursorCompare } from './seq-tracker.ts'
+import type { LoadSubsetOptions } from '@tanstack/db'
+import { applyBatch, type ChannelSink, type SliceApply } from './apply.ts'
+import { ChannelSlices, sliceTargets } from './slices.ts'
+import { SeqTracker, compareCursor, type CursorCompare } from './seq-tracker.ts'
 import { ClosedError, type AuthError } from './errors.ts'
 import { isSequencedBatch } from '../protocol.ts'
-import type { Cursor, SequencedBatch, WriteAck, WriteBatch } from '../protocol.ts'
+import type { Cursor, SequencedBatch, UpFrame, WriteAck, WriteBatch } from '../protocol.ts'
 
 // A transport is just "a stream coming down" + "a way to push writes up".
 // Today there is one impl (the DO/party transport); it stays an interface so the
@@ -22,17 +24,28 @@ export type Transport = {
   // `subscribe` + `send` is the whole seam, and everything else is a capability
   // a transport may not have.
   close?: () => void
-  // ask the server to re-send one channel's current state. The SyncClient calls
-  // this when a collection registers a SECOND time — TanStack DB dropped the
-  // first sink and its rows on GC, so nothing but a fresh snapshot fills it
-  // (#47). The reply is an ordinary `reset` batch on the down-stream, so there is
-  // nothing to await here.
+  // send one frame UP the down-stream's socket: a subscribe or an unsubscribe
+  // (docs/architecture.md §8a, §18). The replies are ordinary batches on the
+  // down-stream, so there is nothing to await here.
+  //
+  // The SyncClient sends `{ subscribe: channel }` when a collection registers a
+  // SECOND time — TanStack DB dropped the first sink and its rows on GC, so
+  // nothing but a fresh snapshot fills it (#47) — and a subscribe per slice for a
+  // `sliceBy` collection.
   //
   // Implement it if you write your own transport. Without it a re-registered
   // collection still takes whatever streams in next, but nothing marks it READY
   // again — only a `ready` batch does that, and a delta isn't one — so it sits in
-  // `loading` and `preload()` never resolves.
-  requestSnapshot?: (channel: string) => void
+  // `loading` and `preload()` never resolves. A `sliceBy` collection refuses to
+  // start without it.
+  sendFrame?: (frame: UpFrame) => void
+  // whether `sendFrame` would reach the room right now. The SyncClient sends a
+  // subscribe only while this is true, and sends every live one again on
+  // `onOpen`, so a frame is never queued behind a reconnect and sent twice.
+  isOpen?: () => boolean
+  // the down-stream (re)connected: a new socket, with no subscriptions on it yet.
+  // Returns an unsubscribe.
+  onOpen?: (listener: () => void) => () => void
 }
 
 export type SyncClientOptions = {
@@ -48,6 +61,15 @@ const DEFAULT_SETTLE_TIMEOUT_MS = 30_000
 
 export class SyncClient {
   private sinks = new Map<string, ChannelSink>()
+  // the `sliceBy` collections' subscriptions, by channel; set while registered.
+  private slices = new Map<string, { slices: ChannelSlices; apply: SliceApply }>()
+  // every channel declared `sliceBy`, registered or not. A batch for one with no
+  // subscription is unwanted, and must not wait in `pending` for a register.
+  private slicedChannels = new Set<string>()
+  // the highest seq seen on any channel. The room sends in seq order, so every
+  // subscribed row up to it has arrived; a released slice remembers it.
+  private roomSeq?: Cursor
+  private compare: CursorCompare
   private pending = new Map<string, SequencedBatch[]>() // batches before register
   // channels that were registered and then torn down. A sink that comes back for
   // one of these is a fresh, EMPTY collection (TanStack GC dropped the rows), so
@@ -58,6 +80,7 @@ export class SyncClient {
   private tracker: SeqTracker
   private settleTimeoutMs: number
   private unsubscribe?: () => void
+  private offOpen?: () => void
   // dropped on close: it is the closed flag, and letting it go releases the dead
   // socket. A collection outlives us holding the cleanup closure `register`
   // returns, so anything we still point at stays alive with it.
@@ -65,9 +88,17 @@ export class SyncClient {
 
   constructor(transport: Transport, opts: SyncClientOptions = {}) {
     this.transport = transport
-    this.tracker = new SeqTracker(opts.compareCursor)
+    this.compare = opts.compareCursor ?? compareCursor
+    this.tracker = new SeqTracker(this.compare)
     this.settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
     this.unsubscribe = transport.subscribe((batch) => this.route(batch))
+    this.offOpen = transport.onOpen?.(() => {
+      for (const { slices } of this.slices.values()) slices.resubscribe()
+    })
+  }
+
+  private sendFrame(frame: UpFrame) {
+    if (this.transport?.isOpen?.() ?? true) this.transport?.sendFrame?.(frame)
   }
 
   private route(batch: SequencedBatch) {
@@ -75,12 +106,14 @@ export class SyncClient {
     // buffer under `undefined` forever, so drop it.
     if (!isSequencedBatch(batch)) return
     const sink = this.sinks.get(batch.channel)
+    // a sliced channel with no collection has no subscriptions to fill
+    if (!sink && this.slicedChannels.has(batch.channel)) return
     if (!sink) {
       // a channel we tore down refills from the snapshot its next register asks
       // for, and that snapshot supersedes anything we could hold here — so don't
       // hold it. A transport that can't ask still needs the buffer: it is the
       // only refill that channel will get.
-      if (this.torndown.has(batch.channel) && this.transport?.requestSnapshot) return
+      if (this.torndown.has(batch.channel) && this.transport?.sendFrame) return
       const buffered = this.pending.get(batch.channel) ?? []
       buffered.push(batch)
       this.pending.set(batch.channel, buffered)
@@ -90,7 +123,10 @@ export class SyncClient {
   }
 
   private apply(sink: ChannelSink, batch: SequencedBatch) {
-    applyBatch(sink, batch)
+    const sliced = this.slices.get(batch.channel)
+    const receipt = applyBatch(sink, batch, sliced?.apply)
+    if (this.roomSeq === undefined || this.compare(batch.seq, this.roomSeq) > 0) this.roomSeq = batch.seq
+    sliced?.slices.applied(batch, receipt)
     this.tracker.observe(batch.channel, batch.seq)
   }
 
@@ -104,7 +140,7 @@ export class SyncClient {
     // batch and truncate-applies through the normal route, which is also what fires
     // `markReady` again. `route` buffered nothing for us in the meantime, so there
     // is nothing here that the snapshot would overwrite.
-    if (this.torndown.delete(channel)) this.transport?.requestSnapshot?.(channel)
+    if (this.torndown.delete(channel)) this.sendFrame({ subscribe: channel })
     for (const batch of this.pending.get(channel) ?? []) this.apply(sink, batch)
     this.pending.delete(channel)
     return () => {
@@ -113,6 +149,41 @@ export class SyncClient {
       if (this.sinks.get(channel) !== sink) return
       this.sinks.delete(channel)
       this.torndown.add(channel)
+    }
+  }
+
+  // Call before the collection's first sync, so the room's over-delivery for it is
+  // dropped rather than buffered until a register that may never come.
+  declareSliced(channel: string) {
+    this.slicedChannels.add(channel)
+  }
+
+  // A `sliceBy` collection's sync: no rows until a live query asks for a slice.
+  // Returns TanStack's sync result — `loadSubset` / `unloadSubset` turn each live
+  // query's `where` into subscriptions (docs/architecture.md §18).
+  registerSliced(
+    channel: string,
+    sink: ChannelSink,
+    opts: { column: string; rows: SliceApply['rows'] },
+  ): { cleanup: () => void; loadSubset: (options: LoadSubsetOptions) => true | Promise<void>; unloadSubset: (options: LoadSubsetOptions) => void } {
+    if (!this.transport?.sendFrame) {
+      throw new Error(`collection "${channel}" sets sliceBy, which needs a transport with sendFrame to subscribe to slices`)
+    }
+    this.slicedChannels.add(channel)
+    const slices = new ChannelSlices(channel, opts.column, (frame) => this.sendFrame(frame), () => this.roomSeq)
+    const entry = { slices, apply: { column: opts.column, rows: opts.rows, accepts: (row: Record<string, unknown>) => slices.accepts(row) } }
+    this.sinks.set(channel, sink)
+    this.slices.set(channel, entry)
+    sink.markReady()
+    return {
+      loadSubset: (options) => slices.acquire(sliceTargets(options.where, opts.column)),
+      unloadSubset: (options) => slices.release(sliceTargets(options.where, opts.column)),
+      cleanup: () => {
+        if (this.sinks.get(channel) !== sink) return
+        this.sinks.delete(channel)
+        this.slices.delete(channel)
+        slices.dispose()
+      },
     }
   }
 
@@ -140,7 +211,11 @@ export class SyncClient {
     if (!this.transport) return
     this.unsubscribe?.()
     this.unsubscribe = undefined // captures the socket handler — let it go too
+    this.offOpen?.()
+    this.offOpen = undefined
     this.tracker.rejectAll(new ClosedError())
+    for (const { slices } of this.slices.values()) slices.dispose(new ClosedError())
+    this.slices.clear()
     this.sinks.clear()
     this.pending.clear()
     this.torndown.clear()

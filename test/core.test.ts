@@ -132,7 +132,7 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
     const { core, broadcasts } = await host()
     await core.commit(write('a', 'one'))
     const frames: SequencedBatch[] = []
-    await core.handleMessage((m) => frames.push(JSON.parse(m)), JSON.stringify({ snapshot: 'todos' }))
+    await core.handleMessage((m) => frames.push(JSON.parse(m)), JSON.stringify({ subscribe: 'todos' }))
 
     expect(frames).toHaveLength(1)
     expect(frames[0]).toMatchObject({ channel: 'todos', reset: true, ready: true })
@@ -146,8 +146,8 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
     const frames: string[] = []
     const send = (m: string) => void frames.push(m)
     for (const message of [
-      JSON.stringify({ snapshot: 'nope' }), // a channel this room does not serve
-      JSON.stringify({ snapshot: 42 }), // right key, wrong type
+      JSON.stringify({ subscribe: 'nope' }), // a channel this room does not serve
+      JSON.stringify({ subscribe: 42 }), // right key, wrong type
       JSON.stringify({ cf_agent_use_chat_request: 'x' }), // a composed host's own frame
       'not json at all',
       new ArrayBuffer(4), // a binary frame
@@ -164,7 +164,7 @@ describe('PartyDbCore — composed into a host that cannot subclass', () => {
     // them in one list — that list is what ordering is about.
     const frames = broadcasts
     const committing = core.commit(write('b', 'two'))
-    const answering = core.handleMessage((m) => frames.push(JSON.parse(m)), JSON.stringify({ snapshot: 'todos' }))
+    const answering = core.handleMessage((m) => frames.push(JSON.parse(m)), JSON.stringify({ subscribe: 'todos' }))
     await Promise.all([committing, answering])
 
     const seqs = frames.map((f) => Number(f.seq))

@@ -37,6 +37,9 @@ export type SequencedBatch<T extends object = Record<string, unknown>> = WriteBa
   // this batch replaces the channel rather than appending to it: the consumer
   // clears its state before applying (see docs/architecture.md §8).
   reset?: boolean
+  // this batch answers a subscribe for this slice. With `reset`, it replaces only
+  // the rows of that slice, never the whole channel (docs/architecture.md §18).
+  slice?: SliceValue
 }
 
 // Reply to POST /write in controlled mode (the accept-and-ack).
@@ -97,31 +100,57 @@ export function isWritableOp(value: unknown): value is WriteEvent {
   return typeof row === 'object' && row !== null && !Array.isArray(row)
 }
 
-// The one frame a client sends UP the socket: "re-send me this channel." The
-// reply is not a frame type of its own — the server answers with an ordinary
-// snapshot batch for that channel (`reset: true`, `ready: true`), to the asking
-// connection alone.
-//
-// The client sends it when a collection registers a second time, after TanStack
-// DB's GC dropped the first sink and its rows (#47). Connecting still carries
-// `?since`; this is the only other way to ask for state.
-export type SnapshotRequest = {
-  // the channel to re-send. A name the room doesn't serve is dropped.
-  snapshot: string
+// A slice value: what a row's `sliceBy` column holds. Both sides compare slice
+// values as text (`sliceText`), so a SERIAL thread id 7 matches a "7" from a URL.
+export type SliceValue = string | number
+
+export function sliceText(value: unknown): string {
+  return String(value)
 }
+
+// The frames a client sends UP the socket. A subscribe asks the room to start
+// sending one channel, or one slice of it, to this socket; the reply is ordinary
+// batches for that channel, ending in one marked `ready` (and `slice`, when a
+// slice was asked for).
+//
+// - No `slice`: the whole channel. For a channel without `sliceBy` this is the
+//   re-register request (docs/architecture.md §8a), answered with a `reset` snapshot.
+// - `since`: the client already holds this slice as of that seq, so the reply is
+//   the delta after it. A cursor the room no longer retains gets a snapshot.
+export type SubscribeFrame = {
+  subscribe: string
+  slice?: SliceValue
+  since?: Cursor
+}
+
+// Stop sending this slice (or, with no `slice`, the whole-channel subscription)
+// to this socket. A slice the socket never subscribed is dropped.
+export type UnsubscribeFrame = {
+  unsubscribe: string
+  slice?: SliceValue
+}
+
+export type UpFrame = SubscribeFrame | UnsubscribeFrame
+
+const isSliceValue = (v: unknown): v is SliceValue => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v))
 
 // Same posture as `isSequencedBatch`: a host may share the socket, so prove the
 // frame is ours before acting on it.
-export function isSnapshotRequest(value: unknown): value is SnapshotRequest {
+export function isUpFrame(value: unknown): value is UpFrame {
   if (typeof value !== 'object' || value === null) return false
-  return typeof (value as Partial<SnapshotRequest>).snapshot === 'string'
+  const frame = value as Record<string, unknown>
+  if (frame.slice !== undefined && !isSliceValue(frame.slice)) return false
+  if (typeof frame.subscribe === 'string') {
+    return frame.since === undefined || typeof frame.since === 'number' || typeof frame.since === 'string'
+  }
+  return typeof frame.unsubscribe === 'string'
 }
 
 // Decode one socket frame of ours, or null when it isn't one. Both directions
 // need this and for the same reason: a composed host shares the room's socket
 // (docs/architecture.md §15), so the stream carries frames party-db did not send
 // — binary, text that isn't JSON, JSON of another protocol. Pass the guard for
-// the direction you're reading: `isSequencedBatch` coming down, `isSnapshotRequest`
+// the direction you're reading: `isSequencedBatch` coming down, `isUpFrame`
 // going up.
 export function parseFrame<T>(data: unknown, guard: (value: unknown) => value is T): T | null {
   if (typeof data !== 'string') return null

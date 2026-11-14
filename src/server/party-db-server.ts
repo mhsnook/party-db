@@ -29,6 +29,7 @@ import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
 import { PartyDbCore, DEFAULT_MAX_WRITE_BYTES, DEFAULT_MAX_WRITE_OPS } from './core.ts'
 import { audienceTag, viewerFromTags, viewerTags } from './access.ts'
+import type { PartyDbConnection, Subscription } from './slices.ts'
 
 export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
   static options = { hibernate: true }
@@ -113,6 +114,7 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       anonRole: this.anonRole,
       maxWriteBytes: this.maxWriteBytes,
       maxWriteOps: this.maxWriteOps,
+      connections: () => [...this.getConnections()].map(partyConnection),
     })
     await this.core.init()
   }
@@ -126,18 +128,25 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   }
 
   onConnect(conn: Connection, ctx: ConnectionContext): Promise<void> {
-    return this.core.connect((message) => conn.send(message), ctx.request.url, viewerFromTags(conn.tags))
+    return this.core.connect(partyConnection(conn), ctx.request.url)
   }
 
-  // The one frame a client sends up the socket: `{ snapshot: <channel> }`, from a
-  // collection that registered a second time (docs/architecture.md §8a). The core
-  // answers this connection alone; anything else it drops.
+  // The frames a client sends up the socket: subscribe and unsubscribe, for a
+  // sliced collection's slices and for a collection that registered a second time
+  // (docs/architecture.md §8a, §18). The core answers this connection alone;
+  // anything else it drops.
   //
   // Serving your own socket traffic from the same room? Override this and chain —
   // `return super.onMessage(conn, message)` — the way `onStart` does above. An
-  // override that doesn't chain leaves a re-registered collection empty.
+  // override that doesn't chain leaves a re-registered collection empty and a
+  // sliced one loading forever.
   onMessage(conn: Connection, message: WSMessage): Promise<void> {
-    return this.core.handleMessage((reply) => conn.send(reply), message, viewerFromTags(conn.tags))
+    return this.core.handleMessage(partyConnection(conn), message)
+  }
+
+  // Overriding this? Chain `super.onClose(conn, code, reason, wasClean)`.
+  onClose(conn: Connection, _code: number, _reason: string, _wasClean: boolean): void {
+    this.core.disconnect(conn.id)
   }
 
   // controlled mode writes come over HTTP, not the (hibernating) socket.
@@ -151,4 +160,29 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   protected commit(batches: WriteBatch[], identity?: WriteIdentity): Promise<SequencedBatch[]> {
     return this.core.commit(batches, identity)
   }
+}
+
+// The key party-db keeps a socket's slice subscriptions under, in partyserver's
+// per-connection `state` — the one slot that survives hibernation. The rest of
+// `state` is yours. Replacing `state` wholesale with `setState(value)` drops this
+// key; the room then sends that socket every sliced collection whole, which is
+// correct but heavy. Merge instead: `conn.setState((s) => ({ ...s, mine }))`.
+export const SUBSCRIPTIONS_KEY = 'partyDbSubscriptions'
+
+function partyConnection(conn: Connection): PartyDbConnection {
+  return {
+    id: conn.id,
+    send: (message) => conn.send(message),
+    viewer: viewerFromTags(conn.tags),
+    loadSubscriptions: () => {
+      const saved = (conn.state as Record<string, unknown> | null)?.[SUBSCRIPTIONS_KEY]
+      return Array.isArray(saved) ? (saved as Subscription[]) : null
+    },
+    saveSubscriptions: (subscriptions) =>
+      conn.setState((state: unknown) => ({ ...(isRecord(state) ? state : {}), [SUBSCRIPTIONS_KEY]: subscriptions })),
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

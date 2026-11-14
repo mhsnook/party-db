@@ -18,7 +18,7 @@
 // with `?`, every identifier comes from the schema allowlist (assertIdent), never
 // from the payload's keys.
 
-import type { SequencedBatch, WriteEvent } from '../protocol.ts'
+import type { SequencedBatch, SliceValue, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError } from './persistence.ts'
 import { assertIdent, columnsOf, decodeRow, encode, type ColumnKind, type ColumnSpec } from './columns.ts'
@@ -30,8 +30,9 @@ export type StructuredPlan = {
   cols: ColumnSpec[]
   kinds: Map<string, ColumnKind>
   snapshot: boolean
+  sliceBy?: string
 }
-export type BlobPlan = { kind: 'blob'; name: string; key: string; snapshot: boolean }
+export type BlobPlan = { kind: 'blob'; name: string; key: string; snapshot: boolean; sliceBy?: undefined }
 export type Plan = StructuredPlan | BlobPlan
 
 // Read each collection into its persistence plan: a schema we can introspect →
@@ -45,23 +46,52 @@ export function buildPlans(collections: PartyCollection<any>[]): Map<string, Pla
     const key = assertIdent(c.key)
     const cols = columnsOf(c.schema)
     const snapshot = c.snapshot !== false
+    const sliceBy = c.sliceBy === undefined ? undefined : sliceColumn(c, cols)
     plans.set(
       name,
       cols
-        ? { kind: 'structured', name, key, cols, kinds: new Map(cols.map((col) => [col.name, col.kind])), snapshot }
+        ? { kind: 'structured', name, key, cols, kinds: new Map(cols.map((col) => [col.name, col.kind])), snapshot, sliceBy }
         : { kind: 'blob', name, key, snapshot },
     )
   }
   return plans
 }
 
-// The plans one snapshot covers: every declared collection, or just the one a
-// client named in a `{ snapshot }` request (architecture §8a). A name the room
-// doesn't serve selects nothing, so the adapter reads no tables at all.
+// A slice is read with `WHERE "<sliceBy>" = ?`, so the column has to be one of the
+// table's real columns, and one that can be compared to a string or a number.
+function sliceColumn(c: PartyCollection<any>, cols: ColumnSpec[] | null): string {
+  const name = assertIdent(c.sliceBy!)
+  const col = cols?.find((spec) => spec.name === name)
+  if (c.snapshot === false) throw new Error(`collection "${c.name}" sets sliceBy, which already skips the connect-time load: drop snapshot: false`)
+  if (!cols) throw new Error(`collection "${c.name}" sets sliceBy, which needs a schema to name its columns`)
+  if (!col) throw new Error(`collection "${c.name}" names sliceBy "${name}", which its schema does not declare`)
+  if (col.kind !== 'scalar') throw new Error(`collection "${c.name}" names sliceBy "${name}", which is not a string or number column`)
+  return name
+}
+
+// The plans one snapshot covers: on connect, every declared collection except the
+// sliced ones, which load by subscription (architecture §18); otherwise just the
+// one a client subscribed to. A name the room doesn't serve selects nothing, so
+// the adapter reads no tables at all.
 export function snapshotPlans(plans: Map<string, Plan>, channel?: string): Plan[] {
-  if (channel === undefined) return [...plans.values()]
+  if (channel === undefined) return [...plans.values()].filter((p) => p.sliceBy === undefined)
   const plan = plans.get(channel)
   return plan ? [plan] : []
+}
+
+// The `WHERE` that narrows a snapshot read to one slice, or nothing for the whole
+// table. The column comes from the plan, never from the frame.
+export function sliceFilter(plan: StructuredPlan, slice: SliceValue | undefined): Statement {
+  if (slice === undefined || plan.sliceBy === undefined) return { sql: '', binds: [] }
+  return { sql: ` WHERE "${plan.sliceBy}" = ?`, binds: [slice] }
+}
+
+// A snapshot batch: `reset` replaces what the client holds (the channel, or only
+// the slice when one is named), `ready` says the reply is complete.
+export function snapshotBatch(plan: Plan, seq: number, rows: Record<string, unknown>[], slice?: SliceValue): SequencedBatch {
+  const batch: SequencedBatch = { channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true, reset: true }
+  if (slice !== undefined) batch.slice = slice
+  return batch
 }
 
 // The snapshot batch for a collection declared `snapshot: false` (architecture

@@ -10,7 +10,7 @@ function fakeTransport() {
   let onBatch: ((b: SequencedBatch) => void) | undefined
   const send = vi.fn(async () => ({ accepted: [] as { channel: string; seq: number }[] }))
   const close = vi.fn()
-  const requestSnapshot = vi.fn()
+  const sendFrame = vi.fn()
   const transport: Transport = {
     subscribe(cb) {
       onBatch = cb
@@ -20,13 +20,13 @@ function fakeTransport() {
     },
     send,
     close,
-    requestSnapshot,
+    sendFrame,
   }
   return {
     transport,
     send,
     close,
-    requestSnapshot,
+    sendFrame,
     push: (b: SequencedBatch) => onBatch?.(b),
   }
 }
@@ -37,7 +37,7 @@ function recorder() {
   const truncate = vi.fn()
   const sink: ChannelSink = {
     begin: () => {},
-    write: (op) => void ops.push(op.value),
+    write: (op) => void ops.push('value' in op ? op.value : op),
     commit: () => {},
     markReady,
     truncate,
@@ -267,7 +267,7 @@ describe('SyncClient re-register asks for a snapshot', () => {
     const t = fakeTransport()
     const client = new SyncClient(t.transport)
     client.register('todos', recorder().sink)
-    expect(t.requestSnapshot).not.toHaveBeenCalled()
+    expect(t.sendFrame).not.toHaveBeenCalled()
   })
 
   it('asks exactly once when a torn-down channel registers again', () => {
@@ -276,8 +276,8 @@ describe('SyncClient re-register asks for a snapshot', () => {
     client.register('todos', recorder().sink)()
     client.register('todos', recorder().sink)
 
-    expect(t.requestSnapshot).toHaveBeenCalledTimes(1)
-    expect(t.requestSnapshot).toHaveBeenCalledWith('todos')
+    expect(t.sendFrame).toHaveBeenCalledTimes(1)
+    expect(t.sendFrame).toHaveBeenCalledWith({ subscribe: 'todos' })
   })
 
   it('replays the reset snapshot into the fresh sink, truncate and ready included', () => {
@@ -314,7 +314,7 @@ describe('SyncClient re-register asks for a snapshot', () => {
 
   it('still replays the buffer for a transport that cannot ask', () => {
     const t = fakeTransport()
-    const { requestSnapshot, ...bare } = t.transport
+    const { sendFrame, ...bare } = t.transport
     const client = new SyncClient(bare)
     client.register('todos', recorder().sink)()
     t.push(seqBatch('todos', 2, { id: 'b' }))
@@ -332,12 +332,12 @@ describe('SyncClient re-register asks for a snapshot', () => {
     cleanup() // idempotent: a second call is not a second teardown
     client.register('todos', recorder().sink)()
     client.register('todos', recorder().sink)
-    expect(t.requestSnapshot.mock.calls).toEqual([['todos'], ['todos']])
+    expect(t.sendFrame.mock.calls).toEqual([[{ subscribe: 'todos' }], [{ subscribe: 'todos' }]])
   })
 
   it("keeps the old behavior for a transport that can't request one", () => {
     const t = fakeTransport()
-    const { requestSnapshot, ...bare } = t.transport
+    const { sendFrame, ...bare } = t.transport
     const client = new SyncClient(bare)
     const { sink, ops } = recorder()
     client.register('todos', recorder().sink)()
@@ -358,5 +358,72 @@ describe('SyncClient re-register asks for a snapshot', () => {
 
     t.push(seqBatch('todos', 1, { id: 'a' }))
     expect(live.ops).toEqual([{ id: 'a' }])
+  })
+})
+
+describe('SyncClient sliced registration', () => {
+  function openTransport() {
+    const t = fakeTransport()
+    let open = false
+    const openers = new Set<() => void>()
+    const transport: Transport = {
+      ...t.transport,
+      isOpen: () => open,
+      onOpen: (l) => (openers.add(l), () => openers.delete(l)),
+    }
+    return { ...t, transport, open: () => ((open = true), openers.forEach((l) => l())), drop: () => void (open = false) }
+  }
+
+  it('holds subscribes until the socket opens, then sends each again on every reopen', () => {
+    const t = openTransport()
+    const client = new SyncClient(t.transport)
+    const { loadSubset } = client.registerSliced('comments', recorder().sink, { column: 'thread_id', rows: () => [] })
+    void loadSubset({ where: { type: 'func', name: 'eq', args: [{ type: 'ref', path: ['thread_id'] }, { type: 'val', value: 'A' }] } as any })
+    expect(t.sendFrame).not.toHaveBeenCalled()
+
+    t.open()
+    expect(t.sendFrame.mock.calls).toEqual([[{ subscribe: 'comments', slice: 'A' }]])
+    t.push({ channel: 'comments', seq: 5, ops: [], ready: true, reset: true, slice: 'A' })
+
+    t.drop()
+    t.open()
+    expect(t.sendFrame.mock.calls.at(-1)).toEqual([{ subscribe: 'comments', slice: 'A', since: 5 }])
+  })
+
+  it('drops rows for slices it did not subscribe to', () => {
+    const t = openTransport()
+    t.open()
+    const client = new SyncClient(t.transport)
+    const { sink, ops } = recorder()
+    const { loadSubset } = client.registerSliced('comments', sink, { column: 'thread_id', rows: () => [] })
+    void loadSubset({ where: { type: 'func', name: 'eq', args: [{ type: 'ref', path: ['thread_id'] }, { type: 'val', value: 'A' }] } as any })
+    t.push({
+      channel: 'comments',
+      seq: 6,
+      ops: [
+        { type: 'insert', value: { id: 'a', thread_id: 'A' } },
+        { type: 'insert', value: { id: 'b', thread_id: 'B' } },
+      ],
+    })
+    expect(ops).toEqual([{ id: 'a', thread_id: 'A' }])
+  })
+
+  it('refuses a sliced collection on a transport that cannot send frames', () => {
+    const { sendFrame, ...bare } = fakeTransport().transport
+    const client = new SyncClient(bare)
+    expect(() => client.registerSliced('comments', recorder().sink, { column: 'thread_id', rows: () => [] })).toThrow(/needs a transport with sendFrame/)
+  })
+})
+
+describe('SyncClient and a sliced channel that has not registered', () => {
+  it('drops its batches instead of buffering them for a register that may never come', () => {
+    const t = fakeTransport()
+    const client = new SyncClient(t.transport)
+    client.declareSliced('comments')
+    t.push({ channel: 'comments', seq: 1, ops: [{ type: 'insert', value: { id: 'a', thread_id: 'A' } }] })
+    const { sink, ops } = recorder()
+    client.registerSliced('comments', sink, { column: 'thread_id', rows: () => [] })
+    expect(ops).toEqual([])
+    expect((client as unknown as { pending: Map<string, unknown> }).pending.size).toBe(0)
   })
 })

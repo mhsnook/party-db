@@ -66,10 +66,19 @@ export function wireCollections(client: SyncClient, configs: PartyCollectionConf
   const persist = makePersist(client, configOf)
   const db: Record<string, Collection<any>> = {}
   for (const cfg of configs) {
+    const sliceBy = cfg.sliceBy
+    if (sliceBy !== undefined) client.declareSliced(cfg.name)
     const collection = createCollection({
       schema: cfg.schema as any,
       getKey: (item: any) => item[cfg.key],
-      sync: { sync: (sink) => client.register(cfg.name, sink) },
+      // a sliced collection loads what its live queries ask for (§18)
+      syncMode: sliceBy === undefined ? 'eager' : 'on-demand',
+      sync: {
+        sync: (params) =>
+          sliceBy === undefined
+            ? client.register(cfg.name, params)
+            : client.registerSliced(cfg.name, params, { column: sliceBy, rows: () => params.collection.entries() }),
+      },
       onInsert: persist,
       onUpdate: persist,
       onDelete: persist,

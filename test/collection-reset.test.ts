@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createCollection } from '@tanstack/db'
-import { applyBatch, type ChannelSink } from '../src/client/apply.ts'
+import { applyBatch, type ChannelSink, type SliceApply } from '../src/client/apply.ts'
 import type { SequencedBatch, WriteEvent } from '../src/protocol.ts'
 
 // Grounds the reset/truncate contract against a REAL TanStack DB collection, not a
@@ -49,5 +49,27 @@ describe('a reset snapshot replaces collection state (real TanStack collection)'
     expect(new Set(collection.state.keys())).toEqual(new Set(['b', 'c'])) // 'a' gone, no throw
     expect(collection.get('b')).toMatchObject({ id: 'b', text: 'bbb-v2' }) // replaced, not stale
     expect(collection.get('c')).toMatchObject({ id: 'c', text: 'ccc' })
+  })
+})
+
+describe('a slice reset replaces only that slice (real TanStack collection)', () => {
+  type Comment = { id: string; thread_id: string }
+  const c = (id: string, thread_id: string): WriteEvent => ({ type: 'insert', value: { id, thread_id } })
+
+  it('drops the slice rows gone from its snapshot, keeps other slices, and upserts repeats', async () => {
+    let sink: ChannelSink | undefined
+    const collection = createCollection<Comment>({
+      getKey: (r) => r.id,
+      sync: { sync: (params) => void (sink = params as unknown as ChannelSink) },
+    })
+    const ready = collection.preload()
+    const slicing: SliceApply = { column: 'thread_id', rows: () => collection.entries(), accepts: () => true }
+
+    applyBatch(sink!, { channel: 'comments', seq: 1, ops: [c('a1', 'A'), c('a2', 'A'), c('b1', 'B')], ready: true, reset: true }, slicing)
+    await ready
+    // thread A re-snapshotted after a2 was deleted: a1 arrives again (no duplicate-key
+    // throw), a2 goes, and thread B is untouched
+    applyBatch(sink!, { channel: 'comments', seq: 9, ops: [c('a1', 'A'), c('a3', 'A')], ready: true, reset: true, slice: 'A' }, slicing)
+    expect(new Set(collection.keys())).toEqual(new Set(['a1', 'a3', 'b1']))
   })
 })
