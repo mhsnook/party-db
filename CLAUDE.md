@@ -38,7 +38,9 @@ The read path is the same pipe backwards. On connect the client sends `?since=<s
 `PartyDbServer.onConnect` replays the `_oplog` delta; with no cursor, or a cursor older than
 retention, the server sends a full snapshot marked `reset: true` instead. A collection that
 registers a SECOND time (TanStack GC dropped the first one) asks for that channel's snapshot
-with a `{ snapshot }` frame on the socket — `PartyDbCore.handleMessage`, §8a.
+with a `{ subscribe }` frame on the socket — `PartyDbCore.handleMessage`, §8a. A `sliceBy`
+collection sends nothing at connect: its live queries' `where` become `{ subscribe, slice,
+since }` frames, and the room routes each write to that slice's watchers (§18).
 
 Vocabulary, used exactly this way everywhere:
 
@@ -66,6 +68,10 @@ Vocabulary, used exactly this way everywhere:
 - **An update writes only the columns it changed, and must hit a row.** `toEvent` sends
   `mutation.changes` + the key; a zero-row UPDATE is a `MissedUpdateError` → 409
   `code: 'missing-row'`, never a phantom op in the `_oplog` (`docs/architecture.md` §16).
+- **A slice column never changes, and a slice fails toward sending too much.** An update
+  carrying the `sliceBy` column is a 400. A socket whose saved subscriptions are missing gets
+  every sliced channel whole, and the client drops rows for slices it didn't ask for. Missing
+  a row is the bug; an extra row is bandwidth (`docs/architecture.md` §18).
 - **Anonymous writes fail closed.** If `auth` is set and the POST resolves no identity, the server
   rejects it 401 unless the subclass names an `anonRole`.
 - **The wire is mode-invariant.** A client cannot tell which mode its room runs. Changing mode is a
@@ -117,8 +123,9 @@ Four files hold the whole contract. Read them before changing anything under `sr
 
 - **`src/protocol.ts`** — the wire, and it is deliberately tiny: `WriteEvent` (= TanStack's
   `Omit<ChangeMessage, 'key'>`), `WriteBatch`, `SequencedBatch`, `Cursor`, `WriteAck`, `WriteReject`,
-  and `SnapshotRequest` — the one frame a client sends UP the socket (`docs/architecture.md` §8a).
-- **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access?, snapshot? }`, the one
+  and `SubscribeFrame` / `UnsubscribeFrame` — the frames a client sends UP the socket
+  (`docs/architecture.md` §8a, §18).
+- **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access?, sliceBy?, snapshot? }`, the one
   collection interface both sides import, plus `definePartyCollection` for inference. `ownerColumn`
   is typed `UidColumn<T>` — a string or number column, since a `SERIAL` user id is as common as a
   uuid. Owners compare as text (`idOf`), so `user_id` 1 matches the `sub` claim "1".
@@ -134,6 +141,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `makePersist(client, channelOf)` / `wireCollections(client, configs)` / `toEvent(mutation)` — `src/client/collection.ts`
 - `applyBatch(sink, batch)` — `src/client/apply.ts`, the only place a batch reaches a collection
 - `SeqTracker.observe` / `.waitFor` / `.rejectAll` — `src/client/seq-tracker.ts`, settlement with no transport attached
+- `sliceTargets(where, column)` / `ChannelSlices` / `SyncClient.registerSliced` — `src/client/slices.ts`, a `sliceBy` collection's subscriptions
 - `WriteError` / `TransportError` / `AuthError` / `ClosedError` / `toWriteReject` — `src/client/errors.ts`
 
 **Server**
@@ -145,6 +153,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `assertIdent` / `columnsOf` / `encode` / `decodeRow` / `pgEncode` / `pgDecodeRow` — `src/server/columns.ts`
 - `SqliteAdapter` / `D1Adapter` / `PgAdapter` — each implements `init` / `write` / `snapshot` / `replaySince`;
   `PgAdapter` adds `classifyError` and `verifyAnonRole`
+- `SliceRoutes` / `PartyDbConnection` / `PartyDbCore.disconnect` — `src/server/slices.ts`, routing a sliced write to its watchers
 - `policiesOf` / `gateWrite` / `needsPriorRow` / `applyPriorRows` / `opFor` / `visibleTo` / `audiencesOf` / `viewerTags` / `viewerFromTags` — `src/server/access.ts`, the access policies
   (`opFor` is the one op-level read filter; the snapshot, the delta, the fan-out and the ack all go through it)
 

@@ -2,7 +2,29 @@
 
 ## Unreleased
 
+- **`sliceBy` on a collection.** A collection sliced by one column loads only the slices
+  its live queries ask for, and a write reaches only the clients watching its slice.
+  The live query's `where` is the subscription: `eq(c.thread_id, id)` loads that
+  thread, and `inArray` loads several. The column can't change on a row: an update
+  that carries it is a 400 (`docs/architecture.md` §18).
+- **`PartyDbCore` takes `connections` and gains `disconnect(id)`** (optional). With
+  them, the core routes sliced writes to each slice's watchers itself. `connect` and
+  `handleMessage` accept a `PartyDbConnection` in place of the send function. A host
+  that passes neither keeps working, and sends every slice to every client.
+  `PartyDbServer` does this for you, and keeps each socket's subscriptions in
+  `conn.state` under `SUBSCRIPTIONS_KEY`. If your app calls `conn.setState(value)`,
+  merge instead of replacing, or that socket gets every sliced collection whole.
+- **`PartyDbServer.onClose`** now forgets the socket's subscriptions. If you override
+  it, chain `super.onClose(...)`.
+
 Breaking:
+
+- **`Transport.requestSnapshot(channel)` is now `sendFrame(frame)`**, plus optional
+  `isOpen()` and `onOpen(listener)`. Only a custom transport is affected.
+  `partyTransport` implements all three. The re-register request is now
+  `{ subscribe: channel }` instead of `{ snapshot: channel }`. A stale tab running the
+  old client against a redeployed room gets no answer to that request until it
+  reloads.
 
 - **`@tanstack/db` peer range is now `^0.15.2`** (was `^0.6.10`). Apps on React pair
   it with `@tanstack/react-db` `^0.5.12`. Nothing in party-db's own API changed. One

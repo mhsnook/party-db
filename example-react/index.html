@@ -17,6 +17,10 @@
       ul { list-style: none; padding: 0; margin: 0; }
       li { display: flex; align-items: center; gap: 0.6rem; padding: 0.45rem 0; border-bottom: 1px solid #8881; }
       li button { margin-left: auto; border: 0; background: none; cursor: pointer; color: #999; }
+      li.open { flex-wrap: wrap; }
+      li button + button { margin-left: 0; }
+      .thread { flex-basis: 100%; padding: 0.4rem 0 0.2rem 1.6rem; }
+      .thread p { margin: 0.2rem 0; }
       .count { color: #888; font-size: 0.9rem; }
       footer { margin-top: 2rem; font-size: 0.85rem; color: #888; }
       footer a { color: inherit; }
