@@ -42,6 +42,7 @@ import {
   type Viewer,
 } from './access.ts'
 import { SliceRoutes, type PartyDbConnection } from './slices.ts'
+import { drain } from './drain.ts'
 
 // The write-identity hook: resolve the writer's verified identity from a POST.
 // Full semantics on `PartyDbServer.auth`, which is this same hook as a field.
@@ -347,6 +348,7 @@ export class PartyDbCore {
     // when the client sends one, and re-check the actual text for those that don't.
     const declared = Number(req.headers.get('content-length'))
     if (this.maxWriteBytes > 0 && declared > this.maxWriteBytes) {
+      await drain(req)
       return Response.json({ error: `write too large (max ${this.maxWriteBytes} bytes)` } satisfies WriteReject, { status: 413 })
     }
     const text = await req.text()

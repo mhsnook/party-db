@@ -24,6 +24,7 @@
 // gets the raw Request and reads whichever.
 
 import type { WriteReject } from '../protocol.ts'
+import { drain } from './drain.ts'
 
 // The subset of partyserver's `Lobby` we read. Kept structural (not `Lobby<Env>`)
 // so the hooks assign to `routePartykitRequest` regardless of the worker's `Env`
@@ -59,7 +60,9 @@ export function authHooks(authorize: Authorize) {
       // WriteReject so the client rolls back like any other POST rejection.
       if (req.method !== 'POST') return undefined
       const v = await decide(req, lobby, 'write')
-      return v.ok ? undefined : Response.json({ error: v.error } satisfies WriteReject, { status: v.status })
+      if (v.ok) return undefined
+      await drain(req)
+      return Response.json({ error: v.error } satisfies WriteReject, { status: v.status })
     },
   }
 }
