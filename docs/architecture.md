@@ -283,11 +283,11 @@ the client's cursor is current, and a delta from it is empty. Only a snapshot fi
 the restarted collection (#47).
 
 So the client asks for one. `SyncClient` remembers which channels were registered and
-then torn down; a register for one of those sends `{ snapshot: <channel> }` up the
-socket, through the transport's optional `requestSnapshot(channel)` hook
-(`partyTransport` implements it as a socket send). This is the **first and only frame
-a client writes on the WebSocket** — every other client→server message is the write
-POST, which is what lets the socket hibernate.
+then torn down; a register for one of those sends `{ subscribe: <channel> }` up the
+socket, through the transport's optional `sendFrame(frame)` hook (`partyTransport`
+implements it as a socket send). Subscribe and unsubscribe (§18) are the **only
+frames a client writes on the WebSocket** — every write goes up as a POST, which is
+what lets the socket hibernate.
 
 The reply is not a new frame type. The server answers with an ordinary snapshot batch
 for that channel — `reset: true`, `ready: true` — to the **requesting connection
@@ -301,12 +301,12 @@ An app therefore does not need to pin its collections — the standing no-op
 `subscribeChanges` that keeps GC from ever running (scribble-harness's workaround
 for #47) is no longer a contract a consumer has to know about.
 
-Two things are deliberately out of scope. `?since` connect behavior is untouched.
-And the request does not filter what that connection receives afterwards — every
-subscriber still gets every channel's fan-out; per-connection channel subscriptions
-are the `subscribe(channels[])` design, not this.
+`?since` connect behavior is untouched. For a channel without `sliceBy`, the request
+does not filter what that connection receives afterwards — every subscriber still gets
+that channel's fan-out. A `sliceBy` channel is the one that routes per subscription
+(§18).
 
-A transport that doesn't implement `requestSnapshot` degrades, and not gently: the
+A transport that doesn't implement `sendFrame` degrades, and not gently: the
 restarted collection still takes whatever streams in next, but nothing marks it
 ready again — only a `ready` batch does, and a delta isn't one — so it stays in
 `loading` and `preload()` never resolves. Implement the hook in a custom transport.
@@ -512,7 +512,7 @@ story (`postgres-todo.md`), not something `commit` can close.
 `PartyDbCore` (`src/server/core.ts`) holds the core functionality of a room:
 
 - the adapter, which the host builds over its own storage
-- `connect(send, url, viewer?)` — the `?since` cursor parse, `replaySince` vs
+- `connect(send | conn, url, viewer?)` — the `?since` cursor parse, `replaySince` vs
   `snapshot`, sent atomically through the write queue (§8, plan 004), filtered to
   what the socket's user may read (§17)
 - `broadcast(message, audience)` — the host's fan-out, handed the audience each
@@ -521,8 +521,12 @@ story (`postgres-todo.md`), not something `commit` can close.
   identity gate (§10a), classification of database rejections
 - `commit(batches, identity?)` — the write → seq → broadcast section (§14)
 
-- `handleMessage(send, message, viewer?)` — the one frame a client sends up the
-  socket, `{ snapshot: <channel> }` (§8a), answered through that same queue
+- `handleMessage(send | conn, message, viewer?)` — the frames a client sends up the
+  socket, subscribe and unsubscribe (§8a, §18), answered through that same queue
+- `connections` + `disconnect(id)` — optional: hand the core your party-db
+  connections (and pass those same objects to `connect` / `handleMessage`) and it
+  routes each write on a `sliceBy` collection to that slice's watchers itself (§18);
+  without them, sliced writes go through `broadcast`
 - `resolveViewer(req)` — who a connecting socket belongs to, for the access
   policies (§17); the host pins it to the socket and passes it back in
 
@@ -743,6 +747,102 @@ It is roughshod RLS, not a security kernel. A socket keeps the uid it connected
 with until it reconnects. Owner by claims other than `sub` (`ownerColumns`),
 SQL-side read filtering, and expression read rules (cookbook 6) are not built.
 
+## 18. A collection can load by slice: one immutable column, routed by an index
+
+A comments thread is a slice of one table. Loading every comment in the room to show
+one thread is wasted bandwidth, and so is fanning every new comment out to every socket.
+So a collection can name the column it is sliced by:
+
+```ts
+definePartyCollection({ name: 'comments', key: 'id', schema, sliceBy: 'thread_id' })
+```
+
+On the client that makes the collection TanStack DB's `syncMode: 'on-demand'` kind,
+so a live query's `where` is the subscription, and there is no other API.
+`eq(c.thread_id, id)` loads that thread; `inArray` loads several. TanStack calls
+`loadSubset` with the query's `where` when the query starts and `unloadSubset` when it
+goes away. `sliceTargets` (`src/client/slices.ts`) reads the slices out of that
+`where` with TanStack's own `parseWhereExpression`:
+
+- An equality or `inArray` on the `sliceBy` column narrows it.
+- `and` intersects, and `or` unions.
+- Anything else loads the whole channel.
+
+Over-fetching is always safe here, because the live query still filters what it
+shows. A collection without `sliceBy` is unchanged.
+
+**The wire.** The client sends `{ subscribe: channel, slice?, since? }` and
+`{ unsubscribe: channel, slice? }` up the socket. These replace §8a's
+`{ snapshot }`: a subscribe with no `slice` on an unsliced channel is that request.
+The reply is ordinary batches ending in one marked `ready` and `slice`:
+
+- the slice's delta after `since`, when the `_oplog` still holds it
+- otherwise a snapshot read with `WHERE "<sliceBy>" = ?`, marked `reset`
+
+A `reset` that names a `slice` replaces only that slice's rows on the client. The
+client finds them through the collection's own `entries()`. The ready marker skips
+the read filter: it carries no rows, and an owner-only slice must not leave the
+client's load waiting forever.
+
+**The client owns each slice's cursor.** Each slice is refcounted across the
+queries that want it. When the last one lets go, the client unsubscribes and
+remembers the highest seq it has seen. The room sends in seq order, so everything up
+to that seq has arrived. Re-opening the thread sends that seq as `since` and gets a
+delta.
+
+A release waits one microtask before unsubscribing. TanStack reloads every subset
+after a truncate as an unload/load pair, and that pair must not cost a round trip.
+When the socket reopens, every live subscription goes up again from the same seq.
+
+**Two client-side rules make over-delivery harmless:**
+
+- A row for a slice the client isn't subscribed to is dropped.
+- An insert on a sliced channel is written as an update. TanStack upserts an update
+  to a missing key, so a replay that overlaps what a whole-channel subscription
+  already sent cannot throw `DuplicateKeySyncError`.
+
+**Routing is an index, not a scan.** Durable Object tags are fixed when a socket is
+accepted, and a socket has at most 10. A subscription changes after connect, so it
+can't be a tag. With `connections` passed to `PartyDbCore`, the core keeps
+`channel → slice → sockets` in memory (`SliceRoutes`, `src/server/slices.ts`). A
+write looks up its row's slice and sends to those sockets, plus the ones watching the
+whole channel. That costs O(watchers of that thread), not O(sockets in the room).
+
+The index dies with the isolate, so each socket also saves its subscriptions in a
+slot that survives hibernation. `PartyDbServer` uses partyserver's `conn.state`,
+under `SUBSCRIPTIONS_KEY`. The first lookup after a wake rebuilds the index from
+those slots, once.
+
+The failure direction is chosen on purpose:
+
+- If a socket's slot is missing, because the app replaced `conn.state` wholesale,
+  that socket gets every sliced channel whole.
+- Past `MAX_SUBSCRIPTIONS` slices of one channel, a socket's subscriptions fold
+  into one whole-channel subscription.
+
+In both cases the cost is bandwidth, never a missed row.
+
+A composed host (§15) that passes no `connections` still works. Sliced writes go out
+through its `broadcast`, to the whole audience, and the client drops what it didn't
+ask for.
+
+**The slice column never changes.** If a row could move from thread A to thread B,
+the sockets watching A would hold a copy that nothing removes. That is the
+move-in/move-out problem, and an immutable column removes it. An update that
+carries the slice column is refused with a 400. TanStack sends only changed columns
+(§16), so carrying it means changing it. Host code's `commit()` skips that check as
+it skips every write gate. Mutable slice columns are the open work in
+[`unspecified.md`](./unspecified.md).
+
+**Access policies still decide what each socket sees.** Slicing narrows which rows
+are sent; the read policy (§17) still filters them per viewer, in the reply and on
+the fan-out. A `where` is not an access control.
+
+**Not done.** `orderBy` and `limit` are ignored: a thread loads whole. A write to a
+thread the writer isn't watching never streams back to them, so `waitForSeq` times
+out and the optimistic row rolls back. That case was deliberately left out of the
+first version.
+
 ## Layering
 
 | Layer | What |
@@ -816,8 +916,7 @@ fire-and-forget that actually works, and many RPCs collapse to "an insert plus s
 triggers." (A shared database written by several services wants this too; a shared
 D1 has no WAL to tail, so it's a Postgres story.) The rest of the bite: RPC support,
 RLS conventions, the per-user (and other partitioned) collection types, the
-serializable read-slicing sketched in
-[`unspecified.md`](./unspecified.md) / [`collection-types.md`](./collection-types.md),
+read-slicing beyond §18's immutable equality (mutable slice columns, ranges),
 a non-realtime `queryCollection` fallback for tables we can't tail, and — once two
 or three databases coexist — a `db` that composes tables from different places, or
 conventions for running two side by side (one realtime + global, one not), each

@@ -27,42 +27,29 @@ doc once that milestone starts; until then a short design note lives at the bott
   more. Two things to settle first: the per-collection `n` (config, or carried on
   the re-register frame), and how TanStack DB applies a delete for a key the client
   never held, which such a window can contain.
-- **Subscription / filtering.** Today the server broadcasts every channel and the
-  client ignores unknowns. A `subscribe(channels[])` control message would let the
-  server send only relevant batches + backlog. Matters as channel count grows. The
-  socket already carries one client→server frame — `{ snapshot: <channel> }`, the
-  re-register request (architecture §8a) — so `subscribe` would be the second, not
-  the first.
-  - **Read-level slicing (Electric-style shapes, the tractable subset).** TanStack
-    DB's `where` clauses compile to a **plain-data, serializable AST** — `Func {
-    name, args }`, `PropRef { path }`, `Value { value }`, *no closures* (verified in
-    `@tanstack/db` `query/ir.ts`) — and the lib ships `parseWhereExpression(expr,
-    handlers)` to walk it with per-operator handlers. So a client can ship its slice
-    predicate up (in the `subscribe` / reconnect query), and the server turns the
-    same AST into **(a)** a SQL `WHERE` for the snapshot + `?since` backlog and
-    **(b)** an in-memory predicate for per-socket fan-out. Changing a slice = a new
-    `since` + `where` → a fresh delta. Gets us Electric-style read slicing without
-    much new machinery — *for the row-local subset*. Boundaries:
-    - **Allow-list the sliceable columns/operators.** A client-supplied `WHERE` run
-      raw is an injection / over-exposure vector; restrict to declared columns and
-      parameterize the `Value`s. Only `eq/gt/gte/lt/in/and/or`-shaped predicates over
-      columns + literals serialize; arbitrary JS predicates don't (they aren't in the
-      IR).
-    - **Immutable slice column = easy; mutable = the shape-membership problem.** If a
-      row can change *out of* a socket's slice (its `lang` is edited), that socket
-      needs a synthetic "leave"/delete it would otherwise never see — the classic
-      Electric move-in/move-out. Trivial for immutable slice keys (a post's language,
-      a created-at date); real work otherwise. Start with immutable-keyed slices.
-    - **No joins / aggregates.** Cross-collection or rollup slices stay in the
-      "abandon realtime → `queryCollection`" bucket (see `collection-types.md`).
-    - **The client owns its per-slice `since`.** A slice's cursor belongs to the
-      *client*, not the room: when you stop watching a slice you remember the `seq`
-      at which you dropped it, so re-subscribing is `?since=<that seq>` + the slice
-      `where` — a delta, never a re-snapshot. This is also what makes the mutable
-      move-out tractable from the client's side: it knows exactly the window it
-      missed and asks only for that. (Server still has to be able to *answer* "what
-      changed in this slice since N", which is the move-in/move-out work above; the
-      client side of it is just bookkeeping.)
+- **Read slicing beyond one immutable column.** Equality on one declared, immutable
+  column is built: `sliceBy` (architecture §18). A live query's `where` is the
+  subscription, the client owns each slice's cursor, and the room routes writes by
+  an in-memory index. What is still open:
+  - **Mutable slice columns — the shape-membership problem.** If a row can change
+    *out of* a socket's slice (its `lang` is edited), that socket needs a synthetic
+    delete it would otherwise never see. This is Electric's move-in/move-out. The
+    room already reads the prior row for owner policies (§17 → "A row that changes
+    hands"), and the same read could route a leave to the old slice's watchers.
+    Today an update that carries the slice column is refused.
+  - **Ranges and `orderBy`/`limit`.** A `gt`/`lt` on a column, or "the newest 50",
+    loads the whole channel today. Ranges cannot be index lookups the way equality
+    is, so fan-out would evaluate a predicate per subscriber. `limit` needs
+    TanStack's cursor-based `loadSubset` paging.
+  - **Channel filtering for unsliced collections.** Every socket still gets every
+    unsliced channel's fan-out. The subscribe frame could carry that filter as well,
+    because a subscribe with no `slice` is already the whole-channel form.
+  - **A write outside the writer's slices.** It commits, but never streams back to
+    the writer, so `waitForSeq` times out and the optimistic row rolls back. The fix
+    is to settle from the ack when the written row matches none of the client's
+    live subscriptions.
+  - **No joins / aggregates.** Cross-collection or rollup slices stay in the
+    "abandon realtime → `queryCollection`" bucket (see `collection-types.md`).
 
 ## Deferred (intentionally not now)
 

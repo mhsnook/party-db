@@ -69,8 +69,9 @@ transparent, RDBMS, and Postgres CRUD.
   snapshot / backlog / fan-out), table-sharing config, user-protected tables.
 - Milestone 3: **Not just a party anymore:** query slicing, RLS-in-JS -- most apps
   don't work as parties, you need to filter content by more than just public-or-userID.
-  Its first piece has landed: per-collection access policies with owner rows
-  ([cookbook 05](./docs/cookbooks/05-public-and-private-collections.md)), on every adapter.
+  Two pieces have landed: per-collection access policies with owner rows
+  ([cookbook 05](./docs/cookbooks/05-public-and-private-collections.md)), on every adapter,
+  and loading a collection by slice of one immutable column (`sliceBy`).
 - Far Future: **Codegen mode:** build the entire system from a DB string or schemas, live
   codegen, send schema changes over the wire, etc.
 
@@ -171,6 +172,34 @@ tx.mutate(() => {
 await tx.isPersisted.promise // both land in one POST, or neither does
 ```
 
+## Loading one thread at a time
+
+A comments table holds every thread, but a page shows one. Name the column the
+collection is sliced by, and a client loads only the threads its live queries ask
+for. A new comment reaches only the clients watching that thread.
+
+```ts
+const comments = definePartyCollection({
+  name: 'comments',
+  key: 'id',
+  schema: commentSchema,
+  sliceBy: 'thread_id',
+})
+
+// the live query's `where` is the subscription
+const { data } = useLiveQuery(
+  (q) => q.from({ c: db.comments }).where(({ c }) => eq(c.thread_id, threadId)),
+  [threadId],
+)
+```
+
+When the last query for a thread goes away, the client unsubscribes and remembers
+where it stopped. Opening that thread again loads only the comments written since.
+A `where` that doesn't constrain `thread_id` loads the whole table. The slice column
+can't change on a row: an update that carries it is refused with a 400. Your access
+policies still decide which rows each user sees. See
+[architecture §18](./docs/architecture.md).
+
 ## Rows your server writes itself
 
 Not every row comes from a client. When the code writing it is your own — a job,
@@ -244,14 +273,21 @@ export class ArticleAgent extends AIChatAgent<Env> {
   // pass `viewerFromTags(conn.tags)` to connect/handleMessage. PartyDbServer does
   // exactly this.
 
+  // Using `sliceBy`? This host works as written, but every client is sent every
+  // slice. To route each write to that slice's watchers, wrap each party-db socket
+  // as a `PartyDbConnection` (id, send, viewer, and a hibernation-safe slot for its
+  // subscriptions), pass the core `connections: () => <those wrappers>`, hand the
+  // same wrappers to connect/handleMessage, and call `this.db.disconnect(conn.id)`
+  // from onClose. PartyDbServer does exactly this (architecture §18).
+
   onConnect(conn, ctx) {
     if (isPartyDbRequest(ctx.request)) return this.db.connect((m) => conn.send(m), ctx.request.url)
     // ...your own socket traffic
   }
 
-  // party-db's one up-frame (a re-registered collection asking for its snapshot).
-  // The core drops any frame that isn't its own, so forward every message — then
-  // hand it to your own protocol as before. Don't replace your handler with this one.
+  // party-db's up-frames (subscribe / unsubscribe). The core drops any frame that
+  // isn't its own, so forward every message — then hand it to your own protocol as
+  // before. Don't replace your handler with this one.
   onMessage(conn, message) {
     this.db.handleMessage((m) => conn.send(m), message)
     return super.onMessage(conn, message) // ...your own socket traffic
@@ -408,9 +444,10 @@ pnpm test:pg && pnpm test:integration
 
 | File | Role |
 | --- | --- |
-| `src/protocol.ts` | wire contract: `WriteEvent` / `WriteBatch` / `SequencedBatch` / `WriteAck` / `SnapshotRequest` |
+| `src/protocol.ts` | wire contract: `WriteEvent` / `WriteBatch` / `SequencedBatch` / `WriteAck` / the subscribe and unsubscribe up-frames |
 | `src/client/apply.ts` | `applyBatch(sink, batch)` — the client's batch-apply helper (drives TanStack's `sync`) |
 | `src/client/sync-client.ts` | one stream + channel registry + `waitForSeq` settlement; asks for a snapshot when a collection re-registers |
+| `src/client/slices.ts` | a sliced collection's subscriptions: `where` → slices, refcounts, per-slice cursors |
 | `src/client/seq-tracker.ts` | pure settlement: per-channel high-water mark, waiters, timeout |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
@@ -418,6 +455,7 @@ pnpm test:pg && pnpm test:integration
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + `commit()`; the thin subclass over the core |
 | `src/server/core.ts` | `PartyDbCore` — the room's core functionality, for hosts that compose instead of subclass |
+| `src/server/slices.ts` | `SliceRoutes` — which sockets watch which slice, rebuilt from saved slots after a wake |
 | `src/server/access.ts` | the access policies: the write gate, the read filter, and the fan-out split (cookbook 5) |
 | `src/server/auth.ts` | `authHooks(authorize)` — the lobby auth seam (connect + write) |
 | `src/server/persistence.ts` | `PersistenceAdapter` seam (swap embedded SQLite ↔ D1 ↔ Postgres) |

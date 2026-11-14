@@ -108,18 +108,11 @@ All realtime, all within one room/DO:
   `serializeAttachment`), so fan-out sends a user-private row only to matching
   sockets. ~free, because it reuses the existing pipeline + one filter.
 
-- **Read-level slicing ("I care about these languages / this date range").** A
-  promising near-term enhancement, *not the team model but adjacent to it*:
-  TanStack DB's `where` clauses compile to a **plain-data, serializable AST**
-  (`Func{name,args}` / `PropRef{path}` / `Value{value}` — no closures), and the
-  library ships `parseWhereExpression(expr, handlers)` to walk it. So a client can
-  send its slice predicate up (in the `subscribe`/reconnect headers), and the
-  server can turn it into both a SQL `WHERE` for the backlog/snapshot and an
-  in-memory predicate for per-socket fan-out. This gets us Electric-style read
-  slicing for the **single-partition, row-local** subset (equality / ranges over a
-  column) without much new machinery. The open mechanics and the boundaries
-  (column allow-listing, immutable vs mutable slice column, no joins/aggregates)
-  are in [`unspecified.md`](./unspecified.md) → *Subscription / filtering*.
+- **Read-level slicing ("I care about this thread / these languages").** Built for
+  equality on one immutable column: `sliceBy` makes the collection on-demand, so a
+  live query's `where` is the subscription, and a write reaches only the sockets
+  watching its slice ([architecture §18](./architecture.md)). Ranges and mutable
+  slice columns are open; see [`unspecified.md`](./unspecified.md).
 
 ### Where realtime has to be given up
 
