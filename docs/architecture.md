@@ -461,14 +461,14 @@ Cross-collection atomic writes therefore use TanStack's own
 function. The server commits the whole POST body in one `transactionSync`, so a
 multi-collection write is all-or-nothing.
 
-Verified on `@tanstack/db@0.6.10`: an explicit transaction bypasses the
-collection handlers and delivers all mutations to the `mutationFn` in one call —
-so there is no double-write.
+An explicit transaction bypasses the collection handlers and delivers all
+mutations to the `mutationFn` in one call, so there is no double-write
+(`test/settlement.test.ts` checks this against the installed `@tanstack/db`).
 
 ## 13. The authority is SQLite, not TanStack DB
 
 On the server the sink is `ctx.storage.sql` driven by a small generic
-`WriteEvent`→SQL adapter. TanStack DB — including its 0.6 DO SQLite persistence
+`WriteEvent`→SQL adapter. TanStack DB — including its DO SQLite persistence
 adapter — is a **client cache**: even when it runs *on the server*, it is a client
 *of* some upstream authority, not the authority itself. That is precisely why it
 cannot be the constraint/`RETURNING` authority or the persistence layer — and so
