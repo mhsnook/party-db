@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { eq } from '@tanstack/db'
+import { coalesce, eq } from '@tanstack/db'
 import { useLiveQuery } from '@tanstack/react-db'
 import { createPartyDb, partyTransport, WriteError } from '../../src/client/index.ts'
 import { collections, type Language, type Phrase, type Deck, type Flashcard } from './collections.ts'
@@ -139,8 +139,10 @@ function Phrases({ languageId }: { languageId: string }) {
         id: phrase.id,
         text: phrase.text,
         translation: phrase.translation,
-        status: card?.status ?? 'new',
-        cardId: card?.id,
+        // a phrase you have no card for is 'new'. This runs in the query, so plain JS
+        // `??` can't supply the default: `card` here is a column reference, never null.
+        status: coalesce(card.status, 'new'),
+        cardId: card.id,
       })),
   )
 

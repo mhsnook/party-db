@@ -164,7 +164,8 @@ Four files hold the whole contract. Read them before changing anything under `sr
 | `pnpm test` | fast node unit suite (`test/*.test.ts`) — no external service |
 | `pnpm test:integration` | the real DO, SQLite, and WebSocket path inside workerd (`test/integration/`) |
 | `pnpm test:pg` | Postgres driver lane (`test/pg/`) — skips unless `PG_URL` is set |
-| `pnpm typecheck` | three tsconfigs: client, server, integration |
+| `EXAMPLE=<example> pnpm test:e2e` | that example's own browser tests (`<example>/e2e/`): its worker + Vite site, driven in Chromium |
+| `pnpm typecheck` | four tsconfigs: client, server, integration, and the examples' e2e tests |
 | `pnpm build` | client and server builds into `dist/` |
 | `cd <example> && pnpm typecheck` | one example's two halves: browser tsconfig + workers tsconfig |
 | `cd <example> && pnpm build` | that example's site (vite) — run before `build:worker`, which needs `dist/` |
@@ -176,7 +177,7 @@ The README's Testing section has the `docker run` line CI uses.
 
 **The examples are the userspace gate.** Nothing in `test/` sits outside the public surface,
 so the four example apps are the only thing that compiles party-db the way an app does —
-importing it from `../../src`. CI typechecks AND builds all four (the `examples` job);
+importing it from `../../src`. CI typechecks, builds AND runs all four (the `examples` job);
 v0.0.2 shipped a broken `example-react-polyglot` because it did neither. Typecheck catches
 the source; the two builds catch what tsc never reads — `vite.config.ts`, `wrangler.jsonc`,
 and how a dependency resolves for the browser and for the workers runtime. Two rules when you touch them: run BOTH
