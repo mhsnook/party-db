@@ -11,12 +11,15 @@
 // `test/integration/worker.ts`. Design record: docs/architecture.md §15.
 
 import {
-  isSnapshotRequest,
+  isUpFrame,
   isWritableOp,
   parseFrame,
   PROTO_PARAM,
   PROTO_VALUE,
+  sliceText,
   type SequencedBatch,
+  type SliceValue,
+  type SubscribeFrame,
   type WriteAck,
   type WriteBatch,
   type WriteReject,
@@ -38,6 +41,7 @@ import {
   type CollectionAccess,
   type Viewer,
 } from './access.ts'
+import { SliceRoutes, type PartyDbConnection } from './slices.ts'
 
 // The write-identity hook: resolve the writer's verified identity from a POST.
 // Full semantics on `PartyDbServer.auth`, which is this same hook as a field.
@@ -84,7 +88,19 @@ export interface PartyDbCoreOptions {
   // reject a write carrying more ops than this across all batches (413). 0
   // disables. Default 1000.
   maxWriteOps?: number
+  // every party-db connection the host holds, for a room with `sliceBy`
+  // collections. With it, the core sends each write on a sliced channel only to
+  // the sockets subscribed to that row's slice, and the host must pass those same
+  // connection objects to `connect` and `handleMessage`, and call `disconnect` on
+  // close. Without it, sliced writes go out through `broadcast` to the whole
+  // audience, which is correct but sends every client every slice
+  // (docs/architecture.md §18).
+  connections?: () => Iterable<PartyDbConnection>
 }
+
+// What `connect` and `handleMessage` reply through: a bare send function, or a
+// connection the core can also route sliced channels to (`connections` above).
+type Target = ((message: string) => void) | PartyDbConnection
 
 // One owner for the write-cap defaults: `PartyDbServer`'s field initializers and
 // the core's option fallbacks both read these, so the two host styles can't drift.
@@ -103,6 +119,12 @@ export class PartyDbCore {
   private maxWriteBytes: number
   private maxWriteOps: number
   private channels: Set<string>
+  // channel → its `sliceBy` column, for the collections that load by slice.
+  private sliceBy: Map<string, string>
+  private connections?: () => Iterable<PartyDbConnection>
+  // built on first use after construction — i.e. after every wake — from the
+  // connections' own saved subscriptions.
+  private routes?: SliceRoutes
   // serializes the write → seq → broadcast section. A no-op for embedded SQLite
   // (the apply is synchronous), but the contract is async for D1, where two
   // concurrent POSTs' awaits could otherwise interleave the ordering.
@@ -119,6 +141,26 @@ export class PartyDbCore {
     this.maxWriteBytes = opts.maxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES
     this.maxWriteOps = opts.maxWriteOps ?? DEFAULT_MAX_WRITE_OPS
     this.channels = new Set(opts.collections.map((c) => c.name))
+    this.sliceBy = new Map(opts.collections.filter((c) => c.sliceBy !== undefined).map((c) => [c.name, c.sliceBy as string]))
+    this.connections = opts.connections
+  }
+
+  // the slice index, or undefined when the host routes everything through
+  // `broadcast` (no `connections`) or no collection is sliced.
+  private sliceRoutes(): SliceRoutes | undefined {
+    if (!this.connections || !this.sliceBy.size) return undefined
+    if (!this.routes) {
+      this.routes = new SliceRoutes([...this.sliceBy.keys()])
+      for (const conn of this.connections()) this.routes.restore(conn)
+    }
+    return this.routes
+  }
+
+  // Forget a closed connection's subscriptions. A host that passes `connections`
+  // calls this from its `onClose`; a missed call costs one failed send, after
+  // which the core drops the connection anyway.
+  disconnect(id: string): void {
+    this.routes?.remove(id)
   }
 
   // Run `fn` after every previously-queued section completes, so the ordering of
@@ -217,39 +259,82 @@ export class PartyDbCore {
   //
   // `viewer` is who the socket belongs to (`resolveViewer`): the snapshot and the
   // delta carry only the rows its read policies allow. Omitted, it is anonymous.
-  connect(send: (message: string) => void, url: string | URL, viewer: Viewer = ANONYMOUS): Promise<void> {
+  //
+  // A sliced collection sends nothing here: its rows arrive per slice, in reply to
+  // the client's subscribe frames (`handleMessage`, docs/architecture.md §18).
+  // Pass a `PartyDbConnection` instead of a send function when the host gave the
+  // core `connections`; `viewer` then comes from the connection.
+  connect(target: Target, url: string | URL, viewer: Viewer = ANONYMOUS): Promise<void> {
+    const { send, viewer: who, conn } = targetOf(target, viewer)
     return this.serialize(async () => {
       const parsed = url instanceof URL ? url : new URL(url)
       const cursor = cursorParam(parsed.searchParams.get('since'))
       const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
       const batches = delta ?? (await this.adapter.snapshot())
-      this.sendVisible(send, batches, viewer)
+      this.sendVisible(send, batches.filter((b) => !this.sliceBy.has(b.channel)), who)
+      if (conn) this.sliceRoutes()?.reset(conn)
     })
   }
 
-  // Serve one frame a client sent UP the socket. Today there is exactly one:
-  // `{ snapshot: <channel> }`, which a client sends when a collection registers
-  // a second time and its rows are gone (docs/architecture.md §8a, #47). We answer
-  // with an ordinary snapshot batch for that channel — `reset: true`, so the
-  // client truncates before applying — to this connection alone.
+  // Serve one frame a client sent UP the socket: a subscribe or an unsubscribe
+  // (docs/architecture.md §8a, §18).
+  //
+  // A subscribe to a channel without `sliceBy` is the re-register request: the
+  // client's collection was dropped and refilled empty, so we answer with a
+  // `reset` snapshot of that channel. A subscribe to a sliced channel answers with
+  // the slice's delta after `since`, or its snapshot, then starts routing that
+  // slice's writes to this socket.
   //
   // Everything else is dropped: a frame that isn't ours (a composed host shares
   // the socket, §15) and a channel this room doesn't serve, mirroring the client's
   // own posture on frames it can't route (#48). A drop is silent — a socket has no
   // reply channel for an error, and the client is not waiting on one.
   //
-  // Runs through the same queue as writes and connects, so the read and its send
-  // cannot interleave with a concurrent commit's broadcast: the client sees the
-  // snapshot, then every seq after it, in order.
-  handleMessage(send: (message: string) => void, message: unknown, viewer: Viewer = ANONYMOUS): Promise<void> {
-    const channel = parseFrame(message, isSnapshotRequest)?.snapshot
-    if (channel === undefined || !this.channels.has(channel)) return Promise.resolve()
+  // A subscribe runs through the same queue as writes and connects, so the read,
+  // its send, and the start of routing cannot interleave with a concurrent
+  // commit's broadcast: the client sees the reply, then every seq after it.
+  handleMessage(target: Target, message: unknown, viewer: Viewer = ANONYMOUS): Promise<void> {
+    const frame = parseFrame(message, isUpFrame)
+    if (!frame) return Promise.resolve()
+    const { send, viewer: who, conn } = targetOf(target, viewer)
+    if (!('subscribe' in frame)) {
+      if (conn && this.sliceBy.has(frame.unsubscribe)) this.sliceRoutes()?.unsubscribe(conn, frame.unsubscribe, frame.slice ?? null)
+      return Promise.resolve()
+    }
+    const channel = frame.subscribe
+    if (!this.channels.has(channel)) return Promise.resolve()
     return this.serialize(async () => {
-      const batches = await this.adapter.snapshot(channel)
-      // an adapter that ignores the argument hands back every channel; send only
-      // the one that was asked for, as this socket's user may read it.
-      this.sendVisible(send, batches.filter((b) => b.channel === channel), viewer)
+      if (!this.sliceBy.has(channel)) {
+        // an adapter that ignores the argument hands back every channel; send only
+        // the one that was asked for, as this socket's user may read it.
+        const batches = await this.adapter.snapshot(channel)
+        return this.sendVisible(send, batches.filter((b) => b.channel === channel), who)
+      }
+      await this.answerSubscribe(send, frame, who)
+      if (conn) this.sliceRoutes()?.subscribe(conn, channel, frame.slice ?? null)
     })
+  }
+
+  // The reply to a subscribe on a sliced channel: the delta after `since` when the
+  // `_oplog` still holds it, else a snapshot. Either way it ends in a batch marked
+  // `ready` (and `slice`), which is what settles the client's load.
+  private async answerSubscribe(send: (message: string) => void, frame: SubscribeFrame, viewer: Viewer): Promise<void> {
+    const channel = frame.subscribe
+    const slice = frame.slice
+    const column = this.sliceBy.get(channel)!
+    const inSlice = (b: SequencedBatch): SequencedBatch =>
+      slice === undefined ? b : { ...b, ops: b.ops.filter((op) => sliceText(op.value[column]) === sliceText(slice)) }
+    const cursor = frame.since === undefined ? null : cursorParam(String(frame.since))
+    const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
+    if (delta === null) {
+      const snapshot = (await this.adapter.snapshot(channel, slice)).filter((b) => b.channel === channel).map(inSlice)
+      return this.sendVisible(send, snapshot.map((b) => withSlice(b, slice)), viewer)
+    }
+    const replay = delta.filter((b) => b.channel === channel).map(inSlice).filter((b) => b.ops.length)
+    this.sendVisible(send, replay, viewer)
+    // the marker carries no rows, so no read policy has anything to filter in it,
+    // and it must reach the client even when the policy filters every op above.
+    send(JSON.stringify(withSlice({ channel, seq: delta.at(-1)?.seq ?? cursor!, ops: [], ready: true }, slice)))
   }
 
   // Serve one POST /write. The WHOLE body commits in one transaction, so a
@@ -300,6 +385,16 @@ export class PartyDbCore {
       if (batch.ops.some((op) => !isWritableOp(op))) {
         return Response.json(
           { error: `each op needs a type of insert/update/delete and an object value (channel: ${batch.channel})`, channel: batch.channel } satisfies WriteReject,
+          { status: 400 },
+        )
+      }
+      // A row never changes slice: the clients watching the old slice would keep a
+      // copy nothing ever removes (§18). The client sends only changed columns on
+      // an update (§16), so a slice column in one means it changed.
+      const column = this.sliceBy.get(batch.channel)
+      if (column !== undefined && column !== this.access.get(batch.channel)!.key && batch.ops.some((op) => op.type === 'update' && column in op.value)) {
+        return Response.json(
+          { error: `the slice column "${column}" cannot change (channel: ${batch.channel})`, channel: batch.channel } satisfies WriteReject,
           { status: 400 },
         )
       }
@@ -452,8 +547,39 @@ export class PartyDbCore {
   private fanOut(batch: SequencedBatch): void {
     const access = this.access.get(batch.channel)
     if (!access) return this.broadcast(JSON.stringify(batch), 'all')
+    const column = this.sliceBy.get(batch.channel)
+    const routes = column === undefined ? undefined : this.sliceRoutes()
+    if (routes) return this.fanOutSliced(batch, access, routes, column!)
     for (const { audience, batch: frame } of audiencesOf(access, batch)) this.broadcast(JSON.stringify(frame), audience)
   }
+
+  // Send one committed batch on a sliced channel to the sockets watching a slice it
+  // touches, each as its own user may read it. A public batch is serialized once.
+  private fanOutSliced(batch: SequencedBatch, access: CollectionAccess, routes: SliceRoutes, column: string): void {
+    const slices = new Set(batch.ops.map((op) => sliceText(op.value[column])))
+    const serialized = new Map<SequencedBatch, string>()
+    for (const conn of routes.recipients(batch.channel, slices)) {
+      const frame = visibleTo(access, batch, conn.viewer)
+      if (!frame) continue
+      let message = serialized.get(frame)
+      if (message === undefined) serialized.set(frame, (message = JSON.stringify(frame)))
+      try {
+        conn.send(message)
+      } catch {
+        routes.remove(conn.id)
+      }
+    }
+  }
+}
+
+// Normalize what `connect` / `handleMessage` were handed.
+function targetOf(target: Target, viewer: Viewer): { send: (message: string) => void; viewer: Viewer; conn?: PartyDbConnection } {
+  if (typeof target === 'function') return { send: target, viewer }
+  return { send: (message) => target.send(message), viewer: target.viewer, conn: target }
+}
+
+function withSlice(batch: SequencedBatch, slice: SliceValue | undefined): SequencedBatch {
+  return slice === undefined ? batch : { ...batch, slice }
 }
 
 // Parse the `?since` query param into a usable cursor. null → snapshot: missing,

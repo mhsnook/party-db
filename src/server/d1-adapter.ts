@@ -19,7 +19,7 @@
 // room is a configuration error at init(), not a blob table in someone's
 // production database.
 
-import type { SequencedBatch, WriteBatch } from '../protocol.ts'
+import type { SequencedBatch, SliceValue, WriteBatch } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
@@ -29,6 +29,8 @@ import {
   oplogInsertStmt,
   readRowsStmts,
   resolveStructured,
+  sliceFilter,
+  snapshotBatch,
   snapshotPlans,
   structuredStmt,
   updateGuardStmt,
@@ -150,9 +152,9 @@ export class D1Adapter implements PersistenceAdapter {
     return results.flatMap((r) => r.results.map((row) => decodeRow(row, plan.kinds)))
   }
 
-  // `channel` narrows the snapshot to one collection — the re-register request
-  // (docs/architecture.md §8a). Unknown name → no batches.
-  async snapshot(channel?: string): Promise<SequencedBatch[]> {
+  // `channel` narrows the snapshot to one collection, and `slice` to one slice of
+  // a sliced one (docs/architecture.md §8a, §18). Unknown name → no batches.
+  async snapshot(channel?: string, slice?: SliceValue): Promise<SequencedBatch[]> {
     // one read batch() — D1 runs it transactionally, so the watermark and every
     // table are a single consistent cut. `ready`/`reset` mirror the embedded
     // adapter: a fresh connection's snapshot replaces each channel.
@@ -164,13 +166,16 @@ export class D1Adapter implements PersistenceAdapter {
     const read = structured.filter((p) => p.snapshot)
     const results = await this.d1.batch<Record<string, unknown>>([
       this.d1.prepare(`SELECT COALESCE(MAX(seq), 0) AS s FROM _oplog`),
-      ...read.map((p) => this.d1.prepare(`SELECT * FROM "${p.name}"`)),
+      ...read.map((p) => {
+        const where = sliceFilter(p, slice)
+        return this.d1.prepare(`SELECT * FROM "${p.name}"${where.sql}`).bind(...where.binds)
+      }),
     ])
     const seq = Number((results[0].results[0] as { s: number }).s)
     return structured.map((plan) => {
       if (!plan.snapshot) return emptySnapshot(plan, seq)
       const rows = results[read.indexOf(plan) + 1].results.map((r) => decodeRow(r, plan.kinds))
-      return { channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true, reset: true }
+      return snapshotBatch(plan, seq, rows, plan.sliceBy === undefined ? undefined : slice)
     })
   }
 

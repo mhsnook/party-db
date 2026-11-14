@@ -9,7 +9,7 @@
 // serializes its write → seq → broadcast section (see PartyDbServer) to keep the
 // ordering total even when the apply itself awaits.
 
-import type { SequencedBatch, WriteBatch, WriteReject } from '../protocol.ts'
+import type { SequencedBatch, SliceValue, WriteBatch, WriteReject } from '../protocol.ts'
 
 // The writer's verified identity for a single POST, resolved fresh each write by
 // the server's `auth` hook and threaded into `write()`. Adapters that can enforce
@@ -74,11 +74,14 @@ export interface PersistenceAdapter {
   write(batches: WriteBatch[], identity?: WriteIdentity): Promise<SequencedBatch[]>
 
   // Full current state per collection + the latest seq, for a fresh connection.
-  // Pass `channel` to snapshot that one collection alone — what a client asks for
-  // when a collection re-registers and its rows are gone (docs/architecture.md §8a).
-  // An unknown name returns no batches. Ignoring the argument is safe but wasteful:
-  // the caller sends only the batch for the channel it asked about.
-  snapshot(channel?: string): Promise<SequencedBatch[]>
+  // With no `channel`, leave out collections that declare `sliceBy`: they load by
+  // subscription (docs/architecture.md §18). Pass `channel` to snapshot that one
+  // collection alone — what a client asks for when a collection re-registers and
+  // its rows are gone (§8a). Pass `slice` too to read only the rows whose `sliceBy`
+  // column equals it, marked with `slice` on the batch. An unknown name returns no
+  // batches. Ignoring either argument is safe but wasteful: the caller filters
+  // the result down to what it asked for.
+  snapshot(channel?: string, slice?: SliceValue): Promise<SequencedBatch[]>
 
   // The delta a reconnecting client missed — oplog entries after `since`, in
   // order. Returns `null` when `since` predates what's still retained (compacted

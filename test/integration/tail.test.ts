@@ -91,7 +91,7 @@ describe('a `snapshot: false` collection tails from the moment it connects', () 
     const c = await connect(room)
     await c.waitFor(2)
 
-    c.ws.send(JSON.stringify({ snapshot: 'events' }))
+    c.ws.send(JSON.stringify({ subscribe: 'events' }))
     await c.waitFor(3)
     expect(c.channel('events').at(-1)).toEqual({ channel: 'events', seq: 1, ops: [], ready: true, reset: true })
     c.ws.close()

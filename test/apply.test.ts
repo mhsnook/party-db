@@ -5,7 +5,7 @@ import type { SequencedBatch, WriteEvent } from '../src/protocol.ts'
 // A sink that records the call order so we can assert begin/write*/commit bracketing.
 function recorder() {
   const calls: string[] = []
-  const writes: WriteEvent[] = []
+  const writes: Parameters<ChannelSink['write']>[0][] = []
   const sink: ChannelSink = {
     begin: () => void calls.push('begin'),
     write: (op) => {

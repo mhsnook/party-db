@@ -20,11 +20,23 @@
 // collection is a configuration error at init(), not a blob table in your
 // production database.
 
-import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
+import type { SequencedBatch, SliceValue, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'
 import { pgDecodeRow, pgEncode } from './columns.ts'
-import { buildPlans, emptySnapshot, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, toPg, type Plan, type StructuredPlan } from './statements.ts'
+import {
+  buildPlans,
+  emptySnapshot,
+  readRowsStmts,
+  resolveStructured,
+  sliceFilter,
+  snapshotBatch,
+  snapshotPlans,
+  structuredStmt,
+  toPg,
+  type Plan,
+  type StructuredPlan,
+} from './statements.ts'
 
 // The narrow slice of a node-postgres-style driver the adapter needs — `query(text,
 // values) → { rows }`, the shape both `pg.Client` and a Hyperdrive-backed client
@@ -245,9 +257,9 @@ export class PgAdapter implements PersistenceAdapter {
     return chunks.flatMap(({ rows }) => rows.map((r) => pgDecodeRow(r, plan.kinds)))
   }
 
-  // `channel` narrows the snapshot to one collection — the re-register request
-  // (docs/architecture.md §8a). Unknown name → no batches.
-  async snapshot(channel?: string): Promise<SequencedBatch[]> {
+  // `channel` narrows the snapshot to one collection, and `slice` to one slice of
+  // a sliced one (docs/architecture.md §8a, §18). Unknown name → no batches.
+  async snapshot(channel?: string, slice?: SliceValue): Promise<SequencedBatch[]> {
     const structured = snapshotPlans(this.plans, channel).filter((p): p is StructuredPlan => p.kind === 'structured')
     // nothing to read (an unknown or schema-less channel): don't open a transaction
     if (!structured.length) return []
@@ -265,11 +277,9 @@ export class PgAdapter implements PersistenceAdapter {
           out.push(emptySnapshot(plan, seq))
           continue
         }
-        const { rows } = await c.query(`SELECT * FROM "${plan.name}"`)
-        const decoded = rows.map((r) => pgDecodeRow(r, plan.kinds))
-        // `reset`: a snapshot replaces the channel (client truncates first);
-        // `ready`: the backlog is fully sent. See docs/architecture.md §8.
-        out.push({ channel: plan.name, seq, ops: decoded.map((value) => ({ type: 'insert', value })), ready: true, reset: true })
+        const where = sliceFilter(plan, slice)
+        const { rows } = await c.query(toPg(`SELECT * FROM "${plan.name}"${where.sql}`), where.binds.map(pgEncode))
+        out.push(snapshotBatch(plan, seq, rows.map((r) => pgDecodeRow(r, plan.kinds)), plan.sliceBy === undefined ? undefined : slice))
       }
       await c.query('COMMIT')
       return out

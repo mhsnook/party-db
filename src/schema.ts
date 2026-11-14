@@ -51,6 +51,13 @@ export type PartyCollection<T extends object = Record<string, unknown>> = {
   // Per-verb access rules. Omitted → 'public' on all four verbs, unless
   // `ownerColumn` is set, which defaults to 'owner' on all four.
   access?: Access
+  // Load this collection by slice instead of whole: a client gets only the rows
+  // whose `sliceBy` column matches what its live queries ask for, and only the
+  // writes to those slices stream to it. Setting it makes the client collection
+  // on-demand (TanStack's `syncMode: 'on-demand'`), so a live query's `where` is
+  // the subscription. The column must never change on a row: an update that
+  // carries it is refused (docs/architecture.md §18).
+  sliceBy?: UidColumn<T>
   // `false` skips the connect-time load: a connecting client gets no rows for this
   // collection, only a `ready` marker, and tails the fan-out from there. The table
   // and the `_oplog` are untouched, so a reconnect still replays what it missed

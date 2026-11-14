@@ -342,11 +342,25 @@ describe('partyTransport drops frames that are not ours', () => {
 })
 
 
-describe('partyTransport snapshot request (the one up-frame)', () => {
-  it('sends { snapshot: <channel> } on the socket', () => {
+describe('partyTransport up-frames', () => {
+  it('sends a subscribe frame on the socket as JSON', () => {
     const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    transport.requestSnapshot!('todos')
+    transport.sendFrame!({ subscribe: 'comments', slice: 't1', since: 4 })
     // the literal frame is the wire contract the server parses — pinned here.
-    expect(lastSocket().send.mock.calls).toEqual([['{"snapshot":"todos"}']])
+    expect(lastSocket().send.mock.calls).toEqual([['{"subscribe":"comments","slice":"t1","since":4}']])
+  })
+
+  it('reports whether the socket is open, and each (re)open', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const opened = vi.fn()
+    const off = transport.onOpen!(opened)
+    lastSocket().readyState = 0
+    expect(transport.isOpen!()).toBe(false)
+    lastSocket().readyState = 1
+    lastSocket().emit('open', {})
+    expect(transport.isOpen!()).toBe(true)
+    off()
+    lastSocket().emit('open', {})
+    expect(opened).toHaveBeenCalledTimes(1)
   })
 })

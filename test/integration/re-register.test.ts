@@ -45,8 +45,8 @@ async function workerTransport(room: string) {
       if (!res.ok) throw new Error(`write rejected: ${res.status}`)
       return (await res.json()) as WriteAck
     },
-    requestSnapshot(channel) {
-      ws.send(JSON.stringify({ snapshot: channel }))
+    sendFrame(frame) {
+      ws.send(JSON.stringify(frame))
     },
   }
   return { transport, ws }
@@ -99,7 +99,7 @@ describe('the re-snapshot is serialized against concurrent writes', () => {
 
     // ask for a re-snapshot and write in the same tick — the room's queue decides
     // the order, and both outcomes are correct as long as they don't interleave.
-    ws.send(JSON.stringify({ snapshot: 'todos' }))
+    ws.send(JSON.stringify({ subscribe: 'todos' }))
     const ack = (await (await post(room, insert('r2', 'two'))).json()) as WriteAck
     const writeSeq = Number(ack.accepted[0].seq)
 
@@ -126,7 +126,7 @@ describe('the re-snapshot is serialized against concurrent writes', () => {
     const { ws, batches: frames, waitFor } = await connect(room)
     await waitFor(1) // the connect snapshot
 
-    ws.send(JSON.stringify({ snapshot: 'nope' }))
+    ws.send(JSON.stringify({ subscribe: 'nope' }))
     ws.send('not a party-db frame at all')
 
     // the room stays up and keeps serving: the next write still fans out, and the

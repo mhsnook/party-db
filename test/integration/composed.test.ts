@@ -87,14 +87,14 @@ describe('a Server that holds the core instead of subclassing', () => {
     await own.waitFor(1)
     await sub.waitFor(1) // the connect snapshot
 
-    sub.ws.send(JSON.stringify({ snapshot: 'todos' }))
+    sub.ws.send(JSON.stringify({ subscribe: 'todos' }))
     await sub.waitFor(2)
     const resnapshot = JSON.parse(sub.frames[1]) as SequencedBatch
     expect(resnapshot).toMatchObject({ channel: 'todos', reset: true, ready: true })
     expect(resnapshot.ops[0].value).toMatchObject({ id: 'c5' })
 
     // the same frame on a host connection is the host's business, not ours
-    own.ws.send(JSON.stringify({ snapshot: 'todos' }))
+    own.ws.send(JSON.stringify({ subscribe: 'todos' }))
     await post(room, insert('c6', 'after'))
     await sub.waitFor(3)
     expect(own.frames).toEqual(['host: hello'])

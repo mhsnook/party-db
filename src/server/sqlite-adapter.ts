@@ -12,11 +12,23 @@
 // identifier (table + column names) comes from the schema/config allowlist —
 // validated against an identifier regex — NEVER from the client payload's keys.
 
-import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
+import type { SequencedBatch, SliceValue, WriteBatch, WriteEvent } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
-import { blobStmt, buildPlans, emptySnapshot, readRowsStmts, resolveStructured, snapshotPlans, structuredStmt, type BlobPlan, type Plan } from './statements.ts'
+import {
+  blobStmt,
+  buildPlans,
+  emptySnapshot,
+  readRowsStmts,
+  resolveStructured,
+  sliceFilter,
+  snapshotBatch,
+  snapshotPlans,
+  structuredStmt,
+  type BlobPlan,
+  type Plan,
+} from './statements.ts'
 
 // The narrow slice of a SQLite handle the adapter needs. In the DO it's
 // `ctx.storage.sql` + `ctx.storage.transactionSync`; in tests it's a node:sqlite
@@ -144,9 +156,9 @@ export class SqliteAdapter implements PersistenceAdapter {
     return readRowsStmts(plan, keys, 500).flatMap(({ sql, binds }) => this.engine.exec(sql, ...binds).toArray().map(decode))
   }
 
-  // `channel` narrows the snapshot to one collection — the re-register request
-  // (docs/architecture.md §8a). Unknown name → no batches.
-  async snapshot(channel?: string): Promise<SequencedBatch[]> {
+  // `channel` narrows the snapshot to one collection, and `slice` to one slice of
+  // a sliced one (docs/architecture.md §8a, §18). Unknown name → no batches.
+  async snapshot(channel?: string, slice?: SliceValue): Promise<SequencedBatch[]> {
     const plans = snapshotPlans(this.plans, channel)
     if (!plans.length) return []
     // read the seq and every table inside one transaction so the snapshot is a
@@ -162,13 +174,14 @@ export class SqliteAdapter implements PersistenceAdapter {
           out.push(emptySnapshot(plan, seq))
           continue
         }
-        const rows =
-          plan.kind === 'structured'
-            ? this.engine.exec(`SELECT * FROM "${plan.name}"`).toArray().map((r) => decodeRow(r, plan.kinds))
-            : this.engine.exec(`SELECT data FROM "${plan.name}"`).toArray().map((r) => JSON.parse(r.data as string))
-        // `reset`: a snapshot replaces the channel (client truncates first);
-        // `ready`: the backlog is fully sent. See docs/architecture.md §8.
-        out.push({ channel: plan.name, seq, ops: rows.map((value) => ({ type: 'insert', value })), ready: true, reset: true })
+        let rows: Record<string, unknown>[]
+        if (plan.kind === 'structured') {
+          const where = sliceFilter(plan, slice)
+          rows = this.engine.exec(`SELECT * FROM "${plan.name}"${where.sql}`, ...where.binds).toArray().map((r) => decodeRow(r, plan.kinds))
+        } else {
+          rows = this.engine.exec(`SELECT data FROM "${plan.name}"`).toArray().map((r) => JSON.parse(r.data as string))
+        }
+        out.push(snapshotBatch(plan, seq, rows, plan.sliceBy === undefined ? undefined : slice))
       }
       return out
     })
