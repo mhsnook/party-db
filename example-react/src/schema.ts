@@ -20,7 +20,7 @@ export const commentSchema = z.object({
 
 export type Comment = z.infer<typeof commentSchema>
 
-export const comments = definePartyCollection<Comment>({
+export const comments = definePartyCollection({
   name: 'comments',
   key: 'id',
   schema: commentSchema,

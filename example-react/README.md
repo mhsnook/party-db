@@ -32,7 +32,7 @@ const transport = partyTransport({ host: location.host, room: 'demo' })
 
 // ✅ 2. Pass that connection to the constructor, and you're done!
 export const { db } = createPartyDb(transport, [
-  definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema }),
+  definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema }),
 ])
 ```
 

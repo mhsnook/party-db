@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import type { Collection } from '@tanstack/db'
 import { eq, useLiveQuery } from '@tanstack/react-db'
 import { comments as commentsConfig, todoSchema, type Comment, type Todo } from './schema.ts'
 import { createPartyDb, partyTransport, definePartyCollection } from '../../src/client/index.ts'
@@ -9,16 +8,12 @@ const transport = partyTransport({ host: location.host, room: 'demo' })
 
 // ✅ 2. Pass that connection to the constructor, and you're done!
 export const { db } = createPartyDb(transport, [
-  definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema }),
+  definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema }),
   commentsConfig,
 ])
 
-// db.todos is a plain TanStack DB collection; the only reason we need
-// to re-assert the row type as Collection<Todo> is because of the structure
-// of _this_ repo (an example app inside the library's repo) where tanstack/db
-// gets imported twice. Types should work natively in regular usage.
-const todos = db.todos as unknown as Collection<Todo, string>
-const comments = db.comments as unknown as Collection<Comment, string>
+const todos = db.todos
+const comments = db.comments
 
 // ✅ 5. A sliced collection loads one thread at a time: the live query's `where`
 // is the subscription, and comments on other todos never reach this tab.

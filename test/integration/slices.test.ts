@@ -58,8 +58,8 @@ async function client(room: string) {
 
 type Comment = { id: string; thread_id: string; body: string }
 
-const thread = (db: Record<string, Collection<any>>, id: string) =>
-  createLiveQueryCollection((q) => q.from({ c: db.comments as Collection<Comment> }).where(({ c }) => eq(c.thread_id, id)))
+const thread = (collection: Collection<Comment, string>, id: string) =>
+  createLiveQueryCollection((q) => q.from({ c: collection }).where(({ c }) => eq(c.thread_id, id)))
 
 const ids = (collection: { toArray: ReadonlyArray<{ id: string }> }) => collection.toArray.map((row) => row.id).sort()
 
@@ -87,27 +87,27 @@ describe('a sliced collection over a real room', () => {
     await post(room, comment('b1', 'B'))
     const c = await client(room)
 
-    const threadA = thread(c.db, 'A')
+    const threadA = thread(c.db.comments, 'A')
     await threadA.preload()
     expect(ids(threadA)).toEqual(['a1'])
-    expect(c.db.comments!.has('b1')).toBe(false)
+    expect(c.db.comments.has('b1')).toBe(false)
 
     await post(room, comment('a2', 'A'))
     await post(room, comment('b2', 'B'))
     await vi.waitFor(() => expect(ids(threadA)).toEqual(['a1', 'a2']))
-    expect(c.db.comments!.has('b2')).toBe(false)
+    expect(c.db.comments.has('b2')).toBe(false)
     c.close()
   })
 
   it('settles a write into the thread the writer is watching', async () => {
     const room = 'slices-write'
     const c = await client(room)
-    const threadA = thread(c.db, 'A')
+    const threadA = thread(c.db.comments, 'A')
     await threadA.preload()
 
-    const tx = c.db.comments!.insert({ id: 'mine', thread_id: 'A', body: 'hello' })
+    const tx = c.db.comments.insert({ id: 'mine', thread_id: 'A', body: 'hello' })
     await tx.isPersisted.promise
-    expect(c.db.comments!.get('mine')).toMatchObject({ body: 'hello', $synced: true })
+    expect(c.db.comments.get('mine')).toMatchObject({ body: 'hello', $synced: true })
     c.close()
   })
 
@@ -116,7 +116,7 @@ describe('a sliced collection over a real room', () => {
     await post(room, comment('a1', 'A'))
     const c = await client(room)
 
-    const first = thread(c.db, 'A')
+    const first = thread(c.db.comments, 'A')
     await first.preload()
     expect(ids(first)).toEqual(['a1'])
     await first.cleanup()
@@ -130,7 +130,7 @@ describe('a sliced collection over a real room', () => {
     expect(c.comments()).not.toContain('a2')
 
     const frames = c.batches.length
-    const again = thread(c.db, 'A')
+    const again = thread(c.db.comments, 'A')
     await again.preload()
     expect(ids(again)).toEqual(['a1', 'a2'])
     expect(c.sent.at(-1)).toEqual({ subscribe: 'comments', slice: 'A', since: dropSeq })

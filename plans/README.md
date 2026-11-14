@@ -21,7 +21,7 @@ update your row when done.
 | 008 | Publish readiness: pin peers, manifest hygiene, release workflow | P1 | M | — | DONE |
 | 009 | README accuracy for first publish | P1 | S | — | DONE |
 | 010 | Cookbook corrections (secret echo, WorkOS env scope) | P1 | S | — | DONE |
-| 011 | Typed `db` (per-collection types, "typed end to end") | P2 | M | — | TODO |
+| 011 | Typed `db` (per-collection types, "typed end to end") | P2 | M | — | DONE (also types the key; an explicit `<Row>` falls back to `Collection<any>`) |
 | 012 | DX baseline: `check` script, CLAUDE.md, Biome lint gate | P2 | M | best after 001–008 | TODO |
 | 013 | DESIGN: server-side validation gate (Zod error-sooner + insert/update schemas) | P2 | M | 011 (type threading) | TODO |
 | 014 | D1 adapter — second v1 persistence target (one `batch()` commits data + oplog + seq; `?since` preserved) | P1 | M | 001–004, 006 (**003, 004 hard**) | DONE |

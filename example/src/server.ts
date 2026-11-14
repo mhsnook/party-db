@@ -5,7 +5,7 @@ import { migrate } from './migrations/index.ts'
 
 // Declaring the collections (same schema the client uses) is the whole server; your table lives in ./migrations, applied on start.
 export class Main extends PartyDbServer {
-  collections = [definePartyCollection<Todo>({ name: 'todos', key: 'id', schema: todoSchema })]
+  collections = [definePartyCollection({ name: 'todos', key: 'id', schema: todoSchema })]
 
   onStart() {
     migrate(this.ctx.storage.sql)
