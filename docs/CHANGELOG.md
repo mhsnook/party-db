@@ -1,12 +1,21 @@
 # Changes
 
-## Unreleased
+## 2026-11-14 - v0.1.0
+
+A collection can now load by slice, `db` is typed by collection name, and party-db
+moves to TanStack DB 0.15. The example apps now run in a browser in CI.
 
 - **`sliceBy` on a collection.** A collection sliced by one column loads only the slices
   its live queries ask for, and a write reaches only the clients watching its slice.
   The live query's `where` is the subscription: `eq(c.thread_id, id)` loads that
   thread, and `inArray` loads several. The column can't change on a row: an update
   that carries it is a 400 (`docs/architecture.md` §18).
+- **`db` is typed by collection name.** `db.todos` is `Collection<Todo, string>`, with
+  the row type taken from the schema and the key type from the key column. A name you
+  never declared is a type error. To get this, let the schema carry the row type:
+  `definePartyCollection({ name, key, schema })`. An explicit
+  `definePartyCollection<Todo>(...)` still compiles, and that collection stays
+  `Collection<any>` on `db`.
 - **`PartyDbCore` takes `connections` and gains `disconnect(id)`** (optional). With
   them, the core routes sliced writes to each slice's watchers itself. `connect` and
   `handleMessage` accept a `PartyDbConnection` in place of the send function. A host
@@ -16,24 +25,32 @@
   merge instead of replacing, or that socket gets every sliced collection whole.
 - **`PartyDbServer.onClose`** now forgets the socket's subscriptions. If you override
   it, chain `super.onClose(...)`.
+- **A refused write no longer crashes the worker under `wrangler dev`.** The lobby's
+  401 and the write path's 413 answered without reading the POST body, and workerd
+  intermittently ended the isolate, failing the next request with a 503. Both now
+  read the body to the end first, keeping none of it.
 
 Breaking:
 
+- **`@tanstack/db` peer range is now `^0.15.2`** (was `^0.6.10`). Apps on React pair
+  it with `@tanstack/react-db` `^0.5.12`. Two TanStack changes show up in app code:
+  - Rows read from a collection carry virtual props (`$synced`, `$origin`, `$key`,
+    `$hasPendingWrites`). What party-db sends to the server is unaffected.
+  - Inside a query's `select`, a joined row is a column reference, never `undefined`,
+    so a JS default like `card?.status ?? 'new'` no longer applies. Use
+    `coalesce(card.status, 'new')`.
+- npm's `latest` tag for both TanStack packages points at the 1.0 release candidate.
+  A bare `pnpm add @tanstack/db` installs the RC, which is outside the peer range, so
+  name the version.
 - **`Transport.requestSnapshot(channel)` is now `sendFrame(frame)`**, plus optional
   `isOpen()` and `onOpen(listener)`. Only a custom transport is affected.
   `partyTransport` implements all three. The re-register request is now
   `{ subscribe: channel }` instead of `{ snapshot: channel }`. A stale tab running the
   old client against a redeployed room gets no answer to that request until it
   reloads.
-
-- **`@tanstack/db` peer range is now `^0.15.2`** (was `^0.6.10`). Apps on React pair
-  it with `@tanstack/react-db` `^0.5.12`. Nothing in party-db's own API changed. One
-  TanStack change shows up in app code: rows read from a collection now carry virtual
-  props (`$synced`, `$origin`, `$key`, `$hasPendingWrites`). What party-db sends to
-  the server is unaffected.
-- npm's `latest` tag for both TanStack packages points at the 1.0 release candidate.
-  A bare `pnpm add @tanstack/db` installs the RC, which is outside the peer range, so
-  name the version.
+- **`PartyCollection` takes two more type parameters**, `Name` and `Key`, both
+  defaulting to their old types. Code that indexes `db` with an arbitrary string, like
+  `db[name]`, no longer compiles when every config has a literal name.
 
 ## 2026-10-25 - v0.0.6
 
