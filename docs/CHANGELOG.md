@@ -1,5 +1,18 @@
 # Changes
 
+## Unreleased
+
+Breaking:
+
+- **`@tanstack/db` peer range is now `^0.15.2`** (was `^0.6.10`). Apps on React pair
+  it with `@tanstack/react-db` `^0.5.12`. Nothing in party-db's own API changed. One
+  TanStack change shows up in app code: rows read from a collection now carry virtual
+  props (`$synced`, `$origin`, `$key`, `$hasPendingWrites`). What party-db sends to
+  the server is unaffected.
+- npm's `latest` tag for both TanStack packages points at the 1.0 release candidate.
+  A bare `pnpm add @tanstack/db` installs the RC, which is outside the peer range, so
+  name the version.
+
 ## 2026-10-25 - v0.0.6
 
 - **`snapshot: false` on a collection.** A connecting client gets no rows for it and
