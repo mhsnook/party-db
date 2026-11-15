@@ -13,8 +13,11 @@ export default defineConfig({
   timeout: 30_000,
   reporter: process.env.CI ? 'github' : 'list',
   use: { baseURL: 'http://127.0.0.1:5173', trace: 'off' },
+  // Both servers bind 127.0.0.1 explicitly. Left to `localhost`, either can bind
+  // only IPv6 `::1` on a runner that resolves it that way, and then neither this
+  // readiness check nor each example's Vite proxy (to 127.0.0.1:8787) can reach it.
   webServer: [
-    { command: process.env.WORKER_LOG ? `pnpm dev:worker --log-level debug > ${process.env.WORKER_LOG} 2>&1` : 'pnpm dev:worker', cwd: example, port: 8787, reuseExistingServer: !process.env.CI, timeout: 60_000 },
-    { command: 'pnpm dev:client', cwd: example, url: 'http://127.0.0.1:5173', reuseExistingServer: !process.env.CI, timeout: 60_000 },
+    { command: 'pnpm dev:worker --ip 127.0.0.1', cwd: example, port: 8787, stdout: 'pipe', reuseExistingServer: !process.env.CI, timeout: 60_000 },
+    { command: 'pnpm dev:client --host 127.0.0.1', cwd: example, url: 'http://127.0.0.1:5173', stdout: 'pipe', reuseExistingServer: !process.env.CI, timeout: 60_000 },
   ],
 })
