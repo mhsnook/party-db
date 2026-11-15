@@ -52,8 +52,8 @@ function LoginBar() {
   )
 }
 
-// The catalog is public read; adding a phrase is `insert: 'authed'` — gated on
-// being logged in. (🚧 the server won't enforce that yet; the UI models it.)
+// The catalog is public read; adding a phrase is `insert: 'authed'`, so the server
+// refuses a signed-out insert and the form shows only once you're logged in.
 function AddPhrase({ languageId }: { languageId: string }) {
   const { me } = useAuth()
   const { error, run } = useWriteError()
@@ -125,7 +125,7 @@ function DeckSettings({ languageId }: { languageId: string }) {
 
 // The public phrases + YOUR status overlaid — one leftJoin across a public
 // collection and a private one. The private side only ever reaches its owner, so
-// the join can't leak someone else's progress (🚧 once enforcement lands).
+// the join can't leak someone else's progress.
 function Phrases({ languageId }: { languageId: string }) {
   const { me } = useAuth()
   const { error, run } = useWriteError()
@@ -186,10 +186,6 @@ function Polyglot() {
       <p className="sub">
         A public catalog everyone shares (<code>public_languages</code>, <code>public_phrases</code>) plus per-user{' '}
         <code>user_decks</code> and <code>user_flashcards</code>.
-      </p>
-      <p className="flag">
-        🚧 <strong>Speculative.</strong> The <code>access</code>/<code>owner</code>/<code>auth</code> rules are declared but the
-        framework doesn&apos;t enforce them yet — so right now every collection syncs publicly. See the README.
       </p>
 
       <LoginBar />
