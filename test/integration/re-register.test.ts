@@ -13,9 +13,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import { createPartyDb } from '../../src/client/party-db.ts'
 import { definePartyCollection } from '../../src/schema.ts'
-import type { Transport } from '../../src/client/sync-client.ts'
-import type { SequencedBatch, WriteAck } from '../../src/protocol.ts'
-import { connect, insert, post } from './helpers.ts'
+import type { WriteAck } from '../../src/protocol.ts'
+import { connect, ids, insert, post, workerTransport } from './helpers.ts'
 
 // the same collection `Main` (worker.ts) serves, declared as an app declares it
 const todos = definePartyCollection({
@@ -23,36 +22,6 @@ const todos = definePartyCollection({
   key: 'id',
   schema: z.object({ id: z.string(), text: z.string(), done: z.boolean().optional(), rev: z.number().optional() }),
 })
-
-// A `Transport` over the test worker: partysocket can't dial `SELF`, so the
-// down-stream is the suite's raw WebSocket and the up-path is the same POST
-// helper. Everything above it — SyncClient, the collection, `persist` — is the
-// real client.
-async function workerTransport(room: string) {
-  const { ws } = await connect(room)
-  const listeners = new Set<(batch: SequencedBatch) => void>()
-  ws.addEventListener('message', (e) => {
-    const batch = JSON.parse(e.data as string) as SequencedBatch
-    for (const listener of listeners) listener(batch)
-  })
-  const transport: Transport = {
-    subscribe(onBatch) {
-      listeners.add(onBatch)
-      return () => listeners.delete(onBatch)
-    },
-    async send(batches) {
-      const res = await post(room, batches)
-      if (!res.ok) throw new Error(`write rejected: ${res.status}`)
-      return (await res.json()) as WriteAck
-    },
-    sendFrame(frame) {
-      ws.send(JSON.stringify(frame))
-    },
-  }
-  return { transport, ws }
-}
-
-const ids = (collection: { toArray: { id: string }[] }) => collection.toArray.map((row) => row.id).sort()
 
 describe('a collection that re-registers after cleanup gets a fresh snapshot', () => {
   it('refills the restarted collection and fires isReady again', async () => {

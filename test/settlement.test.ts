@@ -12,8 +12,8 @@ import type { SequencedBatch, WriteAck, WriteBatch } from '../src/protocol.ts'
 
 type Todo = { id: string; text: string; created_at?: string }
 
-const todos = definePartyCollection<Todo>({ name: 'todos', key: 'id' })
-const tags = definePartyCollection<{ id: string; todo_id: string }>({ name: 'tags', key: 'id' })
+const todos = definePartyCollection<Todo, 'todos'>({ name: 'todos', key: 'id' })
+const tags = definePartyCollection<{ id: string; todo_id: string }, 'tags'>({ name: 'tags', key: 'id' })
 
 // A transport the test drives by hand: `send` acks with the next seq and parks
 // the resolved batch; `deliver()` streams it down, as the room's fan-out would.
@@ -54,7 +54,7 @@ describe('settlement on a real TanStack collection', () => {
   it('keeps the row visible from the optimistic insert through to the resolved row', async () => {
     const { transport, push, deliver } = scriptedTransport()
     const { db } = createPartyDb(transport, [todos])
-    const collection = db.todos!
+    const collection = db.todos
     const ready = collection.preload()
     push({ channel: 'todos', seq: 0, ops: [], reset: true, ready: true })
     await ready
@@ -84,7 +84,7 @@ describe('settlement on a real TanStack collection', () => {
   it('applies another writer’s row that streams in while this write is in flight', async () => {
     const { transport, push, deliver } = scriptedTransport()
     const { db } = createPartyDb(transport, [todos])
-    const collection = db.todos!
+    const collection = db.todos
     const ready = collection.preload()
     push({ channel: 'todos', seq: 0, ops: [], reset: true, ready: true })
     await ready
@@ -103,15 +103,15 @@ describe('settlement on a real TanStack collection', () => {
   it('sends a cross-collection transaction as one POST', async () => {
     const { transport, sent, push, deliver } = scriptedTransport()
     const { db, persist } = createPartyDb(transport, [todos, tags])
-    const ready = Promise.all([db.todos!.preload(), db.tags!.preload()])
+    const ready = Promise.all([db.todos.preload(), db.tags.preload()])
     push({ channel: 'todos', seq: 0, ops: [], reset: true, ready: true })
     push({ channel: 'tags', seq: 0, ops: [], reset: true, ready: true })
     await ready
 
     const tx = createTransaction({ mutationFn: persist })
     tx.mutate(() => {
-      db.todos!.insert({ id: 't1', text: 'hello' })
-      db.tags!.insert({ id: 'g1', todo_id: 't1' })
+      db.todos.insert({ id: 't1', text: 'hello' })
+      db.tags.insert({ id: 'g1', todo_id: 't1' })
     })
     await tick()
     deliver()
