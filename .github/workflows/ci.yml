@@ -121,3 +121,14 @@ jobs:
       # bundles the worker exactly as a deploy would, then exits without deploying
       - run: pnpm build:worker
         working-directory: ${{ matrix.example }}
+
+      # Then RUN the app: start its worker and its Vite site, and drive two or three
+      # browser tabs through the example's own tests (`<example>/e2e/`). This is the
+      # only place party-db runs the way an app runs it, over a real PartySocket in
+      # a real browser. The Playwright version is pinned in the root package.json;
+      # install exactly that version's Chromium.
+      - run: pnpm exec playwright install --with-deps chromium
+
+      - run: pnpm test:e2e
+        env:
+          EXAMPLE: ${{ matrix.example }}
