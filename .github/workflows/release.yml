@@ -1,17 +1,18 @@
 name: Release
 
-# Publishes on a pushed tag `v*`. Tag = the version already bumped in
+# Stages a release on a pushed tag `v*`. Tag = the version already bumped in
 # package.json (no version automation; see plan 008 maintenance notes).
 #
-# Operator TODO before the first tag: create the `NPM_TOKEN` repo secret
-# (a granular npm publish token). Without it the publish step 401s.
+# The staged version isn't installable until a maintainer approves it on
+# npmjs.com with 2FA. npm trusts this workflow by its filename, through the
+# package's trusted publisher settings, so no npm token is stored here.
 on:
   push:
     tags: ['v*']
 
 permissions:
   contents: read
-  id-token: write # npm provenance
+  id-token: write # trusted publishing
 
 jobs:
   publish:
@@ -38,6 +39,7 @@ jobs:
 
       - run: pnpm test:integration
 
-      - run: pnpm publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # `npm stage` needs npm 11.15.0 or later; Node 22 bundles an older npm.
+      - run: npm install -g npm@^11.15.0
+
+      - run: npm stage publish
