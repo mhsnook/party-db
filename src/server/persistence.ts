@@ -78,16 +78,18 @@ export interface PersistenceAdapter {
   // subscription (docs/architecture.md §18). Pass `channel` to snapshot that one
   // collection alone — what a client asks for when a collection re-registers and
   // its rows are gone (§8a). Pass `slice` too to read only the rows whose `sliceBy`
-  // column equals it, marked with `slice` on the batch. An unknown name returns no
-  // batches. Ignoring either argument is safe but wasteful: the caller filters
-  // the result down to what it asked for.
+  // column equals it. An unknown name returns no batches. Ignoring either argument
+  // is safe but wasteful: the caller filters the result down to what it asked for,
+  // and marks a slice's batch itself.
   snapshot(channel?: string, slice?: SliceValue): Promise<SequencedBatch[]>
 
   // The delta a reconnecting client missed — oplog entries after `since`, in
   // order. Returns `null` when `since` predates what's still retained (compacted
   // away), so the caller must send a fresh snapshot instead of a gappy delta. An
-  // empty array is a complete delta (the client missed nothing).
-  replaySince(since: number): Promise<SequencedBatch[] | null>
+  // empty array is a complete delta (the client missed nothing). `channel` narrows
+  // it like `snapshot`'s: with none, leave out the `sliceBy` collections; with
+  // one, only that one. Ignoring it is safe but wasteful, as with `snapshot`.
+  replaySince(since: number, channel?: string): Promise<SequencedBatch[] | null>
 
   // Optional: the rows as they stand for these keys in one collection, decoded to
   // the schema's shape — read inside the write queue, before the write, for two

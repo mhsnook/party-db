@@ -159,16 +159,17 @@ export function opFor(access: CollectionAccess, op: WriteEvent, viewer: Viewer):
   return op
 }
 
-// `batch` as `viewer` may see it. A snapshot (`reset`) is always returned, empty
-// if need be, so the client's collection still truncates and turns ready. A delta
-// or fan-out batch with nothing visible returns null — the caller sends nothing.
+// `batch` as `viewer` may see it. A snapshot (`reset`) or a `ready` marker is always
+// returned, empty if need be: the client still has to truncate, or settle the load
+// it is waiting on. A delta or fan-out batch with nothing visible returns null —
+// the caller sends nothing.
 export function visibleTo(access: CollectionAccess, batch: SequencedBatch, viewer: Viewer): SequencedBatch | null {
   const read = access.policies.read
   // 'public' and 'authed' answer for the whole batch without looking at a row, so
   // they never pay for a per-op pass.
   if (read === 'public') return batch
   if (read === 'authed' && viewer.uid !== null) return batch
-  if (read !== 'owner') return batch.reset ? { ...batch, ops: [] } : null
+  if (read !== 'owner') return batch.reset || batch.ready ? { ...batch, ops: [] } : null
   const ops: WriteEvent[] = []
   let changed = false
   for (const op of batch.ops) {
@@ -176,7 +177,7 @@ export function visibleTo(access: CollectionAccess, batch: SequencedBatch, viewe
     if (seen) ops.push(seen)
     if (seen !== op) changed = true
   }
-  if (!ops.length && !batch.reset) return null
+  if (!ops.length && !batch.reset && !batch.ready) return null
   return changed ? { ...batch, ops } : batch
 }
 

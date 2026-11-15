@@ -7,15 +7,14 @@
 // goes away; `sliceTargets` reads the `sliceBy` equality out of that `where`.
 
 import { parseWhereExpression, type LoadSubsetOptions } from '@tanstack/db'
-import { sliceText, type Cursor, type SequencedBatch, type SliceValue, type UpFrame } from '../protocol.ts'
+import { idOf, isSliceValue, subscriptionKey, type Cursor, type SequencedBatch, type SliceValue, type UpFrame } from '../protocol.ts'
+import type { SliceApply } from './apply.ts'
 
 // A subscription target: one slice value, or `null` for the whole channel.
 export type SliceTarget = SliceValue | null
 
 const ANY = Symbol('any slice')
 type Targets = SliceValue[] | typeof ANY
-
-const isSliceValue = (v: unknown): v is SliceValue => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v))
 
 // The slices a `where` can match. An equality or `inArray` on the `sliceBy` column
 // narrows it; `and` intersects, `or` unions. Anything else constrains nothing, so
@@ -32,8 +31,8 @@ export function sliceTargets(where: LoadSubsetOptions['where'], column: string):
         const narrowing = parts.filter((p): p is SliceValue[] => p !== ANY)
         if (!narrowing.length) return ANY
         return narrowing.reduce((acc, part) => {
-          const texts = new Set(part.map(sliceText))
-          return acc.filter((v) => texts.has(sliceText(v)))
+          const keys = new Set(part.map(subscriptionKey))
+          return acc.filter((v) => keys.has(subscriptionKey(v)))
         })
       },
       or: (...parts: Targets[]) => (parts.some((p) => p === ANY) ? ANY : (parts as SliceValue[][]).flat()),
@@ -41,7 +40,7 @@ export function sliceTargets(where: LoadSubsetOptions['where'], column: string):
     onUnknownOperator: () => ANY,
   })
   if (result === null || result === ANY) return [null]
-  const seen = new Map(result.map((v) => [sliceText(v), v]))
+  const seen = new Map(result.map((v) => [subscriptionKey(v), v]))
   return [...seen.values()]
 }
 
@@ -56,9 +55,8 @@ type Entry = {
   waiters: Waiter[]
 }
 
-const keyOf = (target: SliceTarget) => (target === null ? '*' : `=${sliceText(target)}`)
-
-export class ChannelSlices {
+// A sliced channel's subscriptions, and how its batches apply (`SliceApply`).
+export class ChannelSlices implements SliceApply {
   private entries = new Map<string, Entry>()
   // released slices: the room seq they were dropped at. Their rows stay in the
   // collection, so subscribing again asks only for what changed after this.
@@ -67,18 +65,21 @@ export class ChannelSlices {
   constructor(
     readonly channel: string,
     readonly column: string,
+    readonly rows: SliceApply['rows'],
     private send: (frame: UpFrame) => void,
     private roomSeq: () => Cursor | undefined,
   ) {}
 
   accepts(row: Record<string, unknown>): boolean {
-    return this.entries.has('*') || this.entries.has(keyOf(sliceText(row[this.column])))
+    if (this.entries.has(subscriptionKey(null))) return true
+    const id = idOf(row[this.column])
+    return id !== null && this.entries.has(subscriptionKey(id))
   }
 
   acquire(targets: SliceTarget[]): true | Promise<void> {
     const waits: Promise<void>[] = []
     for (const target of targets) {
-      const key = keyOf(target)
+      const key = subscriptionKey(target)
       let entry = this.entries.get(key)
       if (!entry) {
         entry = { target, refs: 0, loaded: false, since: this.cursors.get(key), waiters: [] }
@@ -97,7 +98,7 @@ export class ChannelSlices {
   // pair must not cost a round trip.
   release(targets: SliceTarget[]): void {
     for (const target of targets) {
-      const key = keyOf(target)
+      const key = subscriptionKey(target)
       const entry = this.entries.get(key)
       if (!entry) continue
       entry.refs--
@@ -108,7 +109,7 @@ export class ChannelSlices {
         const seq = this.roomSeq()
         if (entry.loaded && seq !== undefined) this.cursors.set(key, seq)
         for (const w of entry.waiters.splice(0)) w.resolve()
-        this.send(target === null ? { unsubscribe: this.channel } : { unsubscribe: this.channel, slice: target })
+        this.send(this.unsubscribeFrame(target))
       })
     }
   }
@@ -118,7 +119,7 @@ export class ChannelSlices {
   applied(batch: SequencedBatch, receipt: true | Promise<void>): void {
     if (batch.reset && batch.slice === undefined) this.cursors.clear() // the rows they pointed at are gone
     if (!batch.ready) return
-    const entry = this.entries.get(keyOf(batch.slice === undefined ? null : batch.slice))
+    const entry = this.entries.get(subscriptionKey(batch.slice ?? null))
     if (!entry || entry.loaded) return
     entry.loaded = true
     entry.since = undefined
@@ -142,7 +143,7 @@ export class ChannelSlices {
   dispose(error?: Error): void {
     for (const entry of this.entries.values()) {
       for (const w of entry.waiters.splice(0)) (error ? w.reject(error) : w.resolve())
-      if (!error) this.send(entry.target === null ? { unsubscribe: this.channel } : { unsubscribe: this.channel, slice: entry.target })
+      if (!error) this.send(this.unsubscribeFrame(entry.target))
     }
     this.entries.clear()
     this.cursors.clear()
@@ -154,6 +155,10 @@ export class ChannelSlices {
       ...(entry.target === null ? {} : { slice: entry.target }),
       ...(entry.since === undefined ? {} : { since: entry.since }),
     }
+  }
+
+  private unsubscribeFrame(target: SliceTarget): UpFrame {
+    return target === null ? { unsubscribe: this.channel } : { unsubscribe: this.channel, slice: target }
   }
 
   private wait(entry: Entry): Promise<void> {

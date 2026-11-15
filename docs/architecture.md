@@ -780,9 +780,9 @@ The reply is ordinary batches ending in one marked `ready` and `slice`:
 - otherwise a snapshot read with `WHERE "<sliceBy>" = ?`, marked `reset`
 
 A `reset` that names a `slice` replaces only that slice's rows on the client. The
-client finds them through the collection's own `entries()`. The ready marker skips
-the read filter: it carries no rows, and an owner-only slice must not leave the
-client's load waiting forever.
+client finds them through the collection's own `entries()`. The read filter keeps a
+`ready` batch even when it filters out every row, as it keeps a `reset` one: an
+owner-only slice must not leave the client's load waiting forever.
 
 **The client owns each slice's cursor.** Each slice is refcounted across the
 queries that want it. When the last one lets go, the client unsubscribes and

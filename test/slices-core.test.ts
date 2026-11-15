@@ -120,7 +120,7 @@ describe('a sliced collection loads by subscription', () => {
     s.frames.length = 0
     await r.frame(s, { subscribe: 'comments', slice: 'A', since: 1 })
     expect(s.frames).toEqual([
-      { channel: 'comments', seq: 3, ops: [{ type: 'insert', value: { id: 'c3', thread_id: 'A', body: 'c3' } }] },
+      { channel: 'comments', seq: 3, ops: [{ type: 'insert', value: { id: 'c3', thread_id: 'A', body: 'c3' } }], slice: 'A' },
       { channel: 'comments', seq: 3, ops: [], ready: true, slice: 'A' },
     ])
   })
@@ -260,5 +260,29 @@ describe('access policies still apply inside a slice', () => {
     await r.write(draft('d3', 'bob'))
     expect(idsIn(alice.frames, 'drafts')).toEqual(['d1'])
     expect(idsIn(bob.frames, 'drafts')).toEqual(['d2', 'd3'])
+  })
+})
+
+describe('the adapter reads only what a subscribe or a connect needs', () => {
+  it('replays one channel when asked, and every channel but the sliced ones when not', async () => {
+    const { engine, db } = memoryEngine()
+    db.exec(`CREATE TABLE comments (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, body TEXT NOT NULL)`)
+    db.exec(`CREATE TABLE todos (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+    const adapter = new SqliteAdapter(engine, [comments, todos])
+    await adapter.init()
+    await adapter.write(comment('c1', 'A'))
+    await adapter.write([{ channel: 'todos', ops: [{ type: 'insert', value: { id: 't1', text: 'x' } }] }])
+    expect((await adapter.replaySince(0, 'comments'))!.map((b) => b.channel)).toEqual(['comments'])
+    expect((await adapter.replaySince(0))!.map((b) => b.channel)).toEqual(['todos'])
+  })
+
+  it('refuses a sliceBy column that cannot hold an id', async () => {
+    const flagged = definePartyCollection({
+      name: 'comments',
+      key: 'id',
+      schema: z.object({ id: z.string(), thread_id: z.boolean(), body: z.string() }),
+      sliceBy: 'thread_id' as never,
+    })
+    await expect(room({ collections: [flagged] })).rejects.toThrow(/sliceBy "thread_id", which its schema types as boolean/)
   })
 })

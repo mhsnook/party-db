@@ -44,7 +44,7 @@ describe('D1Adapter slice snapshots', () => {
     const a = await adapter()
     for (const slice of [7, '7']) {
       const [batch] = await a.snapshot('comments', slice)
-      expect(batch).toMatchObject({ channel: 'comments', reset: true, ready: true, slice })
+      expect(batch).toMatchObject({ channel: 'comments', reset: true, ready: true })
       expect(batch!.ops.map((op) => op.value.id)).toEqual(['a'])
     }
   })
@@ -52,5 +52,12 @@ describe('D1Adapter slice snapshots', () => {
   it('leaves the sliced table out of the connect-time snapshot', async () => {
     const a = await adapter()
     expect((await a.snapshot()).map((b) => b.channel)).toEqual(['todos'])
+  })
+
+  it('replays one channel when asked, and every channel but the sliced ones when not', async () => {
+    const a = await adapter()
+    await a.write([{ channel: 'todos', ops: [{ type: 'insert', value: { id: 't1', text: 'x' } }] }])
+    expect((await a.replaySince(0, 'comments'))!.map((b) => b.channel)).toEqual(['comments'])
+    expect((await a.replaySince(0))!.map((b) => b.channel)).toEqual(['todos'])
   })
 })

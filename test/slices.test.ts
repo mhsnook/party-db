@@ -5,7 +5,7 @@ import type { UpFrame } from '../src/protocol.ts'
 
 // The IR a live query hands `loadSubset`, as plain data in the shape TanStack
 // hands it: refs carry the column path with the alias already stripped. The
-// end-to-end suite (sliced-collection.test.ts) covers the query builder itself.
+// end-to-end suite (test/integration/slices.test.ts) covers the query builder itself.
 const ref = (path: string) => ({ type: 'ref', path: [path] })
 class Value {
   type = 'val'
@@ -51,7 +51,7 @@ describe('ChannelSlices', () => {
   function slices() {
     const frames: UpFrame[] = []
     let seq: number | undefined
-    const s = new ChannelSlices('comments', 'thread_id', (f) => void frames.push(f), () => seq)
+    const s = new ChannelSlices('comments', 'thread_id', () => [], (f) => void frames.push(f), () => seq)
     return { s, frames, setSeq: (n: number) => void (seq = n) }
   }
   const flush = () => new Promise<void>((r) => queueMicrotask(r))

@@ -19,8 +19,8 @@ import { decodeRow } from './columns.ts'
 import {
   blobStmt,
   buildPlans,
-  emptySnapshot,
   readRowsStmts,
+  replayFilter,
   resolveStructured,
   sliceFilter,
   snapshotBatch,
@@ -171,7 +171,7 @@ export class SqliteAdapter implements PersistenceAdapter {
       const out: SequencedBatch[] = []
       for (const plan of plans) {
         if (!plan.snapshot) {
-          out.push(emptySnapshot(plan, seq))
+          out.push(snapshotBatch(plan, seq))
           continue
         }
         let rows: Record<string, unknown>[]
@@ -181,7 +181,7 @@ export class SqliteAdapter implements PersistenceAdapter {
         } else {
           rows = this.engine.exec(`SELECT data FROM "${plan.name}"`).toArray().map((r) => JSON.parse(r.data as string))
         }
-        out.push(snapshotBatch(plan, seq, rows, plan.sliceBy === undefined ? undefined : slice))
+        out.push(snapshotBatch(plan, seq, rows))
       }
       return out
     })
@@ -192,13 +192,14 @@ export class SqliteAdapter implements PersistenceAdapter {
   // compaction the entries in (since, min) are gone, so a delta would silently
   // drop rows; the caller must send a fresh snapshot instead. An empty array is a
   // real (complete) delta — the client missed nothing.
-  async replaySince(since: number): Promise<SequencedBatch[] | null> {
+  async replaySince(since: number, channel?: string): Promise<SequencedBatch[] | null> {
     const min = Number(this.engine.exec(`SELECT MIN(seq) AS m FROM _oplog`).one().m ?? 0)
     // min > 0 means we've forgotten everything below `min`. The next seq the
     // client needs is since+1; if that's already been compacted away, fall back.
     if (min > 0 && since + 1 < min) return null
+    const only = replayFilter(this.plans, channel)
     return this.engine
-      .exec(`SELECT seq, channel, ops FROM _oplog WHERE seq > ? ORDER BY seq`, since)
+      .exec(`SELECT seq, channel, ops FROM _oplog WHERE seq > ?${only.sql} ORDER BY seq`, since, ...only.binds)
       .toArray()
       .map((r) => ({ channel: r.channel as string, seq: Number(r.seq), ops: JSON.parse(r.ops as string) }))
   }
