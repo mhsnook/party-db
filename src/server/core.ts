@@ -202,7 +202,7 @@ export class PartyDbCore {
       const needsPrior = this.collections.filter((c) => this.access.get(c.name)!.needsPrior)
       if (needsPrior.length) {
         throw new Error(
-          `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy, ` +
+          `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy or sliceBy, ` +
             'so the room needs an adapter with readRows, to read the row as it stood before the write',
         )
       }
@@ -299,8 +299,10 @@ export class PartyDbCore {
     if (!frame) return Promise.resolve()
     const { send, viewer: who, conn } = targetOf(target, viewer)
     if (!('subscribe' in frame)) {
-      if (conn && this.sliceBy.has(frame.unsubscribe)) this.sliceRoutes()?.unsubscribe(conn, frame.unsubscribe, frame.slice ?? null)
-      return Promise.resolve()
+      if (!conn || !this.sliceBy.has(frame.unsubscribe)) return Promise.resolve()
+      // queued behind any subscribe this socket sent first, which records its slice
+      // only when its section runs
+      return this.serialize(async () => this.sliceRoutes()?.unsubscribe(conn, frame.unsubscribe, frame.slice ?? null))
     }
     const channel = frame.subscribe
     if (!this.channels.has(channel)) return Promise.resolve()

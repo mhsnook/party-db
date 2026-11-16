@@ -427,3 +427,33 @@ describe('SyncClient and a sliced channel that has not registered', () => {
     expect((client as unknown as { pending: Map<string, unknown> }).pending.size).toBe(0)
   })
 })
+
+describe('SyncClient re-register while the socket is down', () => {
+  function openTransport() {
+    const t = fakeTransport()
+    let open = false
+    const openers = new Set<() => void>()
+    const transport: Transport = {
+      ...t.transport,
+      isOpen: () => open,
+      onOpen: (l) => (openers.add(l), () => openers.delete(l)),
+    }
+    return { ...t, transport, open: () => ((open = true), openers.forEach((l) => l())), drop: () => void (open = false) }
+  }
+
+  it('asks again on every open until the snapshot arrives', () => {
+    const t = openTransport()
+    const client = new SyncClient(t.transport)
+    client.register('todos', recorder().sink)()
+    client.register('todos', recorder().sink) // re-registered while reconnecting
+    expect(t.sendFrame).not.toHaveBeenCalled()
+
+    t.open()
+    expect(t.sendFrame.mock.calls).toEqual([[{ subscribe: 'todos' }]])
+    t.push({ channel: 'todos', seq: 3, ops: [], ready: true, reset: true })
+
+    t.drop()
+    t.open()
+    expect(t.sendFrame).toHaveBeenCalledTimes(1) // answered, so not asked again
+  })
+})

@@ -28,9 +28,15 @@ export interface PartyDbConnection {
   saveSubscriptions: (subscriptions: Subscription[]) => void
 }
 
-// The 16 KiB hibernation slot holds a few hundred of these. Past the cap, a
-// socket's slices of that channel fold into one whole-channel subscription.
+// Past this many slices of one channel, a socket's slices of that channel fold
+// into one whole-channel subscription.
 export const MAX_SUBSCRIPTIONS = 100
+
+// The hibernation slot is 16 KiB, shared with partyserver's own record and the
+// app's `state`. A socket whose subscriptions outgrow this budget (long slice
+// values, many channels) is folded to every channel whole, which always fits.
+const MAX_SLOT_BYTES = 8_192
+const bytesOf = (subscriptions: Subscription[]) => new TextEncoder().encode(JSON.stringify(subscriptions)).length
 
 type Entry = { conn: PartyDbConnection; subscriptions: Subscription[] }
 
@@ -56,13 +62,15 @@ export class SliceRoutes {
     conn.saveSubscriptions([])
   }
 
+  // A slice is recorded even while the socket holds the whole channel: the client
+  // drops the whole-channel subscription on its own, and must keep its slices.
   subscribe(conn: PartyDbConnection, channel: string, slice: SliceValue | null): void {
     const current = this.entries.get(conn.id)?.subscriptions ?? []
     const key = subscriptionKey(slice)
-    const held = current.filter((s) => s[0] === channel).map(keyOf)
-    if (held.includes(key) || held.includes(subscriptionKey(null))) return
+    if (current.some((s) => s[0] === channel && keyOf(s) === key)) return
     let next: Subscription[] = [...current, [channel, slice]]
-    if (next.length > MAX_SUBSCRIPTIONS) next = [...next.filter((s) => s[0] !== channel), [channel, null]]
+    if (next.filter((s) => s[0] === channel).length > MAX_SUBSCRIPTIONS) next = [...next.filter((s) => s[0] !== channel), [channel, null]]
+    if (bytesOf(next) > MAX_SLOT_BYTES) next = [...new Set(next.map((s) => s[0]))].map((c): Subscription => [c, null])
     this.save(conn, next)
   }
 
@@ -96,9 +104,11 @@ export class SliceRoutes {
     return [...ids].map((id) => this.entries.get(id)!.conn)
   }
 
+  // The slot first: if it refuses the write, the index must not claim what a
+  // rebuild after the next wake would not find.
   private save(conn: PartyDbConnection, subscriptions: Subscription[]): void {
-    this.index(conn, subscriptions)
     conn.saveSubscriptions(subscriptions)
+    this.index(conn, subscriptions)
   }
 
   private index(conn: PartyDbConnection, subscriptions: Subscription[]): void {

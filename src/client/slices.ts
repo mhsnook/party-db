@@ -106,8 +106,10 @@ export class ChannelSlices implements SliceApply {
       queueMicrotask(() => {
         if (this.entries.get(key) !== entry || entry.refs > 0) return
         this.entries.delete(key)
-        const seq = this.roomSeq()
-        if (entry.loaded && seq !== undefined) this.cursors.set(key, seq)
+        // a slice released before its reply keeps the cursor it was asking from:
+        // its rows from the earlier load are still in the collection
+        const seq = entry.loaded ? this.roomSeq() : entry.since
+        if (seq !== undefined) this.cursors.set(key, seq)
         for (const w of entry.waiters.splice(0)) w.resolve()
         this.send(this.unsubscribeFrame(target))
       })

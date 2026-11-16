@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { LoadSubsetOptions } from '@tanstack/db'
+import { createCollection, createLiveQueryCollection, eq, type LoadSubsetOptions } from '@tanstack/db'
+import { SyncClient } from '../src/client/sync-client.ts'
+import type { SequencedBatch } from '../src/protocol.ts'
 import { ChannelSlices, sliceTargets } from '../src/client/slices.ts'
 import type { UpFrame } from '../src/protocol.ts'
 
@@ -106,6 +108,20 @@ describe('ChannelSlices', () => {
     expect(frames).toEqual([{ subscribe: 'comments', slice: 'A' }])
   })
 
+  it('keeps the cursor of a slice released before its reply arrived', async () => {
+    const { s, frames, setSeq } = slices()
+    s.acquire(['A'])
+    s.applied({ channel: 'comments', seq: 3, ops: [], ready: true, slice: 'A' }, true)
+    setSeq(9)
+    s.release(['A'])
+    await flush()
+    s.acquire(['A']) // asks from 9
+    s.release(['A']) // and leaves before the reply
+    await flush()
+    s.acquire(['A'])
+    expect(frames.at(-1)).toEqual({ subscribe: 'comments', slice: 'A', since: 9 })
+  })
+
   it('forgets released cursors when the whole channel resets', async () => {
     const { s, frames, setSeq } = slices()
     s.acquire(['A'])
@@ -140,5 +156,35 @@ describe('ChannelSlices', () => {
     expect(s.accepts({ thread_id: 8 })).toBe(false)
     s.acquire([null])
     expect(s.accepts({ thread_id: 8 })).toBe(true)
+  })
+})
+
+// TanStack reloads every loaded subset after a truncate by unloading and loading
+// it again. `release` waits a microtask so that pair costs no frames; this pins
+// that TanStack's reload lands inside that microtask.
+describe('a whole-channel reset on a real sliced collection', () => {
+  it('sends no unsubscribe or subscribe for the slices it reloads', async () => {
+    const frames: UpFrame[] = []
+    let onBatch: (b: SequencedBatch) => void = () => {}
+    const client = new SyncClient({
+      subscribe: (l) => ((onBatch = l), () => {}),
+      send: async () => ({ accepted: [] }),
+      sendFrame: (f) => void frames.push(f),
+    })
+    const comments = createCollection<{ id: string; thread_id: string }>({
+      id: 'comments-reset',
+      getKey: (r) => r.id,
+      syncMode: 'on-demand',
+      sync: { sync: (params) => client.registerSliced('comments', params as never, { column: 'thread_id', rows: () => params.collection.entries() }) },
+    })
+    const threadA = createLiveQueryCollection((q) => q.from({ c: comments }).where(({ c }) => eq(c.thread_id, 'A')))
+    const loaded = threadA.preload()
+    onBatch({ channel: 'comments', seq: 1, ops: [{ type: 'insert', value: { id: 'a1', thread_id: 'A' } }], ready: true, reset: true, slice: 'A' })
+    await loaded
+    expect(frames).toEqual([{ subscribe: 'comments', slice: 'A' }])
+
+    onBatch({ channel: 'comments', seq: 2, ops: [], ready: true, reset: true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(frames).toEqual([{ subscribe: 'comments', slice: 'A' }])
   })
 })

@@ -47,6 +47,9 @@ export type CollectionAccess = {
   // collection-level form of `needsPriorRow`, so the boot check that demands
   // `readRows` and the per-op read cannot answer differently
   needsPrior: boolean
+  // a sliced collection's delete fans out by the stored row's slice, never the one
+  // the client sent (docs/architecture.md §18)
+  sliced: boolean
 }
 
 const every = (policy: AccessPolicy): Policies => ({ read: policy, insert: policy, update: policy, delete: policy })
@@ -76,7 +79,8 @@ export function accessOf(collection: PartyCollection<any>): CollectionAccess {
     key: collection.key,
     open: Object.values(policies).every((policy) => policy === 'public'),
     ownerRead: policies.read === 'owner',
-    needsPrior: policies.read === 'owner' || policies.update === 'owner' || policies.delete === 'owner',
+    needsPrior: policies.read === 'owner' || policies.update === 'owner' || policies.delete === 'owner' || collection.sliceBy !== undefined,
+    sliced: collection.sliceBy !== undefined,
   }
 }
 
@@ -273,10 +277,13 @@ function gateOp(access: CollectionAccess, channel: string, op: WriteEvent, viewe
 //   - to route: an 'owner' READ has to know who owned the row before the write, or
 //     the fan-out and the `_oplog` entry can only name the new owner.
 // The second reason applies to a trusted host write too, which is authorized
-// already but still has to reach the right sockets.
+// already but still has to reach the right sockets. So does a third:
+//   - to route a slice: a delete on a `sliceBy` collection reaches the watchers of
+//     the slice the STORED row is in. The client's copy of the row says nothing
+//     the database vouches for.
 export function needsPriorRow(access: CollectionAccess, op: WriteEvent): boolean {
   if (op.type === 'insert') return false
-  return access.policies[op.type] === 'owner' || access.ownerRead
+  return access.policies[op.type] === 'owner' || access.ownerRead || (op.type === 'delete' && access.sliced)
 }
 
 // The keys whose stored rows the write needs, grouped by channel and deduped.

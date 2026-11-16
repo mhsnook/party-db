@@ -71,6 +71,9 @@ export class SyncClient {
   // one of these is a fresh, EMPTY collection (TanStack GC dropped the rows), so
   // its register asks the server for a new snapshot — see `register`.
   private torndown = new Set<string>()
+  // re-registered channels still waiting for their snapshot. A request made while
+  // the socket is down goes nowhere, so each open asks again until it arrives.
+  private awaitingSnapshot = new Set<string>()
   // settlement (the per-channel high-water mark + waiters + timeout) lives in a
   // pure SeqTracker, so it's testable without a transport and the timeout has a home.
   private tracker: SeqTracker
@@ -88,6 +91,7 @@ export class SyncClient {
     this.settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
     this.unsubscribe = transport.subscribe((batch) => this.route(batch))
     this.offOpen = transport.onOpen?.(() => {
+      for (const channel of this.awaitingSnapshot) this.sendFrame({ subscribe: channel })
       for (const slices of this.slices.values()) slices.resubscribe()
     })
   }
@@ -119,6 +123,7 @@ export class SyncClient {
 
   private apply(sink: ChannelSink, batch: SequencedBatch) {
     const slices = this.slices.get(batch.channel)
+    if (batch.reset && batch.ready) this.awaitingSnapshot.delete(batch.channel)
     const receipt = applyBatch(sink, batch, slices)
     slices?.applied(batch, receipt)
     this.tracker.observe(batch.channel, batch.seq)
@@ -134,7 +139,10 @@ export class SyncClient {
     // batch and truncate-applies through the normal route, which is also what fires
     // `markReady` again. `route` buffered nothing for us in the meantime, so there
     // is nothing here that the snapshot would overwrite.
-    if (this.torndown.delete(channel)) this.sendFrame({ subscribe: channel })
+    if (this.torndown.delete(channel)) {
+      this.awaitingSnapshot.add(channel)
+      this.sendFrame({ subscribe: channel })
+    }
     for (const batch of this.pending.get(channel) ?? []) this.apply(sink, batch)
     this.pending.delete(channel)
     return () => {
@@ -142,6 +150,7 @@ export class SyncClient {
       // sink: it must not unregister the live one.
       if (this.sinks.get(channel) !== sink) return
       this.sinks.delete(channel)
+      this.awaitingSnapshot.delete(channel)
       this.torndown.add(channel)
     }
   }
@@ -212,6 +221,7 @@ export class SyncClient {
     this.sinks.clear()
     this.pending.clear()
     this.torndown.clear()
+    this.awaitingSnapshot.clear()
     this.transport.close?.()
     this.transport = undefined
   }
