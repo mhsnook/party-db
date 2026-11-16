@@ -25,9 +25,9 @@ import { MissedUpdateError, type PersistenceAdapter } from './persistence.ts'
 import { decodeRow } from './columns.ts'
 import {
   buildPlans,
-  emptySnapshot,
   oplogInsertStmt,
   readRowsStmts,
+  replayFilter,
   resolveStructured,
   sliceFilter,
   snapshotBatch,
@@ -173,13 +173,13 @@ export class D1Adapter implements PersistenceAdapter {
     ])
     const seq = Number((results[0].results[0] as { s: number }).s)
     return structured.map((plan) => {
-      if (!plan.snapshot) return emptySnapshot(plan, seq)
+      if (!plan.snapshot) return snapshotBatch(plan, seq)
       const rows = results[read.indexOf(plan) + 1].results.map((r) => decodeRow(r, plan.kinds))
-      return snapshotBatch(plan, seq, rows, plan.sliceBy === undefined ? undefined : slice)
+      return snapshotBatch(plan, seq, rows)
     })
   }
 
-  async replaySince(since: number): Promise<SequencedBatch[] | null> {
+  async replaySince(since: number, channel?: string): Promise<SequencedBatch[] | null> {
     // same two-query shape as the embedded adapter, over D1. min > 0 means we've
     // compacted everything below it; if the client's next-needed seq (since+1) has
     // been pruned, return null so the caller sends a fresh snapshot, not a gappy
@@ -187,9 +187,10 @@ export class D1Adapter implements PersistenceAdapter {
     const minRes = await this.d1.prepare(`SELECT MIN(seq) AS m FROM _oplog`).all<{ m: number | null }>()
     const min = Number(minRes.results[0]?.m ?? 0)
     if (min > 0 && since + 1 < min) return null
+    const only = replayFilter(this.plans, channel)
     const res = await this.d1
-      .prepare(`SELECT seq, channel, ops FROM _oplog WHERE seq > ? ORDER BY seq`)
-      .bind(since)
+      .prepare(`SELECT seq, channel, ops FROM _oplog WHERE seq > ?${only.sql} ORDER BY seq`)
+      .bind(since, ...only.binds)
       .all<{ seq: number; channel: string; ops: string }>()
     return res.results.map((r) => ({ channel: r.channel, seq: Number(r.seq), ops: JSON.parse(r.ops) }))
   }

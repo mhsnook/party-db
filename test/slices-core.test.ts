@@ -40,6 +40,7 @@ async function room(opts: { routed?: boolean; collections?: PartyCollection<any>
   const { engine, db } = memoryEngine()
   db.exec(`CREATE TABLE comments (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, body TEXT NOT NULL)`)
   db.exec(`CREATE TABLE drafts (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_id TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE reactions (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL)`)
   db.exec(`CREATE TABLE todos (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
   const cols = opts.collections ?? [comments, todos]
   const sockets: Socket[] = []
@@ -120,7 +121,7 @@ describe('a sliced collection loads by subscription', () => {
     s.frames.length = 0
     await r.frame(s, { subscribe: 'comments', slice: 'A', since: 1 })
     expect(s.frames).toEqual([
-      { channel: 'comments', seq: 3, ops: [{ type: 'insert', value: { id: 'c3', thread_id: 'A', body: 'c3' } }] },
+      { channel: 'comments', seq: 3, ops: [{ type: 'insert', value: { id: 'c3', thread_id: 'A', body: 'c3' } }], slice: 'A' },
       { channel: 'comments', seq: 3, ops: [], ready: true, slice: 'A' },
     ])
   })
@@ -260,5 +261,87 @@ describe('access policies still apply inside a slice', () => {
     await r.write(draft('d3', 'bob'))
     expect(idsIn(alice.frames, 'drafts')).toEqual(['d1'])
     expect(idsIn(bob.frames, 'drafts')).toEqual(['d2', 'd3'])
+  })
+})
+
+describe('the adapter reads only what a subscribe or a connect needs', () => {
+  it('replays one channel when asked, and every channel but the sliced ones when not', async () => {
+    const { engine, db } = memoryEngine()
+    db.exec(`CREATE TABLE comments (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, body TEXT NOT NULL)`)
+    db.exec(`CREATE TABLE todos (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+    const adapter = new SqliteAdapter(engine, [comments, todos])
+    await adapter.init()
+    await adapter.write(comment('c1', 'A'))
+    await adapter.write([{ channel: 'todos', ops: [{ type: 'insert', value: { id: 't1', text: 'x' } }] }])
+    expect((await adapter.replaySince(0, 'comments'))!.map((b) => b.channel)).toEqual(['comments'])
+    expect((await adapter.replaySince(0))!.map((b) => b.channel)).toEqual(['todos'])
+  })
+
+  it('refuses a sliceBy column that cannot hold an id', async () => {
+    const flagged = definePartyCollection({
+      name: 'comments',
+      key: 'id',
+      schema: z.object({ id: z.string(), thread_id: z.boolean(), body: z.string() }),
+      sliceBy: 'thread_id' as never,
+    })
+    await expect(room({ collections: [flagged] })).rejects.toThrow(/sliceBy "thread_id", which its schema types as boolean/)
+  })
+})
+
+describe('review fixes: routing keeps every slice a client still holds', () => {
+  it('keeps a slice subscribed after the same socket drops its whole-channel subscription', async () => {
+    const r = await room()
+    const s = await r.connect('s')
+    await r.frame(s, { subscribe: 'comments' })
+    await r.frame(s, { subscribe: 'comments', slice: 'A' })
+    await r.frame(s, { unsubscribe: 'comments' })
+    s.frames.length = 0
+    await r.write(comment('c1', 'A'))
+    expect(idsIn(s.frames)).toEqual(['c1'])
+  })
+
+  it('routes a delete by the stored row, not the slice the client sent', async () => {
+    const r = await room()
+    await r.write(comment('c1', 'A'))
+    const a = await r.connect('a')
+    const z = await r.connect('z')
+    await r.frame(a, { subscribe: 'comments', slice: 'A' })
+    await r.frame(z, { subscribe: 'comments', slice: 'Z' })
+    a.frames.length = z.frames.length = 0
+    const res = await r.post([{ channel: 'comments', ops: [{ type: 'delete', value: { id: 'c1', thread_id: 'Z', body: 'c1' } }] }])
+    expect(res.status).toBe(200)
+    expect(a.frames.flatMap((f) => f.ops)).toEqual([{ type: 'delete', value: { id: 'c1', thread_id: 'A', body: 'c1' } }])
+    expect(z.frames).toEqual([])
+  })
+
+  it('applies an unsubscribe after the subscribe the socket sent before it', async () => {
+    const r = await room()
+    const s = await r.connect('s')
+    await Promise.all([r.frame(s, { subscribe: 'comments', slice: 'A' }), r.frame(s, { unsubscribe: 'comments', slice: 'A' })])
+    expect(s.slot).toEqual([])
+    s.frames.length = 0
+    await r.write(comment('c1', 'A'))
+    expect(s.frames).toEqual([])
+  })
+
+  it('folds to whole channels when the slot would outgrow its budget', async () => {
+    const r = await room()
+    const s = await r.connect('s')
+    await r.frame(s, { subscribe: 'comments', slice: 'x'.repeat(10_000) })
+    expect(s.slot).toEqual([['comments', null]])
+  })
+
+  it('counts the slice cap per channel', async () => {
+    const reactions = definePartyCollection({
+      name: 'reactions',
+      key: 'id',
+      schema: z.object({ id: z.string(), thread_id: z.string() }),
+      sliceBy: 'thread_id',
+    })
+    const r = await room({ collections: [comments, reactions] })
+    const s = await r.connect('s')
+    for (let i = 0; i < 100; i++) await r.frame(s, { subscribe: 'comments', slice: `t${i}` })
+    await r.frame(s, { subscribe: 'reactions', slice: 'A' })
+    expect(s.slot!.filter(([channel]) => channel === 'reactions')).toEqual([['reactions', 'A']])
   })
 })

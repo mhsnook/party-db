@@ -780,9 +780,9 @@ The reply is ordinary batches ending in one marked `ready` and `slice`:
 - otherwise a snapshot read with `WHERE "<sliceBy>" = ?`, marked `reset`
 
 A `reset` that names a `slice` replaces only that slice's rows on the client. The
-client finds them through the collection's own `entries()`. The ready marker skips
-the read filter: it carries no rows, and an owner-only slice must not leave the
-client's load waiting forever.
+client finds them through the collection's own `entries()`. The read filter keeps a
+`ready` batch even when it filters out every row, as it keeps a `reset` one: an
+owner-only slice must not leave the client's load waiting forever.
 
 **The client owns each slice's cursor.** Each slice is refcounted across the
 queries that want it. When the last one lets go, the client unsubscribes and
@@ -817,14 +817,22 @@ The failure direction is chosen on purpose:
 
 - If a socket's slot is missing, because the app replaced `conn.state` wholesale,
   that socket gets every sliced channel whole.
-- Past `MAX_SUBSCRIPTIONS` slices of one channel, a socket's subscriptions fold
-  into one whole-channel subscription.
+- Past `MAX_SUBSCRIPTIONS` slices of one channel, a socket's subscriptions to that
+  channel fold into one whole-channel subscription.
+- If a socket's subscriptions would outgrow the slot's budget (long slice values,
+  many channels), every channel it watches folds to whole.
 
 In both cases the cost is bandwidth, never a missed row.
 
 A composed host (§15) that passes no `connections` still works. Sliced writes go out
 through its `broadcast`, to the whole audience, and the client drops what it didn't
 ask for.
+
+**A delete reaches the slice its stored row is in.** A delete's value is the row the
+client sent, which the database doesn't vouch for. On a sliced collection the core
+reads the stored row first, inside the write queue, the same read an `owner` policy
+uses (§17). The delete then fans out, and is replayed from the `_oplog`, by the
+slice the database actually held the row in.
 
 **The slice column never changes.** If a row could move from thread A to thread B,
 the sockets watching A would hold a copy that nothing removes. That is the

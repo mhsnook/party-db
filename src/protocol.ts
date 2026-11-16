@@ -100,12 +100,28 @@ export function isWritableOp(value: unknown): value is WriteEvent {
   return typeof row === 'object' && row !== null && !Array.isArray(row)
 }
 
-// A slice value: what a row's `sliceBy` column holds. Both sides compare slice
-// values as text (`sliceText`), so a SERIAL thread id 7 matches a "7" from a URL.
+// A string-or-number column's value as both sides compare it: text. A database's
+// own ids are as often integers as strings, so `user_id` 1 owns what the `sub`
+// claim "1" owns, and thread 7 is the slice a URL's "7" asks for. Anything that
+// cannot be an id is nobody, never the string "null" or "[object Object]".
+export function idOf(value: unknown): string | null {
+  if (typeof value === 'string') return value === '' ? null : value
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null
+  if (typeof value === 'bigint') return String(value)
+  return null
+}
+
+// A slice value: what a row's `sliceBy` column holds, compared through `idOf`.
 export type SliceValue = string | number
 
-export function sliceText(value: unknown): string {
-  return String(value)
+export function isSliceValue(value: unknown): value is SliceValue {
+  return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value))
+}
+
+// The key a subscription is held under: the whole channel, or one slice of it.
+// The prefix keeps a slice whose value is "*" apart from the whole channel.
+export function subscriptionKey(slice: SliceValue | null): string {
+  return slice === null ? '*' : `=${idOf(slice) ?? ''}`
 }
 
 // The frames a client sends UP the socket. A subscribe asks the room to start
@@ -131,8 +147,6 @@ export type UnsubscribeFrame = {
 }
 
 export type UpFrame = SubscribeFrame | UnsubscribeFrame
-
-const isSliceValue = (v: unknown): v is SliceValue => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v))
 
 // Same posture as `isSequencedBatch`: a host may share the socket, so prove the
 // frame is ours before acting on it.

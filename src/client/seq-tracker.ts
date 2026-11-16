@@ -32,6 +32,7 @@ type Waiter = {
 
 export class SeqTracker {
   private highest = new Map<string, Cursor>()
+  private room?: Cursor
   private waiters = new Set<Waiter>()
 
   constructor(private compare: CursorCompare = compareCursor) {}
@@ -41,11 +42,18 @@ export class SeqTracker {
     return this.highest.get(channel)
   }
 
+  // highest cursor observed on any channel. The room sends in seq order, so every
+  // row the client was subscribed to, up to this cursor, has arrived.
+  roomHigh(): Cursor | undefined {
+    return this.room
+  }
+
   // Record an applied cursor and resolve any waiters the mark now satisfies. Never
   // lowers the mark — an out-of-order straggler can't un-settle a later write.
   observe(channel: string, seq: Cursor): void {
     const prev = this.highest.get(channel)
     if (prev === undefined || this.compare(seq, prev) > 0) this.highest.set(channel, seq)
+    if (this.room === undefined || this.compare(seq, this.room) > 0) this.room = seq
     const mark = this.highest.get(channel) as Cursor
     for (const w of this.waiters) {
       if (w.channel === channel && this.compare(mark, w.seq) >= 0) this.settle(w)

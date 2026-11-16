@@ -2,10 +2,10 @@
 // collections, routes each incoming batch to its channel, and lets a writer
 // await a specific seq's arrival (the settlement signal).
 
-import type { LoadSubsetOptions } from '@tanstack/db'
+import type { SyncConfigRes } from '@tanstack/db'
 import { applyBatch, type ChannelSink, type SliceApply } from './apply.ts'
 import { ChannelSlices, sliceTargets } from './slices.ts'
-import { SeqTracker, compareCursor, type CursorCompare } from './seq-tracker.ts'
+import { SeqTracker, type CursorCompare } from './seq-tracker.ts'
 import { ClosedError, type AuthError } from './errors.ts'
 import { isSequencedBatch } from '../protocol.ts'
 import type { Cursor, SequencedBatch, UpFrame, WriteAck, WriteBatch } from '../protocol.ts'
@@ -62,19 +62,18 @@ const DEFAULT_SETTLE_TIMEOUT_MS = 30_000
 export class SyncClient {
   private sinks = new Map<string, ChannelSink>()
   // the `sliceBy` collections' subscriptions, by channel; set while registered.
-  private slices = new Map<string, { slices: ChannelSlices; apply: SliceApply }>()
+  private slices = new Map<string, ChannelSlices>()
   // every channel declared `sliceBy`, registered or not. A batch for one with no
   // subscription is unwanted, and must not wait in `pending` for a register.
   private slicedChannels = new Set<string>()
-  // the highest seq seen on any channel. The room sends in seq order, so every
-  // subscribed row up to it has arrived; a released slice remembers it.
-  private roomSeq?: Cursor
-  private compare: CursorCompare
   private pending = new Map<string, SequencedBatch[]>() // batches before register
   // channels that were registered and then torn down. A sink that comes back for
   // one of these is a fresh, EMPTY collection (TanStack GC dropped the rows), so
   // its register asks the server for a new snapshot — see `register`.
   private torndown = new Set<string>()
+  // re-registered channels still waiting for their snapshot. A request made while
+  // the socket is down goes nowhere, so each open asks again until it arrives.
+  private awaitingSnapshot = new Set<string>()
   // settlement (the per-channel high-water mark + waiters + timeout) lives in a
   // pure SeqTracker, so it's testable without a transport and the timeout has a home.
   private tracker: SeqTracker
@@ -88,12 +87,12 @@ export class SyncClient {
 
   constructor(transport: Transport, opts: SyncClientOptions = {}) {
     this.transport = transport
-    this.compare = opts.compareCursor ?? compareCursor
-    this.tracker = new SeqTracker(this.compare)
+    this.tracker = new SeqTracker(opts.compareCursor)
     this.settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
     this.unsubscribe = transport.subscribe((batch) => this.route(batch))
     this.offOpen = transport.onOpen?.(() => {
-      for (const { slices } of this.slices.values()) slices.resubscribe()
+      for (const channel of this.awaitingSnapshot) this.sendFrame({ subscribe: channel })
+      for (const slices of this.slices.values()) slices.resubscribe()
     })
   }
 
@@ -123,10 +122,10 @@ export class SyncClient {
   }
 
   private apply(sink: ChannelSink, batch: SequencedBatch) {
-    const sliced = this.slices.get(batch.channel)
-    const receipt = applyBatch(sink, batch, sliced?.apply)
-    if (this.roomSeq === undefined || this.compare(batch.seq, this.roomSeq) > 0) this.roomSeq = batch.seq
-    sliced?.slices.applied(batch, receipt)
+    const slices = this.slices.get(batch.channel)
+    if (batch.reset && batch.ready) this.awaitingSnapshot.delete(batch.channel)
+    const receipt = applyBatch(sink, batch, slices)
+    slices?.applied(batch, receipt)
     this.tracker.observe(batch.channel, batch.seq)
   }
 
@@ -140,7 +139,10 @@ export class SyncClient {
     // batch and truncate-applies through the normal route, which is also what fires
     // `markReady` again. `route` buffered nothing for us in the meantime, so there
     // is nothing here that the snapshot would overwrite.
-    if (this.torndown.delete(channel)) this.sendFrame({ subscribe: channel })
+    if (this.torndown.delete(channel)) {
+      this.awaitingSnapshot.add(channel)
+      this.sendFrame({ subscribe: channel })
+    }
     for (const batch of this.pending.get(channel) ?? []) this.apply(sink, batch)
     this.pending.delete(channel)
     return () => {
@@ -148,6 +150,7 @@ export class SyncClient {
       // sink: it must not unregister the live one.
       if (this.sinks.get(channel) !== sink) return
       this.sinks.delete(channel)
+      this.awaitingSnapshot.delete(channel)
       this.torndown.add(channel)
     }
   }
@@ -165,15 +168,14 @@ export class SyncClient {
     channel: string,
     sink: ChannelSink,
     opts: { column: string; rows: SliceApply['rows'] },
-  ): { cleanup: () => void; loadSubset: (options: LoadSubsetOptions) => true | Promise<void>; unloadSubset: (options: LoadSubsetOptions) => void } {
+  ): Required<Pick<SyncConfigRes, 'cleanup' | 'loadSubset' | 'unloadSubset'>> {
     if (!this.transport?.sendFrame) {
       throw new Error(`collection "${channel}" sets sliceBy, which needs a transport with sendFrame to subscribe to slices`)
     }
     this.slicedChannels.add(channel)
-    const slices = new ChannelSlices(channel, opts.column, (frame) => this.sendFrame(frame), () => this.roomSeq)
-    const entry = { slices, apply: { column: opts.column, rows: opts.rows, accepts: (row: Record<string, unknown>) => slices.accepts(row) } }
+    const slices = new ChannelSlices(channel, opts.column, opts.rows, (frame) => this.sendFrame(frame), () => this.tracker.roomHigh())
     this.sinks.set(channel, sink)
-    this.slices.set(channel, entry)
+    this.slices.set(channel, slices)
     sink.markReady()
     return {
       loadSubset: (options) => slices.acquire(sliceTargets(options.where, opts.column)),
@@ -214,11 +216,12 @@ export class SyncClient {
     this.offOpen?.()
     this.offOpen = undefined
     this.tracker.rejectAll(new ClosedError())
-    for (const { slices } of this.slices.values()) slices.dispose(new ClosedError())
+    for (const slices of this.slices.values()) slices.dispose(new ClosedError())
     this.slices.clear()
     this.sinks.clear()
     this.pending.clear()
     this.torndown.clear()
+    this.awaitingSnapshot.clear()
     this.transport.close?.()
     this.transport = undefined
   }

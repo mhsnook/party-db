@@ -9,7 +9,7 @@ async function tab(page: Page) {
   page.on('websocket', (ws) => ws.on('framereceived', (f) => void frames.push(String(f.payload))))
   await page.goto('/')
   await expect(page.getByText(/remaining/)).toBeVisible()
-  return { page, frames, commentFrames: () => frames.filter((f) => f.includes('"channel":"comments"')) }
+  return { page, commentFrames: () => frames.filter((f) => f.includes('"channel":"comments"')) }
 }
 
 async function addTodo(page: Page, text: string) {
