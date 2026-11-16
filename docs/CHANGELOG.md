@@ -1,5 +1,22 @@
 # Changes
 
+## Unreleased
+
+- **A slice subscribe with `since` reads less.** `PersistenceAdapter.replaySince` takes
+  an optional `channel`. With one, it reads only that channel's entries; with none, it
+  leaves out the `sliceBy` collections, the way `snapshot()` already did. A custom
+  adapter that ignores the argument still works, because the core filters anyway.
+- **`sliceBy` is checked like `ownerColumn` at startup.** A column the schema types as
+  anything but a string or a number, such as a date or an enum, is refused instead of
+  matching no rows.
+- **Adapters no longer mark a slice snapshot with `slice`;** the core does.
+
+Breaking:
+
+- **`sliceText` is removed.** Compare slice values with `idOf`, which `ownerColumn`
+  already uses: it maps a value that can't be an id (`null`, `''`) to `null` instead
+  of the string `"null"`. `subscriptionKey` and `isSliceValue` are exported alongside it.
+
 ## 2026-11-14 - v0.1.0
 
 A collection can now load by slice, `db` is typed by collection name, and party-db
