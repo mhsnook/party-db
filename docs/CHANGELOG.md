@@ -1,5 +1,28 @@
 # Changes
 
+## Unreleased - v0.2.0
+
+Access policies can name roles. A verb's policy can be a grant, met by the row's
+owner or by a signed-in user holding one of its roles.
+
+- **`AccessGrant` on `access`.** `{ owner: true, roles: ['editor'] }` means the row's
+  owner or an editor. Either field can stand alone, and a grant can stand for all four
+  verbs (`access: { roles: ['editor'] }`). Roles come from the `auth` hook's
+  `claims.roles`, and count only beside a `sub`. Boot refuses a grant with an unknown
+  key, so `{ role: 'editor' }` fails at startup instead of denying everyone.
+- **`PartyDbServer.reconnectUser(uid)`.** It closes that user's sockets with
+  `CLOSE_IDENTITY_CHANGED` (4001). The client redials without `?since` and loads a
+  fresh snapshot under its new identity. Call it when someone's roles change or they
+  are deactivated. It closes nothing in a room whose reads are all public, since those
+  sockets are never tagged.
+- **Composed hosts: `broadcast` can be handed `{ role }`.** `audienceTag` covers it, so a
+  host that looks sockets up by `audienceTag(audience)` needs no change. A collection
+  whose read grant names an owner and a role, or several roles, needs the core's
+  `connections` option, and `init` refuses to start without it.
+- **`Viewer` gains an optional `roles`.** `viewerOf(identity)` builds one from verified
+  claims, and `viewerTags` pins up to `MAX_ROLE_TAGS` (7) roles as tags. Your own
+  connection tags share partyserver's 9 with these.
+
 ## 2026-11-14 - v0.1.0
 
 A collection can now load by slice, `db` is typed by collection name, and party-db

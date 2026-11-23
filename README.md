@@ -403,7 +403,8 @@ user is deactivated, call `this.reconnectUser(uid)` from your `PartyDbServer`. I
 closes that user's sockets with `CLOSE_IDENTITY_CHANGED` (4001). The client redials
 without its `?since` cursor, so it loads a fresh snapshot under the new identity. A
 composed host does the same with
-`getConnections(audienceTag({ uid }))` and `conn.close(CLOSE_IDENTITY_CHANGED)`.
+`getConnections(audienceTag({ uid }))` and `conn.close(CLOSE_IDENTITY_CHANGED)`. In a room whose reads are all
+public, sockets are not tagged by user, and this closes nothing.
 
 Roles are pinned to the socket as partyserver tags. A socket holds 9 tags, so it pins
 at most 7 roles, and only the roles some collection names. A role grant is not

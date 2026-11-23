@@ -28,7 +28,8 @@ const reviews = definePartyCollection({
 })
 const drafts = definePartyCollection({ name: 'drafts', key: 'id', schema: draftSchema, access: { roles: ['editor'] } })
 const notes = definePartyCollection({ name: 'notes', key: 'id', schema: reviewSchema, ownerColumn: 'reviewed_by', access: { owner: true, roles: ['editor'] } })
-const collections: PartyCollection<any>[] = [reviews, drafts, notes]
+const memos = definePartyCollection({ name: 'memos', key: 'id', schema: draftSchema, access: { read: { roles: ['editor', 'admin'] } } })
+const collections: PartyCollection<any>[] = [reviews, drafts, notes, memos]
 
 const auth = (req: Request): WriteIdentity | null => {
   const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
@@ -43,6 +44,7 @@ async function room(opts: { connections?: boolean } = {}) {
   const { engine, db } = memoryEngine()
   db.exec(`CREATE TABLE reviews (id TEXT PRIMARY KEY, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`)
   db.exec(`CREATE TABLE drafts (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+  db.exec(`CREATE TABLE memos (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
   db.exec(`CREATE TABLE notes (id TEXT PRIMARY KEY, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`)
   const sockets: Socket[] = []
   const core = new PartyDbCore({
@@ -184,6 +186,13 @@ describe('role grants — the reads', () => {
     await post(op('notes', 'insert', { id: 'n1', text: 'mine' }), 'dana:editor')
     expect(live(dana.frames).filter((f) => f.channel === 'notes')).toHaveLength(1)
     expect(ids(live(dana.frames), 'notes')).toEqual(['insert:n1'])
+  })
+
+  it('sends a two-role read once to a socket holding both roles, and once to each single holder', async () => {
+    const { core, connect } = await room()
+    const [both, editor, admin, bob] = [await connect('erin:editor,admin'), await connect(CAROL), await connect('ada:admin'), await connect(BOB)]
+    await core.commit([{ channel: 'memos', ops: [{ type: 'insert', value: { id: 'm1', text: 'x' } }] }])
+    expect([both, editor, admin, bob].map((s) => live(s.frames).filter((f) => f.channel === 'memos').length)).toEqual([1, 1, 1, 0])
   })
 
   it('tells the owner a note is gone when an editor deletes it', async () => {
