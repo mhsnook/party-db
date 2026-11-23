@@ -516,7 +516,7 @@ story (`postgres-todo.md`), not something `commit` can close.
   `snapshot`, sent atomically through the write queue (§8, plan 004), filtered to
   what the socket's user may read (§17)
 - `broadcast(message, audience)` — the host's fan-out, handed the audience each
-  frame is for: `'all'`, `'authed'`, or `{ uid }` (§17)
+  frame is for: `'all'`, `'authed'`, `{ uid }`, or `{ role }` (§17)
 - `handleWrite(req)` — the POST path: size/shape caps, the `auth` → `anonRole`
   identity gate (§10a), classification of database rejections
 - `commit(batches, identity?)` — the write → seq → broadcast section (§14)
@@ -526,7 +526,8 @@ story (`postgres-todo.md`), not something `commit` can close.
 - `connections` + `disconnect(id)` — optional: hand the core your party-db
   connections (and pass those same objects to `connect` / `handleMessage`) and it
   routes each write on a `sliceBy` collection to that slice's watchers itself (§18);
-  without them, sliced writes go through `broadcast`
+  without them, sliced writes go through `broadcast`. A collection whose read grant
+  names an owner and a role, or several roles, requires them (§17)
 - `resolveViewer(req)` — who a connecting socket belongs to, for the access
   policies (§17); the host pins it to the socket and passes it back in
 
@@ -640,19 +641,24 @@ don't have — see [`unspecified.md`](./unspecified.md) → subscription/filteri
 ## 17. Access policies: four choke points, judged in JS
 
 A collection declares who may read, insert, update, and delete it — `access` and
-`ownerColumn`, with the shorthands of cookbook 5. party-db enforces that
-declaration itself, the same way on every adapter:
+`ownerColumn`, with the shorthands of cookbook 5. A verb's policy is one of the four
+strings or a grant, `{ owner?: true, roles?: string[] }`, met by the row's owner or
+by a viewer holding any of the roles. party-db enforces that declaration itself, the
+same way on every adapter:
 
-- **The uid** is the verified identity's `sub` claim, from the `auth` hook (§10a).
-  A write resolves it fresh. A socket resolves it once, at connect, from its
-  upgrade request, and `PartyDbServer` pins it to the socket as partyserver tags
-  (`party-db:uid:<uid>`, `party-db:authed`), which survive hibernation and index
-  `getConnections(tag)`. A room whose reads are all public never calls `auth` on
-  connect and tags nothing.
+- **The uid** is the verified identity's `sub` claim, from the `auth` hook (§10a),
+  and **the roles** are its `claims.roles`. Roles count only beside a uid.
+  A write resolves both fresh. A socket resolves them once, at connect, from its
+  upgrade request, and `PartyDbServer` pins them to the socket as partyserver tags
+  (`party-db:uid:<uid>`, `party-db:authed`, `party-db:role:<role>`), which survive
+  hibernation and index `getConnections(tag)`. A room whose reads are all public
+  never calls `auth` on connect and tags nothing.
 - **The write gate** runs before any transaction opens: each op's verb against its
-  policy — `'none'` is a 403, and `'authed'` or `'owner'` with no uid is a 401. An
-  `'owner'` insert stamps the owner column from the uid when it is absent and
-  refuses any other value (403); an update may not set it to someone else.
+  policy — `'none'` is a 403, and anything but `'public'` with no uid is a 401. A
+  grant the writer holds a role for passes. Otherwise a role-only grant is a 403,
+  and an `'owner'` policy or an owner grant is judged by the owner column: an
+  insert stamps it from the uid when it is absent and refuses any other value
+  (403); an update may not set it to someone else.
 - **The prior row** is read inside the write queue, through the adapter's
   `readRows`, for every update and delete on a collection with an `'owner'` rule.
   It does two jobs, and they do not select the same ops — see "A row that changes
@@ -664,7 +670,8 @@ declaration itself, the same way on every adapter:
 - **The fan-out** keeps §9's single serialization for a public collection: the host
   gets one `broadcast(message, 'all')`. An `'owner'` batch splits into one frame
   per owner, each sent as `broadcast(message, { uid })`; `'authed'` goes out once
-  as `broadcast(message, 'authed')`; `'none'` goes nowhere. Still synchronous,
+  as `broadcast(message, 'authed')`; a one-role grant goes out once as
+  `broadcast(message, { role })`; `'none'` goes nowhere. Still synchronous,
   still inside the serialized section.
 - **The write's answer** (`WriteAck`) lists only the batches the writer may read,
   so a client never waits on a seq that will not stream back to it (§7). A write
@@ -672,6 +679,38 @@ declaration itself, the same way on every adapter:
   row is committed, and the client's optimistic copy drops with nothing to replace
   it. That is correct and it is also invisible — a write-only collection
   (`read: 'none'`) looks to the UI like a write that vanished.
+
+### Roles, and a socket that matches two audiences
+
+A grant that names an owner and a role, or several roles, has no split into
+audiences that never overlap. An editor who owns a note is in both the owner's
+audience and the editor's. Two roles can be held by one user. Sending each audience
+its frame would send that socket the same op twice. So such a collection fans out
+per socket instead: the core runs `visibleTo` against each connection's pinned
+viewer and sends the result. A role holder gets the whole batch, an owner gets
+their own rows, and nobody gets an op twice. Frames that sockets share (the whole
+batch, or one owner's rows) are serialized once. This needs the host's
+`connections` (§15), and `init` refuses to start without them.
+
+An `'owner'` entry in a grant on update or delete is still checked against the
+stored row, not the payload, unless the writer holds one of the grant's roles. The
+prior row is read either way, because the fan-out of an owner read routes by it.
+
+A socket's identity is fixed when it connects. When a user's roles change, or they
+are deactivated, the host calls `PartyDbServer.reconnectUser(uid)`. That closes
+the uid's sockets with `CLOSE_IDENTITY_CHANGED` (4001), and the client redials
+without `?since`. A delta would never take back the rows the old identity could
+read, so the client loads a `reset` snapshot instead. A sliced collection
+re-subscribes with its own per-slice cursor, so it does not take back such rows
+yet.
+
+Tags have limits. partyserver gives a socket 9 tags of its own, and
+the authed and uid tags use two, so a socket pins at most 7 roles (`MAX_ROLE_TAGS`).
+`resolveViewer` keeps only the roles some collection names. A user with more than
+7 of those is sent less than they may read, with a warning, never more. A host that
+adds its own tags in `getConnectionTags` takes them from the same 9. Boot refuses a
+grant with an unknown key, so the misspelled `{ role: 'editor' }` cannot deny
+silently.
 
 ### A row that changes hands
 
@@ -743,8 +782,8 @@ is typed `UidColumn<T>`, which keeps the string and number columns. A room that
 declares policies but has no `auth` hook boots with a warning: every request is
 anonymous.
 
-It is roughshod RLS, not a security kernel. A socket keeps the uid it connected
-with until it reconnects. Owner by claims other than `sub` (`ownerColumns`),
+It is roughshod RLS, not a security kernel. A socket keeps the uid and roles it
+connected with until it reconnects. Owner by claims other than `sub` (`ownerColumns`),
 SQL-side read filtering, and expression read rules (cookbook 6) are not built.
 
 ## 18. A collection can load by slice: one immutable column, routed by an index

@@ -23,7 +23,7 @@
 // `Server` — holds a `PartyDbCore` itself and does the same wiring (§15).
 
 import { Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver'
-import type { SequencedBatch, WriteBatch } from '../protocol.ts'
+import { CLOSE_IDENTITY_CHANGED, type SequencedBatch, type WriteBatch } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
@@ -152,6 +152,15 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // controlled mode writes come over HTTP, not the (hibernating) socket.
   onRequest(req: Request): Promise<Response> {
     return this.core.handleWrite(req)
+  }
+
+  // Close every socket of `uid`, so each redials and is judged by the identity
+  // the `auth` hook resolves now. Call it when a user's roles change or they are
+  // deactivated: a socket's identity is fixed at connect. The client drops its
+  // cursor on this close (`CLOSE_IDENTITY_CHANGED`) and reloads a full snapshot,
+  // which also takes back rows the old identity could read.
+  reconnectUser(uid: string, reason = 'identity changed'): void {
+    for (const conn of this.getConnections(audienceTag({ uid }))) conn.close(CLOSE_IDENTITY_CHANGED, reason)
   }
 
   // The write → seq → broadcast section, for a row the server itself authors

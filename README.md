@@ -265,13 +265,15 @@ export class ArticleAgent extends AIChatAgent<Env> {
     return isPartyDbRequest(ctx.request) ? ['party-db'] : []
   }
 
-  // Using access policies with an 'owner' or 'authed' read? `broadcast` is handed
-  // the audience for each frame — 'all', 'authed', or { uid } — so send to
-  // `this.getConnections(audienceTag(audience))` for anything but 'all'. The core
+  // Using access policies with an 'owner', 'authed' or role read? `broadcast` is
+  // handed the audience for each frame — 'all', 'authed', { uid } or { role } — so
+  // send to `this.getConnections(audienceTag(audience))` for anything but 'all'. The core
   // also needs each socket's user: pin
   // `viewerTags(await this.db.resolveViewer(ctx.request))` in getConnectionTags and
   // pass `viewerFromTags(conn.tags)` to connect/handleMessage. PartyDbServer does
-  // exactly this.
+  // exactly this. A read grant that names an owner and a role, or several roles,
+  // also needs `connections` (below): one user can be in two of those audiences,
+  // so the core sends each socket its own frame.
 
   // Using `sliceBy`? This host works as written, but every client is sent every
   // slice. To route each write to that slice's watchers, wrap each party-db socket
@@ -346,7 +348,7 @@ Per collection, on `definePartyCollection`:
 | `key` | — | the primary key column |
 | `schema` | none | a Zod or StandardSchema; omitted, the room stores the collection as opaque blobs (embedded only) |
 | `ownerColumn` | none | the column that must equal the writer's uid for an `'owner'` policy; set alone, it makes the collection fully private |
-| `access` | `'public'` | who may read, insert, update and delete: one policy, or one per verb (`docs/architecture.md` §17) |
+| `access` | `'public'` | who may read, insert, update and delete: one policy or grant, or one per verb (`docs/architecture.md` §17 and [Roles](#roles)) |
 | `snapshot` | `true` | `false` sends a connecting client no rows for this collection; it tails from there, and reconnects still fill the gap |
 
 Per room, as class fields on your `PartyDbServer` subclass:
@@ -367,6 +369,45 @@ Per client, the third argument of `createPartyDb`:
 | --- | --- | --- |
 | `settleTimeoutMs` | `30_000` | a write whose seq has not streamed back by then rejects. `Infinity` waits forever |
 | `compareCursor` | numeric | how two cursors order, for an authority whose seq is not a number |
+
+## Roles
+
+A verb's policy can be a grant: `{ owner: true, roles: ['editor'] }` is met by the
+row's owner or by anyone holding the `editor` role. Either field can stand alone.
+The roles come from your `auth` hook's verified claims, as `claims.roles`, a list
+of strings. They count only beside a `sub`.
+
+```ts
+const reviews = definePartyCollection({
+  name: 'reviews',
+  key: 'id',
+  schema: reviewSchema,
+  ownerColumn: 'reviewed_by',
+  access: {
+    read: 'public',
+    insert: 'owner',
+    update: { owner: true, roles: ['editor'] },
+    delete: { owner: true, roles: ['editor'] },
+  },
+})
+
+// every verb, editors only
+const drafts = definePartyCollection({ name: 'drafts', key: 'id', schema: draftSchema, access: { roles: ['editor'] } })
+```
+
+An owner check is made against the stored row, never the payload, unless the
+writer holds one of the roles. A role holder may write a row for any owner.
+
+A socket's identity is fixed when it connects. When a user's roles change, or the
+user is deactivated, call `this.reconnectUser(uid)` from your `PartyDbServer`. It
+closes that user's sockets with `CLOSE_IDENTITY_CHANGED` (4001). The client redials
+without its `?since` cursor, so it loads a fresh snapshot under the new identity. A
+composed host does the same with
+`getConnections(audienceTag({ uid }))` and `conn.close(CLOSE_IDENTITY_CHANGED)`.
+
+Roles are pinned to the socket as partyserver tags. A socket holds 9 tags, so it pins
+at most 7 roles, and only the roles some collection names. A role grant is not
+`WriteIdentity.role`, which is the Postgres role a write runs as.
 
 ## onAuthError callback
 

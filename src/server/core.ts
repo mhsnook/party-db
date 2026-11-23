@@ -34,8 +34,9 @@ import {
   audiencesOf,
   checkAccess,
   gateWrite,
+  rolesNamed,
   storedKeysNeeded,
-  uidOf,
+  viewerOf,
   visibleTo,
   type Audience,
   type CollectionAccess,
@@ -67,7 +68,8 @@ export interface PartyDbCoreOptions {
   // fan one committed frame out to the sockets allowed to read it. `audience` is
   // `'all'` for a public collection (every party-db subscriber, the one-
   // serialization fast path), `'authed'` for every socket with a signed-in user,
-  // or `{ uid }` for that user's sockets. The host owns the sockets, so it decides
+  // `{ uid }` for that user's sockets, or `{ role }` for the sockets of every user
+  // holding that role. The host owns the sockets, so it decides
   // which connections those are: pin each socket's user at connect
   // (`resolveViewer` + `viewerTags`) and look them up by `audienceTag(audience)`,
   // as `PartyDbServer` does. The core calls this inline inside the serialized
@@ -96,6 +98,10 @@ export interface PartyDbCoreOptions {
   // close. Without it, sliced writes go out through `broadcast` to the whole
   // audience, which is correct but sends every client every slice
   // (docs/architecture.md §18).
+  //
+  // A collection whose read grant names an owner and a role, or several roles,
+  // needs it too: one user can match two of those audiences, so the core sends
+  // each socket its own frame instead, and `init` refuses to start without it.
   connections?: () => Iterable<PartyDbConnection>
 }
 
@@ -115,6 +121,8 @@ export class PartyDbCore {
   private access: Map<string, CollectionAccess>
   // fixed by the declarations: does a connecting socket need a resolved identity?
   private readsNeedIdentity: boolean
+  // the roles some rule names; a viewer's other roles are never pinned
+  private roles: Set<string>
   private auth?: () => AuthHook | undefined
   private anonRole?: string
   private maxWriteBytes: number
@@ -136,7 +144,8 @@ export class PartyDbCore {
     this.collections = opts.collections
     this.broadcast = opts.broadcast
     this.access = new Map(opts.collections.map((c) => [c.name, accessOf(c)]))
-    this.readsNeedIdentity = [...this.access.values()].some((a) => a.policies.read === 'owner' || a.policies.read === 'authed')
+    this.readsNeedIdentity = [...this.access.values()].some((a) => a.policies.read !== 'public' && a.policies.read !== 'none')
+    this.roles = rolesNamed(opts.collections)
     this.auth = opts.auth
     this.anonRole = opts.anonRole
     this.maxWriteBytes = opts.maxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES
@@ -202,15 +211,24 @@ export class PartyDbCore {
       const needsPrior = this.collections.filter((c) => this.access.get(c.name)!.needsPrior)
       if (needsPrior.length) {
         throw new Error(
-          `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy, ` +
+          `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy or grant, ` +
             'so the room needs an adapter with readRows, to read the row as it stood before the write',
+        )
+      }
+    }
+    if (!this.connections) {
+      const perSocket = this.collections.filter((c) => this.access.get(c.name)!.perSocket)
+      if (perSocket.length) {
+        throw new Error(
+          `collection(s) ${perSocket.map((c) => `"${c.name}"`).join(', ')} read by a grant that names an owner and a role, ` +
+            'or several roles, so the room needs the `connections` option to send each socket its own frame',
         )
       }
     }
     if ([...this.access.values()].some((a) => !a.open) && !this.auth?.()) {
       console.warn(
         'party-db: collections declare access policies, but the room has no `auth` hook, so every request is ' +
-          "anonymous: 'authed' and 'owner' verbs are refused, and their rows are never read.",
+          "anonymous: 'authed', 'owner' and role verbs are refused, and their rows are never read.",
       )
     }
   }
@@ -219,15 +237,18 @@ export class PartyDbCore {
   // same `auth` hook writes use. Pin the result to the socket (it survives
   // hibernation as a tag, see `viewerTags`) and pass it to `connect`,
   // `handleMessage`, and the audience lookup in `broadcast`. A hook that throws,
-  // or a room with no private reads, resolves anonymous.
+  // or a room with no private reads, resolves anonymous. The viewer keeps only
+  // the roles some collection's rule names, since those are all it can be judged by.
   async resolveViewer(req: Request): Promise<Viewer> {
     const auth = this.auth?.()
     if (!auth || !this.readsNeedIdentity) return ANONYMOUS
+    let viewer: Viewer
     try {
-      return { uid: uidOf(await auth(req)) }
+      viewer = viewerOf(await auth(req))
     } catch {
       return ANONYMOUS
     }
+    return { uid: viewer.uid, roles: viewer.roles?.filter((role) => this.roles.has(role)) ?? [] }
   }
 
   // `batch` as `viewer` may read it, or null for nothing to send. A channel the
@@ -437,7 +458,7 @@ export class PartyDbCore {
     // The access policies (cookbook 5): each op's verb against its collection's
     // policy, the owner column stamped or checked, before any transaction opens.
     // The stored-row half of an 'owner' update or delete runs inside the queue.
-    const viewer: Viewer = { uid: uidOf(identity) }
+    const viewer = viewerOf(identity)
 
     let sequenced: SequencedBatch[]
     try {
@@ -551,24 +572,34 @@ export class PartyDbCore {
     if (!access) return this.broadcast(JSON.stringify(batch), 'all')
     const column = this.sliceBy.get(batch.channel)
     const routes = column === undefined ? undefined : this.sliceRoutes()
-    if (routes) return this.fanOutSliced(batch, access, routes, column!)
+    if (routes) {
+      const slices = new Set(batch.ops.map((op) => sliceText(op.value[column!])))
+      return this.sendEach(routes.recipients(batch.channel, slices), batch, access, (conn) => routes.remove(conn.id))
+    }
+    if (access.perSocket) return this.sendEach(this.connections!(), batch, access)
     for (const { audience, batch: frame } of audiencesOf(access, batch)) this.broadcast(JSON.stringify(frame), audience)
   }
 
-  // Send one committed batch on a sliced channel to the sockets watching a slice it
-  // touches, each as its own user may read it. A public batch is serialized once.
-  private fanOutSliced(batch: SequencedBatch, access: CollectionAccess, routes: SliceRoutes, column: string): void {
-    const slices = new Set(batch.ops.map((op) => sliceText(op.value[column])))
-    const serialized = new Map<SequencedBatch, string>()
-    for (const conn of routes.recipients(batch.channel, slices)) {
+  // Send one committed batch to each of `conns` as its own user may read it, so no
+  // socket gets an op twice. A frame many sockets share — the whole batch, or one
+  // owner's rows — is serialized once.
+  private sendEach(
+    conns: Iterable<PartyDbConnection>,
+    batch: SequencedBatch,
+    access: CollectionAccess,
+    onFail?: (conn: PartyDbConnection) => void,
+  ): void {
+    const serialized = new Map<unknown, string>()
+    for (const conn of conns) {
       const frame = visibleTo(access, batch, conn.viewer)
       if (!frame) continue
-      let message = serialized.get(frame)
-      if (message === undefined) serialized.set(frame, (message = JSON.stringify(frame)))
+      const shared = frame === batch ? batch : conn.viewer.uid
+      let message = serialized.get(shared)
+      if (message === undefined) serialized.set(shared, (message = JSON.stringify(frame)))
       try {
         conn.send(message)
       } catch {
-        routes.remove(conn.id)
+        onFail?.(conn)
       }
     }
   }

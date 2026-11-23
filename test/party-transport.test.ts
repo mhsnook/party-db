@@ -99,6 +99,25 @@ describe('partyTransport reconnect query (?since tracking)', () => {
     expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7' })
   })
 
+  it('asks for a full snapshot after the room closes it for a changed identity, and keeps re-dialing', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    transport.subscribe(() => {})
+
+    lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
+    lastSocket().emit('close', closeEvent(4001, 'identity changed'))
+    expect(lastSocket().opts.shouldReconnectOnClose(closeEvent(4001))).toBe(true)
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db' })
+  })
+
+  it('keeps its cursor across an ordinary drop', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    transport.subscribe(() => {})
+
+    lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
+    lastSocket().emit('close', closeEvent(1006))
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7' })
+  })
+
   it('delivers the parsed batch to the subscriber', () => {
     const transport = partyTransport({ host: 'example.com', room: 'r1' })
     const seen: SequencedBatch[] = []

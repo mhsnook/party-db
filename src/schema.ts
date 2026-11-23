@@ -20,13 +20,21 @@ import type { StandardSchemaV1 } from '@standard-schema/spec'
 //   'none'   — no one through CRUD; managed out-of-band (admin tools, jobs, RPC)
 export type AccessPolicy = 'public' | 'authed' | 'owner' | 'none'
 
-// A single policy applies to all four verbs; the object form sets them per-verb,
-// and any verb you DON'T name is denied ('none') — deny by default. So a public,
-// append-only catalog is `{ read: 'public', insert: 'authed' }`: everyone reads,
-// members add, nobody edits or deletes through CRUD.
+// A grant: met by the row's owner (`owner: true`), or by a signed-in user holding
+// any of `roles`. The roles are the `auth` hook's `claims.roles`, an array of
+// strings. They are not `WriteIdentity.role`, which is the Postgres role a write
+// runs as. `{ owner: true, roles: ['editor'] }` means the owner or an editor.
+export type AccessGrant = { owner?: true; roles?: readonly string[] }
+
+export type VerbAccess = AccessPolicy | AccessGrant
+
+// A single policy or grant applies to all four verbs; the object form sets them
+// per-verb, and any verb you DON'T name is denied ('none') — deny by default. So a
+// public, append-only catalog is `{ read: 'public', insert: 'authed' }`: everyone
+// reads, members add, nobody edits or deletes through CRUD.
 export type Access =
-  | AccessPolicy
-  | { read?: AccessPolicy; insert?: AccessPolicy; update?: AccessPolicy; delete?: AccessPolicy }
+  | VerbAccess
+  | { read?: VerbAccess; insert?: VerbAccess; update?: VerbAccess; delete?: VerbAccess }
 
 // The columns of `T` that can hold a user id: a string or a number. `users.id` is
 // a SERIAL as often as it is a uuid, and we never ask you to change your tables,

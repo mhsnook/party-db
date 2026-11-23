@@ -32,7 +32,7 @@ const cards = definePartyCollection({ name: 'cards', key: 'id', schema, ownerCol
 const phrases = definePartyCollection({ name: 'phrases', key: 'id', schema, access: { read: 'public', insert: 'authed' } })
 const accessByChannel = new Map([cards, phrases].map((c) => [c.name, accessOf(c)]))
 
-const alice = { uid: 'alice' }
+const alice = { uid: 'alice', roles: [] }
 const batch = (channel: string, ops: SequencedBatch['ops'], extra: Partial<SequencedBatch> = {}): SequencedBatch => ({
   channel,
   seq: 7,
@@ -52,7 +52,8 @@ describe('policiesOf — the shorthands', () => {
   })
 
   it('reads a bare ownerColumn as owner on every verb', () => {
-    expect(policiesOf(cards)).toEqual({ read: 'owner', insert: 'owner', update: 'owner', delete: 'owner' })
+    const owner = { owner: true, roles: [] }
+    expect(policiesOf(cards)).toEqual({ read: owner, insert: owner, update: owner, delete: owner })
   })
 
   it('applies a single policy to every verb', () => {

@@ -294,6 +294,48 @@ export class Owned extends PartyDbServer {
   }
 }
 
+// Role grants at the wire: reviews anyone reads, which their author or an editor
+// edits; drafts only editors touch; notes their owner or an editor reads, which
+// fan out per socket. The token is `<uid>` or `<uid>:<role>,<role>`.
+const reviewSchema = z.object({ id: z.string(), reviewed_by: z.string().optional(), text: z.string() })
+
+export class Reviewed extends PartyDbServer {
+  collections: PartyCollection<any>[] = [
+    definePartyCollection({
+      name: 'reviews',
+      key: 'id',
+      schema: reviewSchema,
+      ownerColumn: 'reviewed_by',
+      access: { read: 'public', insert: 'owner', update: { owner: true, roles: ['editor'] }, delete: { owner: true, roles: ['editor'] } },
+    }),
+    definePartyCollection({ name: 'drafts', key: 'id', schema: z.object({ id: z.string(), text: z.string() }), access: { roles: ['editor'] } }),
+    definePartyCollection({ name: 'notes', key: 'id', schema: reviewSchema, ownerColumn: 'reviewed_by', access: { owner: true, roles: ['editor'] } }),
+  ]
+
+  auth = (req: Request): WriteIdentity | null => {
+    const token = bearer(req) ?? new URL(req.url).searchParams.get('token')
+    if (!token) return null
+    const [sub, roles] = token.split(':')
+    return { claims: { sub, roles: roles ? roles.split(',') : [] } }
+  }
+
+  onStart() {
+    for (const table of ['reviews', 'notes']) {
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`)
+    }
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+    return super.onStart()
+  }
+
+  // a test-only stand-in for the host code that changes a user's roles
+  async onRequest(req: Request): Promise<Response> {
+    const uid = new URL(req.url).searchParams.get('reconnect')
+    if (!uid) return super.onRequest(req)
+    this.reconnectUser(uid)
+    return new Response('closed')
+  }
+}
+
 // A room whose OWN host code writes rows — the case #41 opens: a job, an agent,
 // or anything running inside this Durable Object that is not a client POST.
 // `commit()` is the seam it goes through, so the rows get a seq, an `_oplog`
