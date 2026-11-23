@@ -16,9 +16,9 @@ import {
   parseFrame,
   PROTO_PARAM,
   PROTO_VALUE,
-  sliceText,
+  idOf,
+  subscriptionKey,
   type SequencedBatch,
-  type SliceValue,
   type SubscribeFrame,
   type WriteAck,
   type WriteBatch,
@@ -211,7 +211,7 @@ export class PartyDbCore {
       const needsPrior = this.collections.filter((c) => this.access.get(c.name)!.needsPrior)
       if (needsPrior.length) {
         throw new Error(
-          `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy or grant, ` +
+          `collection(s) ${needsPrior.map((c) => `"${c.name}"`).join(', ')} use an 'owner' policy or grant, or sliceBy, ` +
             'so the room needs an adapter with readRows, to read the row as it stood before the write',
         )
       }
@@ -320,8 +320,10 @@ export class PartyDbCore {
     if (!frame) return Promise.resolve()
     const { send, viewer: who, conn } = targetOf(target, viewer)
     if (!('subscribe' in frame)) {
-      if (conn && this.sliceBy.has(frame.unsubscribe)) this.sliceRoutes()?.unsubscribe(conn, frame.unsubscribe, frame.slice ?? null)
-      return Promise.resolve()
+      if (!conn || !this.sliceBy.has(frame.unsubscribe)) return Promise.resolve()
+      // queued behind any subscribe this socket sent first, which records its slice
+      // only when its section runs
+      return this.serialize(async () => this.sliceRoutes()?.unsubscribe(conn, frame.unsubscribe, frame.slice ?? null))
     }
     const channel = frame.subscribe
     if (!this.channels.has(channel)) return Promise.resolve()
@@ -344,19 +346,18 @@ export class PartyDbCore {
     const channel = frame.subscribe
     const slice = frame.slice
     const column = this.sliceBy.get(channel)!
-    const inSlice = (b: SequencedBatch): SequencedBatch =>
-      slice === undefined ? b : { ...b, ops: b.ops.filter((op) => sliceText(op.value[column]) === sliceText(slice)) }
+    const id = slice === undefined ? null : idOf(slice)
+    // The adapter may hand back more than it was asked for (persistence.ts), so
+    // every batch is narrowed to the channel and slice here, and marked with it.
+    const reply = (batches: SequencedBatch[]): SequencedBatch[] =>
+      batches
+        .filter((b) => b.channel === channel)
+        .map((b) => (slice === undefined ? b : { ...b, slice, ops: b.ops.filter((op) => id !== null && idOf(op.value[column]) === id) }))
     const cursor = frame.since === undefined ? null : cursorParam(String(frame.since))
-    const delta = cursor === null ? null : await this.adapter.replaySince(cursor)
-    if (delta === null) {
-      const snapshot = (await this.adapter.snapshot(channel, slice)).filter((b) => b.channel === channel).map(inSlice)
-      return this.sendVisible(send, snapshot.map((b) => withSlice(b, slice)), viewer)
-    }
-    const replay = delta.filter((b) => b.channel === channel).map(inSlice).filter((b) => b.ops.length)
-    this.sendVisible(send, replay, viewer)
-    // the marker carries no rows, so no read policy has anything to filter in it,
-    // and it must reach the client even when the policy filters every op above.
-    send(JSON.stringify(withSlice({ channel, seq: delta.at(-1)?.seq ?? cursor!, ops: [], ready: true }, slice)))
+    const delta = cursor === null ? null : await this.adapter.replaySince(cursor, channel)
+    if (delta === null) return this.sendVisible(send, reply(await this.adapter.snapshot(channel, slice)), viewer)
+    const marker: SequencedBatch = { channel, seq: delta.at(-1)?.seq ?? cursor!, ops: [], ready: true }
+    this.sendVisible(send, [...reply(delta).filter((b) => b.ops.length), ...reply([marker])], viewer)
   }
 
   // Serve one POST /write. The WHOLE body commits in one transaction, so a
@@ -571,10 +572,16 @@ export class PartyDbCore {
     const access = this.access.get(batch.channel)
     if (!access) return this.broadcast(JSON.stringify(batch), 'all')
     const column = this.sliceBy.get(batch.channel)
-    const routes = column === undefined ? undefined : this.sliceRoutes()
-    if (routes) {
-      const slices = new Set(batch.ops.map((op) => sliceText(op.value[column!])))
-      return this.sendEach(routes.recipients(batch.channel, slices), batch, access, (conn) => routes.remove(conn.id))
+    if (column !== undefined) {
+      const routes = this.sliceRoutes()
+      if (routes) {
+        const keys = new Set<string>()
+        for (const op of batch.ops) {
+          const id = idOf(op.value[column])
+          if (id !== null) keys.add(subscriptionKey(id))
+        }
+        return this.sendEach(routes.recipients(batch.channel, keys), batch, access, (conn) => routes.remove(conn.id))
+      }
     }
     if (access.perSocket) return this.sendEach(this.connections!(), batch, access)
     for (const { audience, batch: frame } of audiencesOf(access, batch)) this.broadcast(JSON.stringify(frame), audience)
@@ -609,10 +616,6 @@ export class PartyDbCore {
 function targetOf(target: Target, viewer: Viewer): { send: (message: string) => void; viewer: Viewer; conn?: PartyDbConnection } {
   if (typeof target === 'function') return { send: target, viewer }
   return { send: (message) => target.send(message), viewer: target.viewer, conn: target }
-}
-
-function withSlice(batch: SequencedBatch, slice: SliceValue | undefined): SequencedBatch {
-  return slice === undefined ? batch : { ...batch, slice }
 }
 
 // Parse the `?since` query param into a usable cursor. null → snapshot: missing,

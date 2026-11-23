@@ -86,17 +86,7 @@ function kindFromTag(tag: string | undefined): ColumnKind {
   return 'scalar'
 }
 
-// A row's owner value as the access rules compare it: text. The `sub` claim is
-// always a string (JWT spec) and a database's own user id is as often an integer,
-// so the two meet here rather than in the app's schema — `user_id` 1 owns what
-// `sub` "1" owns. Anything that cannot be an id is nobody, never the string
-// "null" or "[object Object]".
-export function idOf(value: unknown): string | null {
-  if (typeof value === 'string') return value === '' ? null : value
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null
-  if (typeof value === 'bigint') return String(value)
-  return null
-}
+export { idOf } from '../protocol.ts'
 
 // The base types `idOf` can turn into an id, so a boot check and the `UidColumn<T>`
 // type test the same set. An unintrospectable schema has no tag and cannot be

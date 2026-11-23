@@ -9,7 +9,7 @@
 // don't fit this per-batch shape. What's shared across targets is the WIRE TYPES
 // (protocol.ts) and the apply CONTRACT ("atomic, in order") — not this loop.
 
-import { sliceText, type SequencedBatch, type WriteEvent } from '../protocol.ts'
+import { idOf, type SequencedBatch, type WriteEvent } from '../protocol.ts'
 
 type Key = string | number
 
@@ -55,8 +55,8 @@ export function applyBatch(sink: ChannelSink, batch: SequencedBatch, slicing?: S
   if (batch.reset || ops.length) {
     sink.begin()
     if (batch.reset && slicing && batch.slice !== undefined) {
-      const text = sliceText(batch.slice)
-      const stale = [...slicing.rows()].filter(([, row]) => sliceText((row as Record<string, unknown>)[slicing.column]) === text).map(([key]) => key)
+      const id = idOf(batch.slice)
+      const stale = [...slicing.rows()].filter(([, row]) => id !== null && idOf((row as Record<string, unknown>)[slicing.column]) === id).map(([key]) => key)
       for (const key of stale) sink.write({ type: 'delete', key })
     } else if (batch.reset) {
       sink.truncate()

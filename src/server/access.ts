@@ -61,6 +61,9 @@ export type CollectionAccess = {
   // who also holds a role, or one user holding two of the roles, would be sent
   // the same op twice. The fan-out filters per socket instead (`audiencesOf`).
   perSocket: boolean
+  // a sliced collection's delete fans out by the stored row's slice, never the one
+  // the client sent (docs/architecture.md §18)
+  sliced: boolean
 }
 
 const every = (rule: Rule): Policies => ({ read: rule, insert: rule, update: rule, delete: rule })
@@ -112,8 +115,9 @@ export function accessOf(collection: PartyCollection<any>): CollectionAccess {
     key: collection.key,
     open: Object.values(policies).every((rule) => rule === 'public'),
     ownerRead,
-    needsPrior: ownerRead || ownedBy(policies.update) || ownedBy(policies.delete),
+    needsPrior: ownerRead || ownedBy(policies.update) || ownedBy(policies.delete) || collection.sliceBy !== undefined,
     perSocket: typeof read === 'object' && read.roles.length > 0 && (read.owner || read.roles.length > 1),
+    sliced: collection.sliceBy !== undefined,
   }
 }
 
@@ -248,9 +252,10 @@ export function opFor(access: CollectionAccess, op: WriteEvent, viewer: Viewer):
   return op
 }
 
-// `batch` as `viewer` may see it. A snapshot (`reset`) is always returned, empty
-// if need be, so the client's collection still truncates and turns ready. A delta
-// or fan-out batch with nothing visible returns null — the caller sends nothing.
+// `batch` as `viewer` may see it. A snapshot (`reset`) or a `ready` marker is always
+// returned, empty if need be: the client still has to truncate, or settle the load
+// it is waiting on. A delta or fan-out batch with nothing visible returns null —
+// the caller sends nothing.
 export function visibleTo(access: CollectionAccess, batch: SequencedBatch, viewer: Viewer): SequencedBatch | null {
   const read = access.policies.read
   // 'public', 'authed' and a held role answer for the whole batch without looking
@@ -258,7 +263,7 @@ export function visibleTo(access: CollectionAccess, batch: SequencedBatch, viewe
   if (read === 'public') return batch
   if (read === 'authed' && viewer.uid !== null) return batch
   if (typeof read === 'object' && holdsAny(viewer, read.roles)) return batch
-  if (!ownedBy(read)) return batch.reset ? { ...batch, ops: [] } : null
+  if (!ownedBy(read)) return batch.reset || batch.ready ? { ...batch, ops: [] } : null
   const ops: WriteEvent[] = []
   let changed = false
   for (const op of batch.ops) {
@@ -266,7 +271,7 @@ export function visibleTo(access: CollectionAccess, batch: SequencedBatch, viewe
     if (seen) ops.push(seen)
     if (seen !== op) changed = true
   }
-  if (!ops.length && !batch.reset) return null
+  if (!ops.length && !batch.reset && !batch.ready) return null
   return changed ? { ...batch, ops } : batch
 }
 
@@ -373,10 +378,13 @@ function gateOp(access: CollectionAccess, channel: string, op: WriteEvent, viewe
 //   - to route: an 'owner' READ has to know who owned the row before the write, or
 //     the fan-out and the `_oplog` entry can only name the new owner.
 // The second reason applies to a trusted host write too, which is authorized
-// already but still has to reach the right sockets.
+// already but still has to reach the right sockets. So does a third:
+//   - to route a slice: a delete on a `sliceBy` collection reaches the watchers of
+//     the slice the STORED row is in. The client's copy of the row says nothing
+//     the database vouches for.
 export function needsPriorRow(access: CollectionAccess, op: WriteEvent): boolean {
   if (op.type === 'insert') return false
-  return ownedBy(access.policies[op.type]) || access.ownerRead
+  return ownedBy(access.policies[op.type]) || access.ownerRead || (op.type === 'delete' && access.sliced)
 }
 
 // The keys whose stored rows the write needs, grouped by channel and deduped.

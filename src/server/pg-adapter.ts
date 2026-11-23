@@ -26,8 +26,8 @@ import type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persis
 import { pgDecodeRow, pgEncode } from './columns.ts'
 import {
   buildPlans,
-  emptySnapshot,
   readRowsStmts,
+  replayFilter,
   resolveStructured,
   sliceFilter,
   snapshotBatch,
@@ -274,12 +274,12 @@ export class PgAdapter implements PersistenceAdapter {
       const out: SequencedBatch[] = []
       for (const plan of structured) {
         if (!plan.snapshot) {
-          out.push(emptySnapshot(plan, seq))
+          out.push(snapshotBatch(plan, seq))
           continue
         }
         const where = sliceFilter(plan, slice)
         const { rows } = await c.query(toPg(`SELECT * FROM "${plan.name}"${where.sql}`), where.binds.map(pgEncode))
-        out.push(snapshotBatch(plan, seq, rows.map((r) => pgDecodeRow(r, plan.kinds)), plan.sliceBy === undefined ? undefined : slice))
+        out.push(snapshotBatch(plan, seq, rows.map((r) => pgDecodeRow(r, plan.kinds))))
       }
       await c.query('COMMIT')
       return out
@@ -298,16 +298,17 @@ export class PgAdapter implements PersistenceAdapter {
   // so the caller sends a fresh snapshot instead of a gappy delta. An empty array is
   // a complete delta. Same two-query shape as the other adapters; `ops` comes back
   // already parsed (JSONB), so unlike the SQLite/D1 paths there is no JSON.parse.
-  async replaySince(since: number): Promise<SequencedBatch[] | null> {
+  async replaySince(since: number, channel?: string): Promise<SequencedBatch[] | null> {
     const c = await this.conn()
     const minRes = await c.query<{ m: unknown }>(`SELECT MIN(seq) AS m FROM _oplog`)
     const min = Number(minRes.rows[0]?.m ?? 0)
     // min > 0 means everything below it was compacted; if the client's next-needed
     // seq (since+1) is already gone, heal with a snapshot rather than drop rows.
     if (min > 0 && since + 1 < min) return null
+    const only = replayFilter(this.plans, channel)
     const res = await c.query<{ seq: unknown; channel: string; ops: WriteEvent[] }>(
-      toPg(`SELECT seq, channel, ops FROM _oplog WHERE seq > ? ORDER BY seq`),
-      [since],
+      toPg(`SELECT seq, channel, ops FROM _oplog WHERE seq > ?${only.sql} ORDER BY seq`),
+      [since, ...only.binds],
     )
     return res.rows.map((r) => ({ channel: r.channel, seq: Number(r.seq), ops: r.ops }))
   }

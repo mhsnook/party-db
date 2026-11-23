@@ -2,6 +2,8 @@
   // the room DO serves both the WebSocket and POST /write, on :8787
   "name": "party-db-example-react",
   "main": "src/server.ts",
+  // the address the Vite proxy (vite.config.ts) forwards /parties to
+  "dev": { "ip": "127.0.0.1" },
   "compatibility_date": "2026-01-01",
   "durable_objects": {
     "bindings": [{ "name": "Main", "class_name": "Main" }]
