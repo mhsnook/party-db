@@ -1,5 +1,36 @@
 # Changes
 
+## Unreleased
+
+- **A slice subscribe with `since` reads less.** `PersistenceAdapter.replaySince` takes
+  an optional `channel`. With one, it reads only that channel's entries; with none, it
+  leaves out the `sliceBy` collections, the way `snapshot()` already did. A custom
+  adapter that ignores the argument still works, because the core filters anyway.
+- **`sliceBy` is checked like `ownerColumn` at startup.** A column the schema types as
+  anything but a string or a number, such as a date or an enum, is refused instead of
+  matching no rows.
+- **Adapters no longer mark a slice snapshot with `slice`;** the core does.
+- **Fixed: a slice could stop receiving writes.** If a socket held a whole-channel
+  subscription and a slice of the same channel, the server recorded only the whole
+  channel. Dropping the whole-channel subscription then dropped the slice too.
+- **Fixed: a delete is routed by the stored row.** On a sliced collection, a delete
+  carrying the wrong slice value deleted the row but never reached that slice's
+  watchers. A sliced collection now needs an adapter with `readRows`, as an `owner`
+  policy does; all three built-in adapters have it.
+- **Fixed: a re-registered collection could hang in `loading`.** If it re-registered
+  while the socket was reconnecting, its snapshot request was dropped. It is now
+  sent again each time the socket opens, until the snapshot arrives.
+- **Fixed: a quick subscribe then unsubscribe** could leave the socket subscribed.
+- **A socket's subscriptions stay within its hibernation slot.** The slice cap now
+  counts per channel, and a socket whose subscriptions would outgrow the slot folds
+  to whole channels.
+
+Breaking:
+
+- **`sliceText` is removed.** Compare slice values with `idOf`, which `ownerColumn`
+  already uses: it maps a value that can't be an id (`null`, `''`) to `null` instead
+  of the string `"null"`. `subscriptionKey` and `isSliceValue` are exported alongside it.
+
 ## 2026-11-14 - v0.1.0
 
 A collection can now load by slice, `db` is typed by collection name, and party-db

@@ -49,7 +49,7 @@ describe.skipIf(!PG_URL)('PgAdapter slice snapshots (real Postgres)', () => {
   it('reads one slice, whether its value arrives as a number or as text', async () => {
     for (const slice of [7, '7']) {
       const [batch] = await adapter.snapshot('comments', slice)
-      expect(batch).toMatchObject({ channel: 'comments', reset: true, ready: true, slice })
+      expect(batch).toMatchObject({ channel: 'comments', reset: true, ready: true })
       expect(batch!.ops.map((op) => op.value.id)).toEqual(['a'])
     }
   })
@@ -62,5 +62,11 @@ describe.skipIf(!PG_URL)('PgAdapter slice snapshots (real Postgres)', () => {
 
   it('leaves the sliced table out of the connect-time snapshot', async () => {
     expect((await adapter.snapshot()).map((b) => b.channel)).toEqual(['todos'])
+  })
+
+  it('replays one channel when asked, and every channel but the sliced ones when not', async () => {
+    await adapter.write([{ channel: 'todos', ops: [{ type: 'insert', value: { id: 't1', text: 'x' } }] }])
+    expect((await adapter.replaySince(0, 'comments'))!.map((b) => b.channel)).toEqual(['comments'])
+    expect((await adapter.replaySince(0))!.map((b) => b.channel)).toEqual(['todos'])
   })
 })

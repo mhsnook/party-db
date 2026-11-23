@@ -3,65 +3,35 @@
 // whose `where` is the subscription.
 
 import { describe, it, expect, vi } from 'vitest'
-import { SELF } from 'cloudflare:test'
 import { createLiveQueryCollection, eq, type Collection } from '@tanstack/db'
 import { createPartyDb } from '../../src/client/party-db.ts'
-import type { Transport } from '../../src/client/sync-client.ts'
-import type { SequencedBatch, UpFrame, WriteAck, WriteBatch } from '../../src/protocol.ts'
+import type { SequencedBatch, UpFrame, WriteBatch } from '../../src/protocol.ts'
 import { comments } from './worker.ts'
-import { partyUrl, roomHeader } from './helpers.ts'
+import { connect, ids, post as postTo, workerTransport } from './helpers.ts'
 
-const post = (room: string, body: WriteBatch[]) =>
-  SELF.fetch(partyUrl('threads', room), { method: 'POST', headers: { 'content-type': 'application/json', ...roomHeader(room) }, body: JSON.stringify(body) })
+const post = (room: string, body: WriteBatch[]) => postTo(room, body, 'threads')
 
 const comment = (id: string, thread_id: string, body = id): WriteBatch[] => [
   { channel: 'comments', ops: [{ type: 'insert', value: { id, thread_id, body } }] },
 ]
 
+const commentIds = (batches: SequencedBatch[]) => batches.filter((b) => b.channel === 'comments').flatMap((b) => b.ops.map((op) => op.value.id))
+
 async function socket(room: string) {
-  const res = await SELF.fetch(partyUrl('threads', room), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
-  expect(res.status).toBe(101)
-  const ws = res.webSocket!
-  ws.accept()
-  const batches: SequencedBatch[] = []
-  ws.addEventListener('message', (e) => batches.push(JSON.parse(e.data as string)))
-  const send = (frame: UpFrame) => ws.send(JSON.stringify(frame))
-  const comments = () => batches.filter((b) => b.channel === 'comments').flatMap((b) => b.ops.map((op) => op.value.id))
-  return { ws, batches, send, comments }
+  const s = await connect(room, undefined, 'threads')
+  return { ...s, send: (frame: UpFrame) => s.ws.send(JSON.stringify(frame)), comments: () => commentIds(s.batches) }
 }
 
-// The real client over a raw test socket: partysocket can't dial `SELF`.
+// The real client over a raw test socket.
 async function client(room: string) {
-  const s = await socket(room)
-  const sent: UpFrame[] = []
-  const listeners = new Set<(batch: SequencedBatch) => void>()
-  s.ws.addEventListener('message', (e) => {
-    for (const listener of listeners) listener(JSON.parse(e.data as string))
-  })
-  const transport: Transport = {
-    subscribe(onBatch) {
-      listeners.add(onBatch)
-      return () => listeners.delete(onBatch)
-    },
-    async send(batches) {
-      const res = await post(room, batches)
-      if (!res.ok) throw new Error(`write rejected: ${res.status}`)
-      return (await res.json()) as WriteAck
-    },
-    sendFrame: (frame) => {
-      sent.push(frame)
-      s.ws.send(JSON.stringify(frame))
-    },
-  }
-  return { ...s, sent, ...createPartyDb(transport, [comments]) }
+  const s = await workerTransport(room, 'threads')
+  return { ...s, comments: () => commentIds(s.batches), ...createPartyDb(s.transport, [comments]) }
 }
 
 type Comment = { id: string; thread_id: string; body: string }
 
 const thread = (collection: Collection<Comment, string>, id: string) =>
   createLiveQueryCollection((q) => q.from({ c: collection }).where(({ c }) => eq(c.thread_id, id)))
-
-const ids = (collection: { toArray: ReadonlyArray<{ id: string }> }) => collection.toArray.map((row) => row.id).sort()
 
 describe('a sliced collection over a real room', () => {
   it('sends a write only to the sockets watching its thread', async () => {
