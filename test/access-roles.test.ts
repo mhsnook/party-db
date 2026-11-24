@@ -260,6 +260,14 @@ describe('identity — roles from claims, and role tags', () => {
     expect(() => assertConnectionId(audienceTag({ role: 'editor' }))).toThrow(/cannot start with/)
     expect(() => assertConnectionId(audienceTag({ uid: 'alice' }))).toThrow(/cannot start with/)
     expect(() => assertConnectionId('V1StGXR8_Z5jdHi6B-myT')).not.toThrow()
+    const stackOf = (fn: () => void) => {
+      try {
+        fn()
+      } catch (e) {
+        return (e as Error).stack
+      }
+    }
+    expect(stackOf(() => assertConnectionId('party-db:authed'))).toBe('a connection id cannot start with "party-db:"')
   })
 
   it('names the audiences that can read a per-socket batch: each role, and each owner before and after', () => {

@@ -692,8 +692,8 @@ it, not every socket in the room.
 
 A socket's tags are the only record of who it is, and a client picks its own
 connection id, which partyserver stores as a tag. So a connect whose id starts with
-`party-db:` is refused before the socket is accepted (`assertConnectionId`). A room
-names at most 7 roles, the number a socket can pin: the write's answer is judged by
+`party-db:` is refused before the socket is accepted (`assertConnectionId`). A room's
+read rules name at most 7 roles, the number a socket can pin: the write's answer is judged by
 the POST's roles, and a role the socket could not pin would acknowledge a seq that
 never streams back.
 

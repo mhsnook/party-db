@@ -26,7 +26,8 @@ owner or by a signed-in user holding one of its roles.
   `party-db:uid:<uid>` read as that user. `PartyDbServer` now refuses such a connect.
   A composed host that pins `viewerTags` must call `assertConnectionId(conn.id)` first
   in `getConnectionTags`.
-- **A room names at most `MAX_ROLE_TAGS` (7) roles.** `init` refuses more.
+- **A room's read rules name at most `MAX_ROLE_TAGS` (7) roles.** `init` refuses more.
+  Roles that only gate writes are not pinned and do not count.
 - **`Viewer` gains an optional `roles`.** `viewerOf(identity)` builds one from verified
   claims, and `viewerTags` pins up to `MAX_ROLE_TAGS` (7) roles as tags. Your own
   connection tags share partyserver's 9 with these.

@@ -121,14 +121,14 @@ export function accessOf(collection: PartyCollection<any>): CollectionAccess {
   }
 }
 
-// Every role any rule of `collections` names: the only roles worth pinning to a
-// socket, since a role no rule names can never change what the socket is sent.
+// Every role a READ rule of `collections` names: the only roles worth pinning to a
+// socket. A write is judged by the roles its own POST resolves, so a role only
+// write rules name never changes what a socket is sent.
 export function rolesNamed(collections: PartyCollection<any>[]): Set<string> {
   const roles = new Set<string>()
   for (const collection of collections) {
-    for (const rule of Object.values(policiesOf(collection))) {
-      if (typeof rule === 'object') rule.roles.forEach((role) => roles.add(role))
-    }
+    const read = policiesOf(collection).read
+    if (typeof read === 'object') read.roles.forEach((role) => roles.add(role))
   }
   return roles
 }
@@ -512,7 +512,11 @@ export const MAX_ROLE_TAGS = 7
 // or a role the `auth` hook never gave, so refuse it BEFORE the socket is
 // accepted: call this first in `getConnectionTags`.
 export function assertConnectionId(id: string): void {
-  if (id.startsWith(TAG_PREFIX)) throw new Error(`a connection id cannot start with "${TAG_PREFIX}"`)
+  if (!id.startsWith(TAG_PREFIX)) return
+  const error = new Error(`a connection id cannot start with "${TAG_PREFIX}"`)
+  // partyserver sends a failed connect `err.stack` before it closes the socket
+  error.stack = error.message
+  throw error
 }
 
 // The tags that pin `viewer` to its socket. A uid too long to fit in a tag is not

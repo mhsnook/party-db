@@ -413,8 +413,9 @@ Until a socket reconnects, a write its user makes under a new role commits, but 
 row does not stream back to that socket, so the client's write times out.
 
 Roles are pinned to the socket as partyserver tags. A socket holds 9 tags, so it pins
-at most 7 roles, and only the roles some collection names. A room whose collections
-name more than 7 roles refuses to start. A role grant is not
+at most 7 roles, and only the roles some collection's read names. A room whose read
+rules name more than 7 roles refuses to start. Roles that only gate writes are not
+pinned and do not count. A role grant is not
 `WriteIdentity.role`, which is the Postgres role a write runs as.
 
 ## onAuthError callback

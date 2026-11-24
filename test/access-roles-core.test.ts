@@ -210,6 +210,15 @@ describe('role grants — the reads', () => {
     await expect(core.init()).rejects.toThrow(/name 8 roles/)
   })
 
+  it('starts a room whose extra roles only gate writes, since no socket pins them', async () => {
+    const { engine, db } = memoryEngine()
+    db.exec(`CREATE TABLE drafts (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+    const writers = Array.from({ length: 8 }, (_, i) => `w${i}`)
+    const many = definePartyCollection({ name: 'drafts', key: 'id', schema: draftSchema, access: { read: { roles: ['editor'] }, update: { roles: writers } } })
+    const core = new PartyDbCore({ collections: [many], adapter: new SqliteAdapter(engine, [many]), broadcast: () => {}, auth: () => auth })
+    await expect(core.init()).resolves.toBeUndefined()
+  })
+
   it('sends a two-role read once to a socket holding both roles, and once to each single holder', async () => {
     const { core, connect } = await room()
     const [both, editor, admin, bob] = [await connect('erin:editor,admin'), await connect(CAROL), await connect('ada:admin'), await connect(BOB)]

@@ -126,7 +126,7 @@ export class PartyDbCore {
   private access: Map<string, CollectionAccess>
   // fixed by the declarations: does a connecting socket need a resolved identity?
   private readsNeedIdentity: boolean
-  // the roles some rule names; a viewer's other roles are never pinned
+  // the roles some read rule names; a viewer's other roles are never pinned
   private roles: Set<string>
   private auth?: () => AuthHook | undefined
   private anonRole?: string
@@ -223,7 +223,7 @@ export class PartyDbCore {
     }
     if (this.roles.size > MAX_ROLE_TAGS) {
       throw new Error(
-        `the collections name ${this.roles.size} roles, and a socket can pin ${MAX_ROLE_TAGS}: a user holding more ` +
+        `the collections' read rules name ${this.roles.size} roles, and a socket can pin ${MAX_ROLE_TAGS}: a user holding more ` +
           'would be acknowledged writes that never reach their socket',
       )
     }
