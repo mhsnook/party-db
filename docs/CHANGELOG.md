@@ -14,9 +14,10 @@ owner or by a signed-in user holding one of its roles.
   `CLOSE_IDENTITY_CHANGED` (4001), and the client resets (below). Call it when
   someone's roles change or they are deactivated. It closes nothing in a room whose
   reads are all public, since those sockets are never tagged.
-- **`reset()` and `onReset` on `createPartyDb`.** A reset replaces every collection in
-  `db` with a fresh one, which is `loading` until it fills from a snapshot under the
-  new identity. Sliced collections included (#68). The client resets on a 4001 by
+- **`reset()` and `onReset` on `createPartyDb`.** A reset replaces each collection in
+  `db` whose reads depend on the user with a fresh one, which is `loading` until it
+  fills from a snapshot under the new identity. Sliced collections included (#68). A
+  collection with a `'public'` read is kept, and refills in place. The client resets on a 4001 by
   itself; call `reset()` after the app signs in someone else. `onReset(reason)`
   says when to rebuild queries, with `'identity-changed'` or `'requested'`. The old
   collections are emptied, so a query nobody rebuilt shows nothing stale. Read

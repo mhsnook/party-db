@@ -14,7 +14,7 @@ import { createCollection, type Collection } from '@tanstack/db'
 import type { SyncClient } from './sync-client.ts'
 import { DroppedError } from './errors.ts'
 import type { WriteBatch, WriteEvent } from '../protocol.ts'
-import { definePartyCollection, type PartyCollection } from '../schema.ts'
+import { definePartyCollection, readsPublic, type PartyCollection } from '../schema.ts'
 
 // The collection interface is shared with the server — one `{ name, key, schema }`
 // defined in ../schema.ts, imported on both sides. Re-exported here (plus the
@@ -110,12 +110,15 @@ export function wireCollections(client: SyncClient, configs: readonly PartyColle
   }
   for (const cfg of configs) {
     if (cfg.sliceBy !== undefined) client.declareSliced(cfg.name)
+    if (readsPublic(cfg)) client.declarePublic(cfg.name)
     db[cfg.name] = build(cfg)
   }
-  // After a reset emptied every collection: put a fresh one in each one's place.
-  // It syncs when a query first reads it, and loads from a snapshot.
+  // After a reset emptied every collection an identity can change: put a fresh one
+  // in each one's place. It syncs when a query first reads it, and loads from a
+  // snapshot. A public collection stays as it is.
   const renew = () => {
     for (const cfg of configs) {
+      if (readsPublic(cfg)) continue
       const old = db[cfg.name]
       retired.add(old)
       db[cfg.name] = build(cfg)

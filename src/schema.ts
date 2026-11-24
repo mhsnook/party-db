@@ -86,6 +86,15 @@ export type PartyCollection<
 // Passing the row type explicitly (`definePartyCollection<Todo>(...)`) checks `key`
 // against it, but TypeScript then cannot infer the name: that collection is typed
 // on `db` as `Collection<any>`, as before. Let the schema carry the type instead.
+// Whether everyone reads the same rows of this collection, whoever they are. A
+// client keeps such a collection across a reset: no identity changes what it holds.
+export function readsPublic(collection: PartyCollection<any>): boolean {
+  const access = collection.access
+  if (access === undefined) return collection.ownerColumn === undefined
+  if (typeof access === 'string') return access === 'public'
+  return 'read' in access && access.read === 'public'
+}
+
 export function definePartyCollection<
   T extends object = Record<string, unknown>,
   const Name extends string = string,

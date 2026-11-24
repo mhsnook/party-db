@@ -42,8 +42,10 @@ function hand() {
 }
 
 type Row = { id: string; thread_id?: string }
-const todos = definePartyCollection<Row, 'todos'>({ name: 'todos', key: 'id' })
-const comments = definePartyCollection<Row, 'comments'>({ name: 'comments', key: 'id', sliceBy: 'thread_id' })
+// 'authed' reads depend on who is asking, so a reset replaces these two
+const todos = definePartyCollection<Row, 'todos'>({ name: 'todos', key: 'id', access: 'authed' })
+const comments = definePartyCollection<Row, 'comments'>({ name: 'comments', key: 'id', sliceBy: 'thread_id', access: 'authed' })
+const catalog = definePartyCollection<Row, 'catalog'>({ name: 'catalog', key: 'id', access: { read: 'public', insert: 'authed' } })
 const snapshot = (channel: string, seq: number, ids: string[], extra: Partial<SequencedBatch> = {}): SequencedBatch => ({
   channel,
   seq,
@@ -143,6 +145,46 @@ describe('reset()', () => {
     const closing = createPartyDb(hand().transport, [todos])
     closing.close()
     expect(() => closing.reset()).toThrow(ClosedError)
+  })
+
+  it('keeps a collection everyone reads the same, and refills it in place from the next snapshot', async () => {
+    const t = hand()
+    const party = createPartyDb(t.transport, [todos, catalog])
+    const ready = Promise.all([party.db.todos.preload(), party.db.catalog.preload()])
+    t.deliver(snapshot('todos', 3, ['a1']))
+    t.deliver(snapshot('catalog', 3, ['p1', 'p2']))
+    await ready
+    const [oldTodos, oldCatalog] = [party.db.todos, party.db.catalog]
+
+    party.reset()
+    expect(party.db.todos).not.toBe(oldTodos)
+    expect(party.db.catalog).toBe(oldCatalog)
+    expect([...oldCatalog.keys()]).toEqual(['p1', 'p2']) // still on screen while the socket redials
+    expect(t.since()).toBeUndefined()
+
+    t.open()
+    t.deliver(snapshot('catalog', 6, ['p2', 'p3']))
+    expect([...oldCatalog.keys()]).toEqual(['p2', 'p3'])
+  })
+
+  it('still redials when an onReset listener throws, and calls the listeners after it', async () => {
+    const { t, party, reasons } = await loaded()
+    const later = vi.fn()
+    party.onReset(() => {
+      throw new Error('rebuild failed')
+    })
+    party.onReset(later)
+    expect(() => party.reset()).toThrow('rebuild failed')
+    expect(reasons).toEqual(['requested'])
+    expect(later).toHaveBeenCalledTimes(1)
+    expect(t.reconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a reset() called from an onReset listener, instead of recursing', async () => {
+    const { t, party } = await loaded()
+    party.onReset(() => party.reset())
+    expect(() => party.reset()).toThrow(/already running/)
+    expect(t.reconnect).toHaveBeenCalledTimes(1)
   })
 })
 
