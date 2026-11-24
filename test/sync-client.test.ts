@@ -402,9 +402,26 @@ describe('SyncClient sliced registration', () => {
     t.drop()
     t.open({ identityChanged: true })
     expect(t.sendFrame.mock.calls.at(-1)).toEqual([{ subscribe: 'comments', slice: 'A' }])
+    t.push({ channel: 'comments', seq: 9, ops: [], ready: true, reset: true, slice: 'A' })
     t.drop()
     t.open()
-    expect(t.sendFrame.mock.calls.at(-1)).toEqual([{ subscribe: 'comments', slice: 'A', since: 5 }])
+    expect(t.sendFrame.mock.calls.at(-1)).toEqual([{ subscribe: 'comments', slice: 'A', since: 9 }])
+  })
+
+  it('keeps asking for a snapshot if the socket drops before the identity reopen is answered', () => {
+    const t = openTransport()
+    const client = new SyncClient(t.transport)
+    const { loadSubset } = client.registerSliced('comments', recorder().sink, { column: 'thread_id', rows: () => [] })
+    t.open()
+    void loadSubset({ where: { type: 'func', name: 'eq', args: [{ type: 'ref', path: ['thread_id'] }, { type: 'val', value: 'A' }] } as any })
+    t.push({ channel: 'comments', seq: 5, ops: [], ready: true, reset: true, slice: 'A' })
+
+    t.drop()
+    t.open({ identityChanged: true })
+    t.push({ channel: 'todos', seq: 8, ops: [], ready: true, reset: true }) // the connect's snapshot moves the room cursor
+    t.drop()
+    t.open()
+    expect(t.sendFrame.mock.calls.at(-1)).toEqual([{ subscribe: 'comments', slice: 'A' }])
   })
 
   it('drops rows for slices it did not subscribe to', () => {

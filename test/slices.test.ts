@@ -166,6 +166,18 @@ describe('ChannelSlices', () => {
     expect(frames.at(-1)).toEqual({ subscribe: 'comments', slice: 'B' })
   })
 
+  it('keeps no cursor for a slice released while its identity snapshot is outstanding', async () => {
+    const { s, frames, setSeq } = slices()
+    s.acquire(['A'])
+    s.applied({ channel: 'comments', seq: 3, ops: [], ready: true, slice: 'A' }, true)
+    setSeq(7)
+    s.release(['A']) // its unsubscribe waits a microtask
+    s.resubscribe(true)
+    await flush()
+    s.acquire(['A'])
+    expect(frames.at(-1)).toEqual({ subscribe: 'comments', slice: 'A' })
+  })
+
   it('accepts a row of a subscribed slice, or any row while the whole channel is held', () => {
     const { s } = slices()
     s.acquire([7])

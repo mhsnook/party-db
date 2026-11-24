@@ -704,7 +704,8 @@ the first open after a 4001 close. Then each sliced collection does two things:
    is a slice snapshot marked `reset`, which replaces that slice's rows.
 
 A slice still subscribed keeps its rows until its snapshot replaces them, so the
-screen never shows it empty. The released slices also lose their cursors, so a
+screen never shows it empty. Until that snapshot arrives, every reopen asks for it
+again, so a socket that drops first never falls back to a delta. The released slices also lose their cursors, so a
 later subscribe to one asks for a snapshot too. `onOpen`'s argument is optional:
 a custom transport that calls its listeners with nothing gets the ordinary
 reconnect, from each slice's cursor.

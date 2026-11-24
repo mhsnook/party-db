@@ -81,6 +81,7 @@ async function redialing(room: string, token: string) {
   let current = token
   let ws: WebSocket | undefined
   let closed = false
+  let redial: Promise<void> | undefined
   const listeners = new Set<(batch: SequencedBatch) => void>()
   const openers = new Set<(event?: OpenEvent) => void>()
   const dial = async (identityChanged: boolean) => {
@@ -93,7 +94,7 @@ async function redialing(room: string, token: string) {
     })
     socket.addEventListener('close', (e) => {
       ws = undefined
-      if (!closed && e.code === CLOSE_IDENTITY_CHANGED) void dial(true)
+      if (!closed && e.code === CLOSE_IDENTITY_CHANGED) redial = dial(true)
     })
     ws = socket
     for (const listener of openers) listener({ identityChanged })
@@ -111,7 +112,7 @@ async function redialing(room: string, token: string) {
     onOpen: (listener) => (openers.add(listener), () => openers.delete(listener)),
     close: () => ((closed = true), ws?.close()),
   }
-  return { transport, as: (token: string) => void (current = token) }
+  return { transport, as: (token: string) => void (current = token), redialed: () => redial }
 }
 
 describe('a sliced collection under a changed identity (#68)', () => {
@@ -129,6 +130,8 @@ describe('a sliced collection under a changed identity (#68)', () => {
 
     carol.as('carol') // the host takes away her editor role
     expect((await SELF.fetch(url(room, { reconnect: 'carol' }), { headers: roomHeader(room) })).status).toBe(200)
+    await vi.waitFor(() => expect(carol.redialed()).toBeDefined())
+    await carol.redialed()
     await vi.waitFor(() => expect(rowIds(thread)).toEqual(['r2']))
     expect(db.remarks.has('r1')).toBe(false)
     close()

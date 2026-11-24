@@ -403,8 +403,9 @@ user is deactivated, call `this.reconnectUser(uid)` from your `PartyDbServer`. I
 closes that user's sockets with `CLOSE_IDENTITY_CHANGED` (4001). The client redials
 without its `?since` cursor, so it loads a fresh snapshot under the new identity. A
 `sliceBy` collection reloads each slice it is subscribed to, and drops the rows of
-slices it let go of. A custom `Transport` gets the same by calling its `onOpen`
-listeners with `{ identityChanged: true }`. A composed host does the same with
+slices it let go of. A custom `Transport` gets the same in two steps: after a
+4001 close, redial without `?since`, then call the `onOpen` listeners with
+`{ identityChanged: true }`. A composed host does the same with
 `getConnections(audienceTag({ uid }))` and `conn.close(CLOSE_IDENTITY_CHANGED)`. In a room whose reads are all
 public, sockets are not tagged by user, and this closes nothing.
 
