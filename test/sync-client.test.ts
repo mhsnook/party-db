@@ -51,6 +51,57 @@ const seqBatch = (channel: string, seq: number, value: unknown): SequencedBatch 
   ops: [{ type: 'insert', value: value as Record<string, unknown> }],
 })
 
+// The transport reads the client's cursor on every (re)connect as `?since`.
+function cursorTransport() {
+  let onBatch: (b: SequencedBatch) => void = () => {}
+  let since: () => unknown = () => undefined
+  const closers = new Set<(code: number) => void>()
+  const transport: Transport = {
+    subscribe: (cb, opts) => ((onBatch = cb), (since = opts?.since ?? since), () => {}),
+    send: async () => ({ accepted: [] }),
+    sendFrame: vi.fn(),
+    onClose: (l) => (closers.add(l), () => closers.delete(l)),
+  }
+  return { transport, push: (b: unknown) => onBatch(b as SequencedBatch), since: () => since(), close: (code: number) => closers.forEach((l) => l(code)) }
+}
+
+describe('SyncClient cursor', () => {
+  it('counts every frame it handled: applied, buffered before a register, or dropped as unwanted', () => {
+    const t = cursorTransport()
+    const client = new SyncClient(t.transport)
+    client.declareSliced('comments')
+    expect(t.since()).toBeUndefined()
+    t.push(seqBatch('todos', 3, { id: 'a' })) // buffered: nothing registered yet
+    expect(t.since()).toBe(3)
+    t.push(seqBatch('comments', 5, { id: 'c', thread_id: 'A' })) // a sliced channel with no subscription
+    expect(t.since()).toBe(5)
+    client.register('todos', recorder().sink)
+    t.push(seqBatch('todos', 6, { id: 'b' }))
+    expect(t.since()).toBe(6)
+  })
+
+  it('never lowers on an out-of-order straggler, and ignores frames that are not batches (#48)', () => {
+    const t = cursorTransport()
+    const client = new SyncClient(t.transport)
+    client.register('todos', recorder().sink)
+    t.push(seqBatch('todos', 7, { id: 'a' }))
+    t.push(seqBatch('todos', 3, { id: 'b' }))
+    t.push({ type: 'cf_agent_stream', seq: 99 })
+    expect(t.since()).toBe(7)
+  })
+
+  it('forgets the cursor on a changed-identity close, and keeps it across an ordinary drop', () => {
+    const t = cursorTransport()
+    const client = new SyncClient(t.transport)
+    client.register('todos', recorder().sink)
+    t.push(seqBatch('todos', 7, { id: 'a' }))
+    t.close(1006)
+    expect(t.since()).toBe(7)
+    t.close(4001)
+    expect(t.since()).toBeUndefined()
+  })
+})
+
 describe('SyncClient routing', () => {
   it('routes an incoming batch to the registered channel sink', () => {
     const t = fakeTransport()

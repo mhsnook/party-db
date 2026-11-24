@@ -5,16 +5,20 @@
 import type { SyncConfigRes } from '@tanstack/db'
 import { applyBatch, type ChannelSink, type SliceApply } from './apply.ts'
 import { ChannelSlices, sliceTargets } from './slices.ts'
-import { SeqTracker, type CursorCompare } from './seq-tracker.ts'
+import { SeqTracker, compareCursor, type CursorCompare } from './seq-tracker.ts'
 import { ClosedError, type AuthError } from './errors.ts'
-import { isSequencedBatch } from '../protocol.ts'
+import { CLOSE_IDENTITY_CHANGED, isSequencedBatch } from '../protocol.ts'
 import type { Cursor, SequencedBatch, UpFrame, WriteAck, WriteBatch } from '../protocol.ts'
 
 // A transport is just "a stream coming down" + "a way to push writes up".
 // Today there is one impl (the DO/party transport); it stays an interface so the
 // SyncClient never knows which target it's talking to.
 export type Transport = {
-  subscribe: (onBatch: (batch: SequencedBatch) => void) => () => void
+  // `since` reads the client's cursor: the room seq every frame up to has been
+  // handled. Read it on every (re)connect and send it as `?since`, so the room
+  // replays only the gap; undefined means ask for a snapshot. A transport that
+  // ignores it still works, at the cost of a full reload on every reconnect.
+  subscribe: (onBatch: (batch: SequencedBatch) => void, opts?: { since?: () => Cursor | undefined }) => () => void
   send: (batches: WriteBatch[]) => Promise<WriteAck>
   isConnecting?: () => boolean
   // we don't auto-reconnect when the down-stream is closed for auth (1008); this
@@ -46,6 +50,8 @@ export type Transport = {
   // the down-stream (re)connected: a new socket, with no subscriptions on it yet.
   // Returns an unsubscribe.
   onOpen?: (listener: () => void) => () => void
+  // the down-stream closed, with its WebSocket close code. Returns an unsubscribe.
+  onClose?: (listener: (code: number) => void) => () => void
 }
 
 export type SyncClientOptions = {
@@ -77,9 +83,16 @@ export class SyncClient {
   // settlement (the per-channel high-water mark + waiters + timeout) lives in a
   // pure SeqTracker, so it's testable without a transport and the timeout has a home.
   private tracker: SeqTracker
+  // the room seq every frame up to has been handled: applied, buffered in
+  // `pending`, or dropped as unwanted. Not the tracker's mark, which counts only
+  // applied frames: a reconnect from that would replay a buffered insert, and
+  // applying it twice throws a duplicate-key error.
+  private received?: Cursor
+  private compare: CursorCompare
   private settleTimeoutMs: number
   private unsubscribe?: () => void
   private offOpen?: () => void
+  private offClose?: () => void
   // dropped on close: it is the closed flag, and letting it go releases the dead
   // socket. A collection outlives us holding the cleanup closure `register`
   // returns, so anything we still point at stays alive with it.
@@ -87,9 +100,15 @@ export class SyncClient {
 
   constructor(transport: Transport, opts: SyncClientOptions = {}) {
     this.transport = transport
-    this.tracker = new SeqTracker(opts.compareCursor)
+    this.compare = opts.compareCursor ?? compareCursor
+    this.tracker = new SeqTracker(this.compare)
     this.settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
-    this.unsubscribe = transport.subscribe((batch) => this.route(batch))
+    this.unsubscribe = transport.subscribe((batch) => this.route(batch), { since: () => this.received })
+    this.offClose = transport.onClose?.((code) => {
+      // the room's verdict that this socket's identity changed: a delta can't
+      // take back rows the old one could read, so the redial asks for a snapshot
+      if (code === CLOSE_IDENTITY_CHANGED) this.received = undefined
+    })
     this.offOpen = transport.onOpen?.(() => {
       for (const channel of this.awaitingSnapshot) this.sendFrame({ subscribe: channel })
       for (const slices of this.slices.values()) slices.resubscribe()
@@ -104,6 +123,7 @@ export class SyncClient {
     // a transport we don't own can hand us a frame with no channel: it would
     // buffer under `undefined` forever, so drop it.
     if (!isSequencedBatch(batch)) return
+    if (this.received === undefined || this.compare(batch.seq, this.received) > 0) this.received = batch.seq
     const sink = this.sinks.get(batch.channel)
     // a sliced channel with no collection has no subscriptions to fill
     if (!sink && this.slicedChannels.has(batch.channel)) return
@@ -215,6 +235,8 @@ export class SyncClient {
     this.unsubscribe = undefined // captures the socket handler — let it go too
     this.offOpen?.()
     this.offOpen = undefined
+    this.offClose?.()
+    this.offClose = undefined
     this.tracker.rejectAll(new ClosedError())
     for (const slices of this.slices.values()) slices.dispose(new ClosedError())
     this.slices.clear()
