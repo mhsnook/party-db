@@ -2,7 +2,7 @@
 // configs, get back live TanStack DB collections. That's the whole surface.
 
 import PartySocket from 'partysocket'
-import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
+import { SyncClient, type ResetReason, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type DbOf, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
 import { isSequencedBatch, parseFrame, PROTO_PARAM, PROTO_VALUE, type Cursor } from '../protocol.ts'
@@ -114,6 +114,9 @@ export function partyTransport(opts: {
       closeListeners.add(listener)
       return () => closeListeners.delete(listener)
     },
+    reconnect() {
+      socket.reconnect()
+    },
     isConnecting: () => socket.readyState === socket.CONNECTING,
     onAuthError(listener) {
       authListeners.add(listener)
@@ -134,7 +137,12 @@ export function createPartyDb<const C extends readonly PartyCollectionConfig<any
   options?: SyncClientOptions,
 ) {
   const client = new SyncClient(transport, options)
-  const { db, persist } = wireCollections(client, configs)
+  const { db, persist, renew } = wireCollections(client, configs)
+  const resetListeners = new Set<(reason: ResetReason) => void>()
+  client.onReset((reason) => {
+    renew()
+    for (const listener of resetListeners) listener(reason)
+  })
   return {
     db: db as DbOf<C>,
     // the mutationFn for cross-collection atomic writes via TanStack's
@@ -150,7 +158,22 @@ export function createPartyDb<const C extends readonly PartyCollectionConfig<any
     onAuthError(listener: (error: AuthError) => void): () => void {
       return transport.onAuthError?.(listener) ?? (() => {})
     },
+    // Start over under the identity the transport dials as next, such as after
+    // the app signs in someone else. Every collection in `db` is replaced by a
+    // fresh one that loads from a snapshot; a query built on an old one shows it
+    // empty. Throws if the transport cannot reconnect.
+    reset() {
+      client.reset()
+    },
+    // Called after every reset: `reset()`'s ('requested'), or the room's when this
+    // user's identity changed ('identity-changed'). Rebuild queries on the
+    // collections now in `db`. Returns an unsubscribe.
+    onReset(listener: (reason: ResetReason) => void): () => void {
+      resetListeners.add(listener)
+      return () => resetListeners.delete(listener)
+    },
     close() {
+      resetListeners.clear()
       client.close()
     },
   }

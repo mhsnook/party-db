@@ -6,7 +6,7 @@ import type { SyncConfigRes } from '@tanstack/db'
 import { applyBatch, type ChannelSink, type SliceApply } from './apply.ts'
 import { ChannelSlices, sliceTargets } from './slices.ts'
 import { SeqTracker, compareCursor, type CursorCompare } from './seq-tracker.ts'
-import { ClosedError, type AuthError } from './errors.ts'
+import { ClosedError, DroppedError, type AuthError } from './errors.ts'
 import { CLOSE_IDENTITY_CHANGED, isSequencedBatch } from '../protocol.ts'
 import type { Cursor, SequencedBatch, UpFrame, WriteAck, WriteBatch } from '../protocol.ts'
 
@@ -52,7 +52,14 @@ export type Transport = {
   onOpen?: (listener: () => void) => () => void
   // the down-stream closed, with its WebSocket close code. Returns an unsubscribe.
   onClose?: (listener: (code: number) => void) => () => void
+  // hang up the down-stream and dial again now, reading `since` and the token
+  // afresh. `SyncClient.reset` needs it.
+  reconnect?: () => void
 }
+
+// Why every collection was replaced: the room closed the socket with
+// `CLOSE_IDENTITY_CHANGED` (4001), or the app called `reset()`.
+export type ResetReason = 'identity-changed' | 'requested'
 
 export type SyncClientOptions = {
   // reject a `waitForSeq` that hasn't settled within this many ms (default 30000),
@@ -89,6 +96,13 @@ export class SyncClient {
   // applying it twice throws a duplicate-key error.
   private received?: Cursor
   private compare: CursorCompare
+  // bumped by every reset: a write whose POST was in flight across one belongs
+  // to a collection that is gone
+  private generation = 0
+  // after a reset, until the next socket opens: the old socket may still deliver
+  // frames, or carry a subscribe, under the identity the reset left behind
+  private waitingForOpen = false
+  private resetListeners = new Set<(reason: ResetReason) => void>()
   private settleTimeoutMs: number
   private unsubscribe?: () => void
   private offOpen?: () => void
@@ -105,24 +119,33 @@ export class SyncClient {
     this.settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
     this.unsubscribe = transport.subscribe((batch) => this.route(batch), { since: () => this.received })
     this.offClose = transport.onClose?.((code) => {
-      // the room's verdict that this socket's identity changed: a delta can't
-      // take back rows the old one could read, so the redial asks for a snapshot
-      if (code === CLOSE_IDENTITY_CHANGED) this.received = undefined
+      if (code !== CLOSE_IDENTITY_CHANGED) return
+      try {
+        this.restart('identity-changed')
+      } catch (error) {
+        // rethrown on a later tick: thrown here, it would escape into the
+        // transport's close handling and could stop the redial
+        queueMicrotask(() => {
+          throw error
+        })
+      }
     })
     this.offOpen = transport.onOpen?.(() => {
+      this.waitingForOpen = false
       for (const channel of this.awaitingSnapshot) this.sendFrame({ subscribe: channel })
       for (const slices of this.slices.values()) slices.resubscribe()
     })
   }
 
   private sendFrame(frame: UpFrame) {
+    if (this.waitingForOpen) return
     if (this.transport?.isOpen?.() ?? true) this.transport?.sendFrame?.(frame)
   }
 
   private route(batch: SequencedBatch) {
     // a transport we don't own can hand us a frame with no channel: it would
     // buffer under `undefined` forever, so drop it.
-    if (!isSequencedBatch(batch)) return
+    if (!isSequencedBatch(batch) || this.waitingForOpen) return
     if (this.received === undefined || this.compare(batch.seq, this.received) > 0) this.received = batch.seq
     const sink = this.sinks.get(batch.channel)
     // a sliced channel with no collection has no subscriptions to fill
@@ -216,7 +239,11 @@ export class SyncClient {
     // a closed client has no down-stream, so the seq this write earns could never
     // arrive: fail now rather than POST and time out 30s from now.
     if (!this.transport) return Promise.reject(new ClosedError())
-    return this.transport.send(batches)
+    const generation = this.generation
+    return this.transport.send(batches).then((ack) => {
+      if (generation !== this.generation) throw new DroppedError()
+      return ack
+    })
   }
 
   // resolve once `seq` has been applied on the down-stream. This is the
@@ -226,6 +253,55 @@ export class SyncClient {
   waitForSeq(channel: string, seq: Cursor): Promise<void> {
     if (!this.transport) return Promise.reject(new ClosedError())
     return this.tracker.waitFor(channel, seq, this.settleTimeoutMs)
+  }
+
+  // Start over under the identity the transport dials as next: hang up, replace
+  // every collection with a fresh one (`onReset`), and redial with no cursor.
+  reset() {
+    if (!this.transport) throw new ClosedError()
+    if (!this.transport.reconnect) throw new Error('reset() needs a transport that can reconnect: it has no reconnect()')
+    this.restart('requested')
+    this.transport.reconnect()
+  }
+
+  // Called after a reset has emptied and detached every collection; the
+  // listener puts fresh ones in their place. Returns an unsubscribe.
+  onReset(listener: (reason: ResetReason) => void): () => void {
+    this.resetListeners.add(listener)
+    return () => this.resetListeners.delete(listener)
+  }
+
+  // Everything held belongs to an identity that is gone, so forget it all and let
+  // fresh collections register: each asks for its snapshot on the next socket.
+  private restart(reason: ResetReason) {
+    this.generation++
+    this.received = undefined
+    // a transport that reports no opens could never lift the gate
+    this.waitingForOpen = this.transport?.onOpen !== undefined
+    this.tracker.reset(new DroppedError())
+    this.pending.clear()
+    this.awaitingSnapshot.clear()
+    // a query still built on an old collection shows it empty, never stale
+    const failures: unknown[] = []
+    for (const [channel, sink] of this.sinks) {
+      try {
+        sink.begin()
+        const slices = this.slices.get(channel)
+        // not truncate: on an on-demand collection TanStack holds a truncate's
+        // deletes back until its subsets reload, and a retired one never reloads
+        if (slices) for (const [key] of [...slices.rows()]) sink.write({ type: 'delete', key })
+        else sink.truncate()
+        sink.commit()
+      } catch (error) {
+        failures.push(error)
+      }
+      if (!this.slicedChannels.has(channel)) this.torndown.add(channel)
+    }
+    for (const slices of this.slices.values()) slices.dispose(new DroppedError())
+    this.sinks.clear()
+    this.slices.clear()
+    for (const listener of this.resetListeners) listener(reason)
+    if (failures.length) throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'reset could not empty every collection')
   }
 
   // One-way: a closed client never reopens, so build a new one.
@@ -244,6 +320,7 @@ export class SyncClient {
     this.pending.clear()
     this.torndown.clear()
     this.awaitingSnapshot.clear()
+    this.resetListeners.clear()
     this.transport.close?.()
     this.transport = undefined
   }

@@ -29,6 +29,7 @@ const hoisted = vi.hoisted(() => {
       this.listeners[type] = (this.listeners[type] ?? []).filter((x) => x !== h)
     }
     send = vi.fn()
+    reconnect = vi.fn()
     // the real PartySocket.close() stops the re-dial and dispatches the close
     // event synchronously, with code 1000 unless told otherwise.
     close = vi.fn((code = 1000, reason = '') => {
@@ -98,6 +99,12 @@ describe('partyTransport reconnect query (?since)', () => {
     const off = transport.subscribe(() => {}, { since: () => 7 })
     off()
     expect(lastSocket().opts.query()).toEqual({ proto: 'party-db' })
+  })
+
+  it("redials through PartySocket's own reconnect, which reads the query again", () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    transport.reconnect!()
+    expect(lastSocket().reconnect).toHaveBeenCalledTimes(1)
   })
 
   it('reports every close code, and keeps re-dialing after a changed-identity close', () => {

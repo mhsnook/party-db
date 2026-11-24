@@ -13,6 +13,9 @@
 //                     verdict for the *down* path: terminal, no reconnect.
 //   ClosedError     — the client was closed. Nothing streams down any more, so
 //                     a write could never settle. Non-retriable on this client.
+//   DroppedError    — the client reset before the write settled, and the
+//                     collection it was written to was replaced. Non-retriable:
+//                     a replay would write as whoever is signed in now.
 //
 // They reach the app intact: the write mutationFn throws, and
 // TanStack rejects the transaction's `isPersisted.promise` with that very
@@ -64,6 +67,15 @@ export class ClosedError extends NonRetriableError {
   constructor(message = 'party-db client is closed') {
     super(message)
     this.name = 'ClosedError'
+  }
+}
+
+// The write may still have committed on the server, under the identity it was
+// sent with; it will not settle into the collection that replaced its own.
+export class DroppedError extends NonRetriableError {
+  constructor(message = 'party-db client reset before this write settled') {
+    super(message)
+    this.name = 'DroppedError'
   }
 }
 

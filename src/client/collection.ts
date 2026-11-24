@@ -12,6 +12,7 @@
 
 import { createCollection, type Collection } from '@tanstack/db'
 import type { SyncClient } from './sync-client.ts'
+import { DroppedError } from './errors.ts'
 import type { WriteBatch, WriteEvent } from '../protocol.ts'
 import { definePartyCollection, type PartyCollection } from '../schema.ts'
 
@@ -58,10 +59,13 @@ export function makePersist(
   // each managed collection's own config: `name` is the channel, `key` the column
   // an update sends alongside its changed ones.
   configOf: WeakMap<Collection<any>, PartyCollection<any>>,
+  // collections a reset replaced: a write to one would POST as whoever is signed in now
+  retired?: WeakSet<Collection<any>>,
 ) {
   return async ({ transaction }: any) => {
     const byChannel = new Map<string, WriteEvent[]>()
     for (const m of transaction.mutations) {
+      if (retired?.has(m.collection)) throw new DroppedError('this collection was replaced by a reset: write to the one now in `db`')
       const cfg = configOf.get(m.collection)
       if (!cfg) continue // a mutation on a collection we don't manage
       const ops = byChannel.get(cfg.name) ?? []
@@ -81,11 +85,11 @@ export function wireCollections(client: SyncClient, configs: readonly PartyColle
   // weak: we only ever look a collection up by identity, so this must not be the
   // thing keeping every collection (and its rows) alive.
   const configOf = new WeakMap<Collection<any>, PartyCollection<any>>()
-  const persist = makePersist(client, configOf)
+  const retired = new WeakSet<Collection<any>>()
+  const persist = makePersist(client, configOf, retired)
   const db: Record<string, Collection<any>> = {}
-  for (const cfg of configs) {
+  const build = (cfg: PartyCollectionConfig<any>) => {
     const sliceBy = cfg.sliceBy
-    if (sliceBy !== undefined) client.declareSliced(cfg.name)
     const collection = createCollection({
       schema: cfg.schema as any,
       getKey: (item: any) => item[cfg.key],
@@ -102,7 +106,21 @@ export function wireCollections(client: SyncClient, configs: readonly PartyColle
       onDelete: persist,
     })
     configOf.set(collection, cfg)
-    db[cfg.name] = collection
+    return collection
   }
-  return { db, persist }
+  for (const cfg of configs) {
+    if (cfg.sliceBy !== undefined) client.declareSliced(cfg.name)
+    db[cfg.name] = build(cfg)
+  }
+  // After a reset emptied every collection: put a fresh one in each one's place.
+  // It syncs when a query first reads it, and loads from a snapshot.
+  const renew = () => {
+    for (const cfg of configs) {
+      const old = db[cfg.name]
+      retired.add(old)
+      db[cfg.name] = build(cfg)
+      void old.cleanup()
+    }
+  }
+  return { db, persist, renew }
 }
