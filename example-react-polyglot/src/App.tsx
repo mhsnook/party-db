@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { coalesce, eq } from '@tanstack/db'
 import { useLiveQuery } from '@tanstack/react-db'
 import { createPartyDb, partyTransport, WriteError } from '../../src/client/index.ts'
@@ -7,12 +7,8 @@ import { AuthProvider, useAuth, getAccessToken } from './auth.tsx'
 
 // ✅ the entire party-db setup: a transport + the SAME shared `collections`.
 const transport = partyTransport({ host: location.host, room: 'polyglot', token: getAccessToken })
-export const { db } = createPartyDb(transport, collections)
-
-const languages = db.public_languages
-const phrases = db.public_phrases
-const decks = db.user_decks
-const flashcards = db.user_flashcards
+// Components read collections from `party.db` as they render: a reset replaces them.
+export const party = createPartyDb(transport, collections)
 
 // surface a rejected write instead of a silent rollback
 function useWriteError() {
@@ -55,6 +51,7 @@ function LoginBar() {
 // The catalog is public read; adding a phrase is `insert: 'authed'`, so the server
 // refuses a signed-out insert and the form shows only once you're logged in.
 function AddPhrase({ languageId }: { languageId: string }) {
+  const phrases = party.db.public_phrases
   const { me } = useAuth()
   const { error, run } = useWriteError()
   const [text, setText] = useState('')
@@ -82,6 +79,7 @@ function AddPhrase({ languageId }: { languageId: string }) {
 
 // Your settings for this language — a private write to your own deck.
 function DeckSettings({ languageId }: { languageId: string }) {
+  const decks = party.db.user_decks
   const { me } = useAuth()
   const { error, run } = useWriteError()
   const { data: deckRows } = useLiveQuery((q) => q.from({ deck: decks }).where(({ deck }) => eq(deck.language_id, languageId)))
@@ -127,6 +125,7 @@ function DeckSettings({ languageId }: { languageId: string }) {
 // collection and a private one. The private side only ever reaches its owner, so
 // the join can't leak someone else's progress.
 function Phrases({ languageId }: { languageId: string }) {
+  const { public_phrases: phrases, user_flashcards: flashcards } = party.db
   const { me } = useAuth()
   const { error, run } = useWriteError()
   const { data: cards } = useLiveQuery((q) =>
@@ -176,6 +175,7 @@ function Phrases({ languageId }: { languageId: string }) {
 }
 
 function Polyglot() {
+  const languages = party.db.public_languages
   const { data: langs } = useLiveQuery((q) => q.from({ l: languages }).orderBy(({ l }) => l.name, 'asc'))
   const [languageId, setLanguageId] = useState<string | null>(null)
   const active = languageId ?? langs[0]?.id ?? null
@@ -217,10 +217,14 @@ function Polyglot() {
   )
 }
 
+// Signing in or out resets the party db: every collection is replaced by a fresh
+// one that loads as the new user. Bumping the key remounts every query on them.
 export function App() {
+  const [generation, setGeneration] = useState(0)
+  useEffect(() => party.onReset(() => setGeneration((g) => g + 1)), [])
   return (
-    <AuthProvider>
-      <Polyglot />
+    <AuthProvider onSwitch={() => party.reset()}>
+      <Polyglot key={generation} />
     </AuthProvider>
   )
 }

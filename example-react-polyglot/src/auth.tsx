@@ -4,17 +4,17 @@
 // the token, and the server's `auth` reads it back (token === uid, no JWKS).
 //
 // The server pins a socket's uid when the socket connects, so switching identity
-// has to reconnect: login() and logout() store the token for this tab and reload.
-// The new socket connects as the new user, and the server hands it only that
-// user's decks and flashcards.
+// has to reconnect: login() and logout() set the token, then call `onSwitch`,
+// which resets the party db. The new socket connects as the new user, and the
+// server hands it only that user's decks and flashcards.
 
 import { createContext, useContext, useState, type ReactNode } from 'react'
 
 // The token partyTransport sends. Module scope because the transport is built
-// before React mounts and reads it via getAccessToken; it survives the reload
-// login()/logout() do, in this tab's sessionStorage.
+// before React mounts and reads it via getAccessToken; kept in this tab's
+// sessionStorage so a reload stays signed in.
 const TOKEN_KEY = 'polyglot:token'
-const token = sessionStorage.getItem(TOKEN_KEY) ?? undefined
+let token = sessionStorage.getItem(TOKEN_KEY) ?? undefined
 export const getAccessToken = () => token
 
 const meOf = (id: string | undefined): Me | null => (id ? { id, name: id.replace(/^user:/, '') } : null)
@@ -29,15 +29,16 @@ export function useAuth(): Auth {
   return ctx
 }
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [me] = useState<Me | null>(() => meOf(token))
-  const login = (name: string) => {
-    sessionStorage.setItem(TOKEN_KEY, `user:${name.trim().toLowerCase().replace(/\s+/g, '-')}`)
-    location.reload()
+export function AuthProvider({ children, onSwitch }: { children: ReactNode; onSwitch: () => void }) {
+  const [me, setMe] = useState<Me | null>(() => meOf(token))
+  const become = (next: string | undefined) => {
+    token = next
+    if (next) sessionStorage.setItem(TOKEN_KEY, next)
+    else sessionStorage.removeItem(TOKEN_KEY)
+    setMe(meOf(next))
+    onSwitch()
   }
-  const logout = () => {
-    sessionStorage.removeItem(TOKEN_KEY)
-    location.reload()
-  }
+  const login = (name: string) => become(`user:${name.trim().toLowerCase().replace(/\s+/g, '-')}`)
+  const logout = () => become(undefined)
   return <AuthContext value={{ me, login, logout }}>{children}</AuthContext>
 }
