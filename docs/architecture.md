@@ -680,37 +680,18 @@ same way on every adapter:
   it. That is correct and it is also invisible — a write-only collection
   (`read: 'none'`) looks to the UI like a write that vanished.
 
-### Roles, and a socket that matches two audiences
+### Roles: who gets a frame, and when a socket's identity changes
 
-A grant that names an owner and a role, or several roles, has no split into
-audiences that never overlap. An editor who owns a note is in both the owner's
-audience and the editor's. Two roles can be held by one user. Sending each audience
-its frame would send that socket the same op twice. So such a collection fans out
-per socket instead: the core runs `visibleTo` against each connection's pinned
-viewer and sends the result. A role holder gets the whole batch, an owner gets
-their own rows, and nobody gets an op twice. Frames that sockets share (the whole
-batch, or one owner's rows) are serialized once. This needs the host's
-`connections` (§15), and `init` refuses to start without them.
+A read grant that names an owner and a role, or several roles, fans out per socket,
+not per audience. One user can be in two audiences, such as an editor who owns the
+note, and an audience split would send that socket the op twice. So the core needs
+the host's `connections` (§15) for such a collection, and `init` refuses to start
+without them.
 
-An `'owner'` entry in a grant on update or delete is still checked against the
-stored row, not the payload, unless the writer holds one of the grant's roles. The
-prior row is read either way, because the fan-out of an owner read routes by it.
-
-A socket's identity is fixed when it connects. When a user's roles change, or they
-are deactivated, the host calls `PartyDbServer.reconnectUser(uid)`. That closes
-the uid's sockets with `CLOSE_IDENTITY_CHANGED` (4001), and the client redials
-without `?since`. A delta would never take back the rows the old identity could
-read, so the client loads a `reset` snapshot instead. A sliced collection
-re-subscribes with its own per-slice cursor, so it does not take back such rows
-yet.
-
-Tags have limits. partyserver gives a socket 9 tags of its own, and
-the authed and uid tags use two, so a socket pins at most 7 roles (`MAX_ROLE_TAGS`).
-`resolveViewer` keeps only the roles some collection names. A user with more than
-7 of those is sent less than they may read, with a warning, never more. A host that
-adds its own tags in `getConnectionTags` takes them from the same 9. Boot refuses a
-grant with an unknown key, so the misspelled `{ role: 'editor' }` cannot deny
-silently.
+A socket's identity is fixed at connect. When it changes, the room closes the
+socket with `CLOSE_IDENTITY_CHANGED` (4001), and the client redials without
+`?since`. A delta never takes back rows the old identity could read, so the client
+loads a `reset` snapshot instead. Sliced collections do not do this yet (#68).
 
 ### A row that changes hands
 

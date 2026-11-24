@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased - v0.2.0
+## 2026-11-24 - v0.2.0
 
 Access policies can name roles. A verb's policy can be a grant, met by the row's
 owner or by a signed-in user holding one of its roles.
