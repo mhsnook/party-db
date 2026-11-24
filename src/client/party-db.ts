@@ -2,7 +2,7 @@
 // configs, get back live TanStack DB collections. That's the whole surface.
 
 import PartySocket from 'partysocket'
-import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
+import { SyncClient, type OpenEvent, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type DbOf, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
 import { CLOSE_IDENTITY_CHANGED, isSequencedBatch, parseFrame, PROTO_PARAM, PROTO_VALUE } from '../protocol.ts'
@@ -26,6 +26,9 @@ export function partyTransport(opts: {
   const party = opts.party ?? 'main'
   const tokenOf = () => (typeof opts.token === 'function' ? opts.token() : opts.token)
   let lastSeq: number | undefined // highest seq applied; drives delta reconnect
+  // set on a 4001 close and cleared by the next open, which reports it: a socket
+  // that drops again before it opens is still redialing for the new identity.
+  let identityChanged = false
   // consumers waiting to hear that the down path was auth-rejected (1008). We
   // fan out to a set so an app can register a handler without racing construction.
   const authListeners = new Set<(error: AuthError) => void>()
@@ -54,10 +57,19 @@ export function partyTransport(opts: {
   // dead socket. shouldReconnectOnClose above already ran on this same event, so
   // by the time we notify, the reconnect has been suppressed.
   socket.addEventListener('close', (event) => {
-    if (event.code === CLOSE_IDENTITY_CHANGED) lastSeq = undefined
+    if (event.code === CLOSE_IDENTITY_CHANGED) {
+      lastSeq = undefined
+      identityChanged = true
+    }
     if (event.code !== CLOSE_POLICY_VIOLATION) return
     const error = new AuthError(event.reason || 'websocket closed by server auth policy (1008)', event.code)
     for (const listener of authListeners) listener(error)
+  })
+  const openListeners = new Set<(event: OpenEvent) => void>()
+  socket.addEventListener('open', () => {
+    const event = { identityChanged }
+    identityChanged = false
+    for (const listener of openListeners) listener(event)
   })
   return {
     subscribe(onBatch) {
@@ -102,8 +114,8 @@ export function partyTransport(opts: {
     },
     isOpen: () => socket.readyState === socket.OPEN,
     onOpen(listener) {
-      socket.addEventListener('open', listener)
-      return () => socket.removeEventListener('open', listener)
+      openListeners.add(listener)
+      return () => openListeners.delete(listener)
     },
     isConnecting: () => socket.readyState === socket.CONNECTING,
     onAuthError(listener) {

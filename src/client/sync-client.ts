@@ -3,7 +3,7 @@
 // await a specific seq's arrival (the settlement signal).
 
 import type { SyncConfigRes } from '@tanstack/db'
-import { applyBatch, type ChannelSink, type SliceApply } from './apply.ts'
+import { applyBatch, dropUnsubscribed, type ChannelSink, type SliceApply } from './apply.ts'
 import { ChannelSlices, sliceTargets } from './slices.ts'
 import { SeqTracker, type CursorCompare } from './seq-tracker.ts'
 import { ClosedError, type AuthError } from './errors.ts'
@@ -44,8 +44,17 @@ export type Transport = {
   // `onOpen`, so a frame is never queued behind a reconnect and sent twice.
   isOpen?: () => boolean
   // the down-stream (re)connected: a new socket, with no subscriptions on it yet.
-  // Returns an unsubscribe.
-  onOpen?: (listener: () => void) => () => void
+  // Pass an `OpenEvent` to say why; a listener called with nothing treats it as an
+  // ordinary reconnect. Returns an unsubscribe.
+  onOpen?: (listener: (event?: OpenEvent) => void) => () => void
+}
+
+// Why the down-stream opened, as far as the transport knows.
+export type OpenEvent = {
+  // The room closed the last socket with `CLOSE_IDENTITY_CHANGED` (4001). Set it
+  // only if this socket's connect carried no `?since`, so non-sliced collections
+  // get a `reset` snapshot. Sliced collections then reload each slice from scratch.
+  identityChanged?: boolean
 }
 
 export type SyncClientOptions = {
@@ -90,9 +99,13 @@ export class SyncClient {
     this.tracker = new SeqTracker(opts.compareCursor)
     this.settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
     this.unsubscribe = transport.subscribe((batch) => this.route(batch))
-    this.offOpen = transport.onOpen?.(() => {
+    this.offOpen = transport.onOpen?.((event) => {
       for (const channel of this.awaitingSnapshot) this.sendFrame({ subscribe: channel })
-      for (const slices of this.slices.values()) slices.resubscribe()
+      const fresh = event?.identityChanged === true
+      for (const [channel, slices] of this.slices) {
+        if (fresh) dropUnsubscribed(this.sinks.get(channel)!, slices)
+        slices.resubscribe(fresh)
+      }
     })
   }
 

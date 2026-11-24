@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createCollection, createLiveQueryCollection, eq, type LoadSubsetOptions } from '@tanstack/db'
-import { SyncClient } from '../src/client/sync-client.ts'
+import { SyncClient, type OpenEvent } from '../src/client/sync-client.ts'
 import type { SequencedBatch } from '../src/protocol.ts'
 import { ChannelSlices, sliceTargets } from '../src/client/slices.ts'
 import type { UpFrame } from '../src/protocol.ts'
@@ -148,6 +148,24 @@ describe('ChannelSlices', () => {
     ])
   })
 
+  it('asks every slice for a snapshot, and forgets released cursors, under a new identity', async () => {
+    const { s, frames, setSeq } = slices()
+    s.acquire(['A', 'B'])
+    s.applied({ channel: 'comments', seq: 3, ops: [], ready: true, slice: 'A' }, true)
+    setSeq(7)
+    s.release(['B'])
+    await flush()
+    s.acquire(['C']) // its reply has not arrived yet
+    frames.length = 0
+    s.resubscribe(true)
+    expect(frames).toEqual([
+      { subscribe: 'comments', slice: 'A' },
+      { subscribe: 'comments', slice: 'C' },
+    ])
+    s.acquire(['B'])
+    expect(frames.at(-1)).toEqual({ subscribe: 'comments', slice: 'B' })
+  })
+
   it('accepts a row of a subscribed slice, or any row while the whole channel is held', () => {
     const { s } = slices()
     s.acquire([7])
@@ -186,5 +204,50 @@ describe('a whole-channel reset on a real sliced collection', () => {
     onBatch({ channel: 'comments', seq: 2, ops: [], ready: true, reset: true })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(frames).toEqual([{ subscribe: 'comments', slice: 'A' }])
+  })
+})
+
+// #68: a socket the room closed for a changed identity reopens with no `?since`.
+// A sliced collection has to reload its rows the same way, or the rows only the
+// old identity could read stay in the collection.
+describe('a sliced collection reopened under a new identity', () => {
+  it('replaces each slice with its snapshot, and drops the rows of released slices', async () => {
+    const frames: UpFrame[] = []
+    let onBatch: (b: SequencedBatch) => void = () => {}
+    let onOpen: (event?: OpenEvent) => void = () => {}
+    const client = new SyncClient({
+      subscribe: (l) => ((onBatch = l), () => {}),
+      send: async () => ({ accepted: [] }),
+      sendFrame: (f) => void frames.push(f),
+      isOpen: () => true,
+      onOpen: (l) => ((onOpen = l), () => {}),
+    })
+    const comments = createCollection<{ id: string; thread_id: string }>({
+      id: 'comments-identity',
+      getKey: (r) => r.id,
+      syncMode: 'on-demand',
+      sync: { sync: (params) => client.registerSliced('comments', params as never, { column: 'thread_id', rows: () => params.collection.entries() }) },
+    })
+    const threadA = createLiveQueryCollection((q) => q.from({ c: comments }).where(({ c }) => eq(c.thread_id, 'A')))
+    const threadB = createLiveQueryCollection((q) => q.from({ c: comments }).where(({ c }) => eq(c.thread_id, 'B')))
+    const loading = Promise.all([threadA.preload(), threadB.preload()])
+    const ins = (id: string, thread_id: string) => ({ type: 'insert' as const, value: { id, thread_id } })
+    onBatch({ channel: 'comments', seq: 2, ops: [ins('a1', 'A'), ins('a2', 'A')], ready: true, reset: true, slice: 'A' })
+    onBatch({ channel: 'comments', seq: 2, ops: [ins('b1', 'B')], ready: true, reset: true, slice: 'B' })
+    await loading
+    await threadB.cleanup()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(comments.has('b1')).toBe(true) // a released slice keeps its rows
+
+    frames.length = 0
+    onOpen({ identityChanged: true })
+    expect(frames).toEqual([{ subscribe: 'comments', slice: 'A' }])
+    expect(comments.has('b1')).toBe(false)
+    expect(comments.has('a2')).toBe(true) // held until its slice's snapshot replaces it
+
+    onBatch({ channel: 'comments', seq: 5, ops: [ins('a1', 'A')], ready: true, reset: true, slice: 'A' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect([...comments.keys()]).toEqual(['a1'])
+    expect(threadA.toArray.map((r) => r.id)).toEqual(['a1'])
   })
 })

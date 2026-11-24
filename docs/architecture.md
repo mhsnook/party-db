@@ -691,7 +691,23 @@ without them.
 A socket's identity is fixed at connect. When it changes, the room closes the
 socket with `CLOSE_IDENTITY_CHANGED` (4001), and the client redials without
 `?since`. A delta never takes back rows the old identity could read, so the client
-loads a `reset` snapshot instead. Sliced collections do not do this yet (#68).
+loads a `reset` snapshot instead.
+
+A sliced collection loads nothing at connect, so the redial alone resets none of
+its rows (§18). The transport tells the `SyncClient` why the socket opened:
+`partyTransport` calls each `onOpen` listener with `{ identityChanged: true }` on
+the first open after a 4001 close. Then each sliced collection does two things:
+
+1. It deletes the rows no live subscription accepts. Those are what released
+   slices left behind, and their cursors were read under the old identity.
+2. It sends each live subscription's subscribe frame with no `since`. Each reply
+   is a slice snapshot marked `reset`, which replaces that slice's rows.
+
+A slice still subscribed keeps its rows until its snapshot replaces them, so the
+screen never shows it empty. The released slices also lose their cursors, so a
+later subscribe to one asks for a snapshot too. `onOpen`'s argument is optional:
+a custom transport that calls its listeners with nothing gets the ordinary
+reconnect, from each slice's cursor.
 
 ### A row that changes hands
 
@@ -813,6 +829,7 @@ delta.
 A release waits one microtask before unsubscribing. TanStack reloads every subset
 after a truncate as an unload/load pair, and that pair must not cost a round trip.
 When the socket reopens, every live subscription goes up again from the same seq.
+The one exception is a reopen under a new identity, which asks for a snapshot (§17).
 
 **Two client-side rules make over-delivery harmless:**
 

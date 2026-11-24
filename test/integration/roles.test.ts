@@ -1,8 +1,12 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { SELF } from 'cloudflare:test'
-import type { SequencedBatch, WriteBatch } from '../../src/protocol.ts'
+import { createLiveQueryCollection, eq } from '@tanstack/db'
+import type { SequencedBatch, WriteAck, WriteBatch } from '../../src/protocol.ts'
 import { CLOSE_IDENTITY_CHANGED } from '../../src/protocol.ts'
-import { partyUrl, roomHeader } from './helpers.ts'
+import { createPartyDb } from '../../src/client/party-db.ts'
+import type { OpenEvent, Transport } from '../../src/client/sync-client.ts'
+import { ids as rowIds, partyUrl, roomHeader } from './helpers.ts'
+import { remarks } from './worker.ts'
 
 // Role grants at the wire, on a real DO: roles come from the token's claims, are
 // pinned to the socket as partyserver tags at connect, and select the sockets a
@@ -67,5 +71,66 @@ describe('role grants at the wire', () => {
     await expect.poll(() => bob.closes).toEqual([CLOSE_IDENTITY_CHANGED])
     expect(carol.closes).toEqual([])
     carol.ws.close()
+  })
+})
+
+// partysocket can't dial `SELF`, so this transport plays its part: on a 4001 close
+// it redials with no `?since`, under whatever token `as` set last, and reports the
+// open as an identity change.
+async function redialing(room: string, token: string) {
+  let current = token
+  let ws: WebSocket | undefined
+  let closed = false
+  const listeners = new Set<(batch: SequencedBatch) => void>()
+  const openers = new Set<(event?: OpenEvent) => void>()
+  const dial = async (identityChanged: boolean) => {
+    const res = await SELF.fetch(url(room, { token: current }), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
+    const socket = res.webSocket!
+    socket.accept()
+    socket.addEventListener('message', (e) => {
+      const batch = JSON.parse(e.data as string) as SequencedBatch
+      for (const listener of listeners) listener(batch)
+    })
+    socket.addEventListener('close', (e) => {
+      ws = undefined
+      if (!closed && e.code === CLOSE_IDENTITY_CHANGED) void dial(true)
+    })
+    ws = socket
+    for (const listener of openers) listener({ identityChanged })
+  }
+  await dial(false)
+  const transport: Transport = {
+    subscribe: (onBatch) => (listeners.add(onBatch), () => listeners.delete(onBatch)),
+    async send(batches) {
+      const res = await post(room, batches, current)
+      if (!res.ok) throw new Error(`write rejected: ${res.status}`)
+      return (await res.json()) as WriteAck
+    },
+    sendFrame: (frame) => ws?.send(JSON.stringify(frame)),
+    isOpen: () => ws !== undefined,
+    onOpen: (listener) => (openers.add(listener), () => openers.delete(listener)),
+    close: () => ((closed = true), ws?.close()),
+  }
+  return { transport, as: (token: string) => void (current = token) }
+}
+
+describe('a sliced collection under a changed identity (#68)', () => {
+  it('drops the rows the new identity cannot read', async () => {
+    const room = 'roles-sliced-reconnect'
+    const remark = (id: string, text: string): WriteBatch[] => [{ channel: 'remarks', ops: [{ type: 'insert', value: { id, thread_id: 'T', text } }] }]
+    expect((await post(room, remark('r1', "alice's"), 'alice')).status).toBe(200)
+    expect((await post(room, remark('r2', "carol's"), 'carol:editor')).status).toBe(200)
+
+    const carol = await redialing(room, 'carol:editor')
+    const { db, close } = createPartyDb(carol.transport, [remarks])
+    const thread = createLiveQueryCollection((q) => q.from({ r: db.remarks }).where(({ r }) => eq(r.thread_id, 'T')))
+    await thread.preload()
+    expect(rowIds(thread)).toEqual(['r1', 'r2'])
+
+    carol.as('carol') // the host takes away her editor role
+    expect((await SELF.fetch(url(room, { reconnect: 'carol' }), { headers: roomHeader(room) })).status).toBe(200)
+    await vi.waitFor(() => expect(rowIds(thread)).toEqual(['r2']))
+    expect(db.remarks.has('r1')).toBe(false)
+    close()
   })
 })

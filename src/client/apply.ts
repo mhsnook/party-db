@@ -68,3 +68,14 @@ export function applyBatch(sink: ChannelSink, batch: SequencedBatch, slicing?: S
   if (batch.ready) sink.markReady()
   return receipt
 }
+
+// Delete the rows no live subscription accepts: what released slices left behind.
+// Under a new identity no query shows them, but `collection.get` still would,
+// until a later subscribe to their slice replaced them.
+export function dropUnsubscribed(sink: ChannelSink, slicing: SliceApply): void {
+  const stale = [...slicing.rows()].filter(([, row]) => !slicing.accepts(row as Record<string, unknown>)).map(([key]) => key)
+  if (!stale.length) return
+  sink.begin()
+  for (const key of stale) sink.write({ type: 'delete', key })
+  sink.commit()
+}

@@ -382,4 +382,18 @@ describe('partyTransport up-frames', () => {
     lastSocket().emit('open', {})
     expect(opened).toHaveBeenCalledTimes(1)
   })
+
+  it('tells the open after a changed-identity close apart from an ordinary reopen', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const opened = vi.fn()
+    transport.onOpen!(opened)
+    const socket = lastSocket()
+    socket.emit('open', {})
+    socket.emit('close', closeEvent(4001, 'identity changed'))
+    socket.emit('close', closeEvent(1006)) // a failed redial still redials for the new identity
+    socket.emit('open', {})
+    socket.emit('close', closeEvent(1006))
+    socket.emit('open', {})
+    expect(opened.mock.calls).toEqual([[{ identityChanged: false }], [{ identityChanged: true }], [{ identityChanged: false }]])
+  })
 })

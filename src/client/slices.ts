@@ -134,9 +134,14 @@ export class ChannelSlices implements SliceApply {
 
   // A new socket starts with no subscriptions: ask again for each one, from the
   // last seq we saw for a loaded slice, or from where it was asking before.
-  resubscribe(): void {
+  //
+  // `fresh` is for a socket under a new identity. A delta never takes back a row
+  // the old identity could read, so every slice asks for a snapshot, and no
+  // released slice keeps a cursor to ask from later.
+  resubscribe(fresh = false): void {
+    if (fresh) this.cursors.clear()
     for (const entry of this.entries.values()) {
-      if (entry.loaded) entry.since = this.roomSeq()
+      entry.since = fresh ? undefined : entry.loaded ? this.roomSeq() : entry.since
       this.send(this.subscribeFrame(entry))
     }
   }

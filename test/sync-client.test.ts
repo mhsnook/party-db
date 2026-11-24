@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { SyncClient, type Transport } from '../src/client/sync-client.ts'
+import { SyncClient, type OpenEvent, type Transport } from '../src/client/sync-client.ts'
 import { ClosedError } from '../src/client/errors.ts'
 import type { ChannelSink } from '../src/client/apply.ts'
 import type { SequencedBatch } from '../src/protocol.ts'
@@ -365,13 +365,14 @@ describe('SyncClient sliced registration', () => {
   function openTransport() {
     const t = fakeTransport()
     let open = false
-    const openers = new Set<() => void>()
+    const openers = new Set<(event?: OpenEvent) => void>()
     const transport: Transport = {
       ...t.transport,
       isOpen: () => open,
       onOpen: (l) => (openers.add(l), () => openers.delete(l)),
     }
-    return { ...t, transport, open: () => ((open = true), openers.forEach((l) => l())), drop: () => void (open = false) }
+    const reopen = (event?: OpenEvent) => ((open = true), openers.forEach((l) => l(event)))
+    return { ...t, transport, open: reopen, drop: () => void (open = false) }
   }
 
   it('holds subscribes until the socket opens, then sends each again on every reopen', () => {
@@ -385,6 +386,22 @@ describe('SyncClient sliced registration', () => {
     expect(t.sendFrame.mock.calls).toEqual([[{ subscribe: 'comments', slice: 'A' }]])
     t.push({ channel: 'comments', seq: 5, ops: [], ready: true, reset: true, slice: 'A' })
 
+    t.drop()
+    t.open()
+    expect(t.sendFrame.mock.calls.at(-1)).toEqual([{ subscribe: 'comments', slice: 'A', since: 5 }])
+  })
+
+  it('asks for each slice without since after a reopen under a new identity', () => {
+    const t = openTransport()
+    const client = new SyncClient(t.transport)
+    const { loadSubset } = client.registerSliced('comments', recorder().sink, { column: 'thread_id', rows: () => [] })
+    t.open()
+    void loadSubset({ where: { type: 'func', name: 'eq', args: [{ type: 'ref', path: ['thread_id'] }, { type: 'val', value: 'A' }] } as any })
+    t.push({ channel: 'comments', seq: 5, ops: [], ready: true, reset: true, slice: 'A' })
+
+    t.drop()
+    t.open({ identityChanged: true })
+    expect(t.sendFrame.mock.calls.at(-1)).toEqual([{ subscribe: 'comments', slice: 'A' }])
     t.drop()
     t.open()
     expect(t.sendFrame.mock.calls.at(-1)).toEqual([{ subscribe: 'comments', slice: 'A', since: 5 }])

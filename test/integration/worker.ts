@@ -296,8 +296,18 @@ export class Owned extends PartyDbServer {
 
 // Role grants at the wire: reviews anyone reads, which their author or an editor
 // edits; drafts only editors touch; notes their owner or an editor reads, which
-// fan out per socket. The token is `<uid>` or `<uid>:<role>,<role>`.
+// fan out per socket; remarks are notes sliced by thread. The token is `<uid>` or
+// `<uid>:<role>,<role>`.
 const reviewSchema = z.object({ id: z.string(), reviewed_by: z.string().optional(), text: z.string() })
+
+export const remarks = definePartyCollection({
+  name: 'remarks',
+  key: 'id',
+  schema: reviewSchema.extend({ thread_id: z.string() }),
+  ownerColumn: 'reviewed_by',
+  sliceBy: 'thread_id',
+  access: { owner: true, roles: ['editor'] },
+})
 
 export class Reviewed extends PartyDbServer {
   collections: PartyCollection<any>[] = [
@@ -310,6 +320,7 @@ export class Reviewed extends PartyDbServer {
     }),
     definePartyCollection({ name: 'drafts', key: 'id', schema: z.object({ id: z.string(), text: z.string() }), access: { roles: ['editor'] } }),
     definePartyCollection({ name: 'notes', key: 'id', schema: reviewSchema, ownerColumn: 'reviewed_by', access: { owner: true, roles: ['editor'] } }),
+    remarks,
   ]
 
   auth = (req: Request): WriteIdentity | null => {
@@ -324,6 +335,9 @@ export class Reviewed extends PartyDbServer {
       this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`)
     }
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS drafts (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS remarks (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`,
+    )
     return super.onStart()
   }
 

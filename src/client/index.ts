@@ -1,4 +1,4 @@
-export { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
+export { SyncClient, type Transport, type OpenEvent, type SyncClientOptions } from './sync-client.ts'
 export { SeqTracker, compareCursor, type CursorCompare } from './seq-tracker.ts'
 export {
   definePartyCollection,

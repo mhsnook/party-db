@@ -1,5 +1,17 @@
 # Changes
 
+## Unreleased
+
+- **Fixed: a `sliceBy` collection kept rows after its user's identity changed (#68).**
+  After `reconnectUser`, a sliced collection asked for a delta, which never removes a
+  row the new identity cannot read. Now each slice reloads from a snapshot, and the
+  rows of released slices are dropped.
+- **`Transport.onOpen` listeners take an optional `OpenEvent`.** A transport passes
+  `{ identityChanged: true }` on the first open after a `CLOSE_IDENTITY_CHANGED`
+  close. A custom transport that calls its listeners with no argument still works,
+  and its sliced collections reconnect from their cursors as before. `OpenEvent` is
+  exported from `party-db/client`.
+
 ## 2026-11-24 - v0.2.0
 
 Access policies can name roles. A verb's policy can be a grant, met by the row's
