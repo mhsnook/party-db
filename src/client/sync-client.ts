@@ -108,10 +108,10 @@ export class SyncClient {
     this.offOpen = transport.onOpen?.((event) => {
       for (const channel of this.awaitingSnapshot) this.sendFrame({ subscribe: channel })
       const fresh = event?.identityChanged === true
-      for (const [channel, slices] of this.slices) {
-        if (fresh) dropUnsubscribed(this.sinks.get(channel)!, slices)
-        slices.resubscribe(fresh)
-      }
+      for (const slices of this.slices.values()) slices.resubscribe(fresh)
+      // after every resubscribe: a sink that throws here must not cost another
+      // channel its snapshot request
+      if (fresh) for (const [channel, slices] of this.slices) dropUnsubscribed(this.sinks.get(channel)!, slices)
     })
   }
 

@@ -1,26 +1,5 @@
 # Changes
 
-## Unreleased
-
-- **Fixed: a `sliceBy` collection kept rows after its user's identity changed (#68).**
-  After `reconnectUser`, a sliced collection asked for a delta, which never removes a
-  row the new identity cannot read. Now each slice reloads from a snapshot, and the
-  rows of released slices are dropped.
-- **`Transport.onOpen` listeners take an optional `OpenEvent`.** A transport passes
-  `{ identityChanged: true }` on the first open after a `CLOSE_IDENTITY_CHANGED`
-  close. A custom transport that calls its listeners with no argument still works,
-  and its sliced collections reconnect from their cursors as before. `OpenEvent` is
-  exported from `party-db/client`.
-- **`reconnect()` on `createPartyDb`, and an optional `Transport.reconnect`.** It
-  redials now. Pass `{ identityChanged: true }` when the app switches who is signed
-  in: every collection reloads under the next token, sliced ones included.
-  `partyTransport` implements it with PartySocket's `reconnect()`, which also redials
-  after a 1008 close stopped the socket. A transport without `reconnect` makes the
-  call throw.
-- **Fixed: a socket that dropped before a slice's identity snapshot arrived** asked
-  for a delta on the next reopen, and kept the old identity's rows. A slice now asks
-  for its snapshot on every reopen until one arrives.
-
 ## 2026-11-24 - v0.2.0
 
 Access policies can name roles. A verb's policy can be a grant, met by the row's
@@ -33,9 +12,22 @@ owner or by a signed-in user holding one of its roles.
   key, so `{ role: 'editor' }` fails at startup instead of denying everyone.
 - **`PartyDbServer.reconnectUser(uid)`.** It closes that user's sockets with
   `CLOSE_IDENTITY_CHANGED` (4001). The client redials without `?since` and loads a
-  fresh snapshot under its new identity. Call it when someone's roles change or they
-  are deactivated. It closes nothing in a room whose reads are all public, since those
-  sockets are never tagged.
+  fresh snapshot under its new identity. A `sliceBy` collection reloads each slice it
+  is subscribed to, and drops the rows of slices it let go of. Call it when someone's
+  roles change or they are deactivated. It closes nothing in a room whose reads are
+  all public, since those sockets are never tagged.
+- **`reconnect()` on `createPartyDb`.** The room can't see the app switch who is
+  signed in, so the app asks: `reconnect({ identityChanged: true })` reloads every
+  collection, sliced ones included, under the token the transport reads next. With no
+  argument it redials from its cursor, which also redials after a 1008 close stopped
+  the socket.
+- **Custom transports: an optional `Transport.reconnect`, and an `OpenEvent` for
+  `onOpen` listeners.** After a 4001 close or a `reconnect({ identityChanged: true })`,
+  a transport connects without `?since` and calls its listeners with
+  `{ identityChanged: true }`. A transport that calls them with no argument still
+  works, and its sliced collections reconnect from their cursors. Without `reconnect`,
+  `createPartyDb(...).reconnect()` throws. `OpenEvent` is exported from
+  `party-db/client`.
 - **Composed hosts: `broadcast` can be handed `{ role }`.** `audienceTag` covers it, so a
   host that looks sockets up by `audienceTag(audience)` needs no change. A collection
   whose read grant names an owner and a role, or several roles, needs the core's

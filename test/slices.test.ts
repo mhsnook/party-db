@@ -166,6 +166,22 @@ describe('ChannelSlices', () => {
     expect(frames.at(-1)).toEqual({ subscribe: 'comments', slice: 'B' })
   })
 
+  it('makes a new query on a slice wait for its identity snapshot, not resolve on the old rows', async () => {
+    const { s } = slices()
+    s.acquire(['A'])
+    s.applied({ channel: 'comments', seq: 3, ops: [], ready: true, slice: 'A' }, true)
+    expect(s.acquire(['A'])).toBe(true)
+    s.resubscribe(true)
+    const loaded = s.acquire(['A'])
+    expect(loaded).toBeInstanceOf(Promise)
+    const done = vi.fn()
+    ;(loaded as Promise<void>).then(done)
+    await flush()
+    expect(done).not.toHaveBeenCalled()
+    s.applied({ channel: 'comments', seq: 9, ops: [], ready: true, reset: true, slice: 'A' }, true)
+    await loaded
+  })
+
   it('keeps no cursor for a slice released while its identity snapshot is outstanding', async () => {
     const { s, frames, setSeq } = slices()
     s.acquire(['A'])

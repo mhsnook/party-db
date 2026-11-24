@@ -449,6 +449,25 @@ describe('SyncClient sliced registration', () => {
   })
 })
 
+describe('SyncClient identity reopen with a sink that throws', () => {
+  it('still asks every sliced channel for its snapshot', () => {
+    const t = fakeTransport()
+    let open: (event?: OpenEvent) => void = () => {}
+    const client = new SyncClient({ ...t.transport, isOpen: () => true, onOpen: (l) => ((open = l), () => {}) })
+    const where = (value: string) => ({ where: { type: 'func', name: 'eq', args: [{ type: 'ref', path: ['thread_id'] }, { type: 'val', value }] } as any })
+    const broken = { ...recorder().sink, begin: () => { throw new Error('sink is in an error state') } }
+    // a stale row, so the drop reaches the throwing begin()
+    const first = client.registerSliced('comments', broken, { column: 'thread_id', rows: () => [['x', { thread_id: 'Z' }]] })
+    const second = client.registerSliced('replies', recorder().sink, { column: 'thread_id', rows: () => [] })
+    void first.loadSubset(where('A'))
+    void second.loadSubset(where('A'))
+    t.sendFrame.mockClear()
+
+    expect(() => open({ identityChanged: true })).toThrow(/error state/)
+    expect(t.sendFrame.mock.calls).toEqual([[{ subscribe: 'comments', slice: 'A' }], [{ subscribe: 'replies', slice: 'A' }]])
+  })
+})
+
 describe('SyncClient.reconnect', () => {
   it("hands the request to the transport's reconnect", () => {
     const t = fakeTransport()
