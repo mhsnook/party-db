@@ -80,6 +80,12 @@ export type WriteRejectCode = 'missing-row'
 export const PROTO_PARAM = 'proto'
 export const PROTO_VALUE = 'party-db'
 
+// The close code a room sends when a socket's identity has changed (a role
+// granted or revoked, a user deactivated). The client redials WITHOUT `?since`,
+// so it gets a `reset` snapshot read under its new identity: a delta would never
+// take back the rows the old identity could read and the new one cannot.
+export const CLOSE_IDENTITY_CHANGED = 4001
+
 // Checks that a frame is our shape, because composed hosts may not filter
 // dispatches cleanly.
 export function isSequencedBatch(value: unknown): value is SequencedBatch {

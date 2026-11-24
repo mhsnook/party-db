@@ -23,7 +23,7 @@
 // `Server` — holds a `PartyDbCore` itself and does the same wiring (§15).
 
 import { Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver'
-import type { SequencedBatch, WriteBatch } from '../protocol.ts'
+import { CLOSE_IDENTITY_CHANGED, type SequencedBatch, type WriteBatch } from '../protocol.ts'
 import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
@@ -122,7 +122,9 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // Pin the socket's user to it, as tags that survive hibernation, when some
   // collection's reads depend on who is asking. A room whose reads are all public
   // tags nothing and never calls `auth` here. Overriding this? Keep these tags:
-  // `return [...(await super.getConnectionTags(conn, ctx)), ...yours]`.
+  // `return [...(await super.getConnectionTags(conn, ctx)), ...yours]`. A socket
+  // holds 9 tags and these take up to 2 + MAX_ROLE_TAGS of them; past 9 in total,
+  // partyserver refuses the connect.
   async getConnectionTags(_conn: Connection, ctx: ConnectionContext): Promise<string[]> {
     return viewerTags(await this.core.resolveViewer(ctx.request))
   }
@@ -152,6 +154,16 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // controlled mode writes come over HTTP, not the (hibernating) socket.
   onRequest(req: Request): Promise<Response> {
     return this.core.handleWrite(req)
+  }
+
+  // Close every socket of `uid`, so each redials and is judged by the identity
+  // the `auth` hook resolves now. Call it when a user's roles change or they are
+  // deactivated: a socket's identity is fixed at connect. The client drops its
+  // cursor on this close (`CLOSE_IDENTITY_CHANGED`) and reloads a full snapshot,
+  // which also takes back rows the old identity could read. A room whose reads are
+  // all public tags no socket by user, so there this closes nothing.
+  reconnectUser(uid: string, reason = 'identity changed'): void {
+    for (const conn of this.getConnections(audienceTag({ uid }))) conn.close(CLOSE_IDENTITY_CHANGED, reason)
   }
 
   // The write → seq → broadcast section, for a row the server itself authors

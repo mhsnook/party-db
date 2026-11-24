@@ -5,7 +5,7 @@ import PartySocket from 'partysocket'
 import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type DbOf, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
-import { isSequencedBatch, parseFrame, PROTO_PARAM, PROTO_VALUE } from '../protocol.ts'
+import { CLOSE_IDENTITY_CHANGED, isSequencedBatch, parseFrame, PROTO_PARAM, PROTO_VALUE } from '../protocol.ts'
 
 // WebSocket close code the server uses when a room-aware auth check rejects the
 // connection (docs/auth.md §2). Unlike 1006 (network) / 1011 (server) / normal,
@@ -54,6 +54,7 @@ export function partyTransport(opts: {
   // dead socket. shouldReconnectOnClose above already ran on this same event, so
   // by the time we notify, the reconnect has been suppressed.
   socket.addEventListener('close', (event) => {
+    if (event.code === CLOSE_IDENTITY_CHANGED) lastSeq = undefined
     if (event.code !== CLOSE_POLICY_VIOLATION) return
     const error = new AuthError(event.reason || 'websocket closed by server auth policy (1008)', event.code)
     for (const listener of authListeners) listener(error)

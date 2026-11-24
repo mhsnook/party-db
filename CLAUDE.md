@@ -125,7 +125,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
   `Omit<ChangeMessage, 'key'>`), `WriteBatch`, `SequencedBatch`, `Cursor`, `WriteAck`, `WriteReject`,
   and `SubscribeFrame` / `UnsubscribeFrame` — the frames a client sends UP the socket
   (`docs/architecture.md` §8a, §18).
-- **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access?, sliceBy?, snapshot? }`, the one
+- **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access?, sliceBy?, snapshot? }` (`access` takes a policy or an `AccessGrant` per verb), the one
   collection interface both sides import, plus `definePartyCollection` for inference. `ownerColumn`
   is typed `UidColumn<T>` — a string or number column, since a `SERIAL` user id is as common as a
   uuid. Owners compare as text (`idOf`), so `user_id` 1 matches the `sub` claim "1".
@@ -146,7 +146,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 
 **Server**
 
-- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onMessage` / `.onStart` / `.createAdapter` — `src/server/party-db-server.ts`, the thin subclass
+- `PartyDbServer.onRequest` / `.commit` / `.onConnect` / `.onMessage` / `.onStart` / `.createAdapter` / `.reconnectUser` — `src/server/party-db-server.ts`, the thin subclass
 - `PartyDbCore.init` / `.connect` / `.handleMessage` / `.handleWrite` / `.commit` / `.serialize` / `isPartyDbRequest` — `src/server/core.ts`, the composable core for a host that can't subclass (`docs/architecture.md` §15)
 - `authHooks(authorize)` / `bearer(req)` / `getTokenFromRequest(req)` — `src/server/auth.ts`
 - `buildPlans` / `structuredStmt` / `blobStmt` / `resolveStructured` / `resolvedOpJsonExpr` / `oplogInsertStmt` / `toPg` — `src/server/statements.ts`
@@ -154,7 +154,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `SqliteAdapter` / `D1Adapter` / `PgAdapter` — each implements `init` / `write` / `snapshot` / `replaySince`;
   `PgAdapter` adds `classifyError` and `verifyAnonRole`
 - `SliceRoutes` / `PartyDbConnection` / `PartyDbCore.disconnect` — `src/server/slices.ts`, routing a sliced write to its watchers
-- `policiesOf` / `gateWrite` / `needsPriorRow` / `applyPriorRows` / `opFor` / `visibleTo` / `audiencesOf` / `viewerTags` / `viewerFromTags` — `src/server/access.ts`, the access policies
+- `policiesOf` / `gateWrite` / `needsPriorRow` / `applyPriorRows` / `opFor` / `visibleTo` / `audiencesOf` / `viewerOf` / `viewerTags` / `viewerFromTags` / `rolesNamed` — `src/server/access.ts`, the access policies and role grants
   (`opFor` is the one op-level read filter; the snapshot, the delta, the fan-out and the ack all go through it)
 
 ## Commands

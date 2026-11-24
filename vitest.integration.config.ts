@@ -30,6 +30,8 @@ export default defineConfig({
           Hosted: { className: 'Hosted', useSQLite: true },
           // cookbook 5's access policies: a public catalog + per-user owned cards.
           Owned: { className: 'Owned', useSQLite: true },
+          // role grants: editor-only drafts, owner-or-editor reviews and notes.
+          Reviewed: { className: 'Reviewed', useSQLite: true },
           // HOLDS a PartyDbCore instead of subclassing PartyDbServer (issue #43).
           Composed: { className: 'Composed', useSQLite: true },
           // persists into D1 (env.DB) rather than its own SQLite; still a real DO.

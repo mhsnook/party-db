@@ -27,7 +27,7 @@ update your row when done.
 | 014 | D1 adapter — second v1 persistence target (one `batch()` commits data + oplog + seq; `?since` preserved) | P1 | M | 001–004, 006 (**003, 004 hard**) | DONE |
 | 015 | Postgres harness — real PG in CI (`wal_level=logical`) + workerd connectivity spike | P1 | M | — | DONE |
 | 016 | PostgresAdapter — mode 3 first rung (v1 semantics, oplog beside the data, SQLSTATE classification) | P1 | L | **015 (hard)** | DONE |
-| 017 | Access policies — RLS in the JS layer (A: cookbook 5 string policies · B: cookbook 6 expression rules) | P1 | L | — (coordinate 011, 016) | A: SHIPPED v0.0.5 (#33, #59) · A2 (below): TODO · B: TODO |
+| 017 | Access policies — RLS in the JS layer (A: cookbook 5 string policies · B: cookbook 6 expression rules) | P1 | L | — (coordinate 011, 016) | A: SHIPPED v0.0.5 (#33, #59) · role grants: v0.2.0 · A2 (below): TODO · B: TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
