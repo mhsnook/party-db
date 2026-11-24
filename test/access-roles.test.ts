@@ -98,6 +98,15 @@ describe('checkAccess — a grant that cannot mean what it says refuses to start
     expect(declare({ read: 'public', roles: ['editor'] })).toThrow(/names "read" in a grant/)
   })
 
+  it('refuses a policy string it does not know, and a value that is neither a policy nor a grant', () => {
+    expect(declare({ update: 'owners' })).toThrow(/access.update is "owners"/)
+    expect(declare('Public')).toThrow(/access is "Public"/)
+    expect(declare({ read: true })).toThrow(/access.read is not a policy or a grant/)
+    expect(declare({ read: ['owner'] })).toThrow(/access.read is not a policy or a grant/)
+    expect(declare(['owner'])).toThrow(/not a policy, a grant or a per-verb object/)
+    expect(declare({ read: 'public', update: undefined })).not.toThrow()
+  })
+
   it('refuses an owner grant with no ownerColumn', () => {
     expect(declare({ update: { owner: true, roles: ['editor'] } }, { ownerColumn: undefined })).toThrow(/no ownerColumn/)
   })

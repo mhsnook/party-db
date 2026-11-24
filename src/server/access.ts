@@ -11,7 +11,7 @@
 // that writes rows with `commit()` is trusted and bypasses the write gate.
 
 import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
-import type { AccessGrant, PartyCollection, VerbAccess } from '../schema.ts'
+import type { AccessGrant, AccessPolicy, PartyCollection, VerbAccess } from '../schema.ts'
 import type { WriteIdentity, WriteRejection } from './persistence.ts'
 import { canHoldUid, columnsOf, idOf } from './columns.ts'
 
@@ -179,17 +179,30 @@ export function checkAccess(collection: PartyCollection<any>): void {
 // read would otherwise deny silently: `{ role: 'editor' }` is not a grant, and
 // `{ roles: [...], read: 'public' }` is neither a grant nor the per-verb form.
 function checkDeclared(name: string, access: PartyCollection<any>['access']): void {
-  if (access === undefined || typeof access === 'string') return
-  if (typeof access !== 'object' || access === null) throw new Error(`collection "${name}" has an access declaration that is not a policy or an object`)
+  if (access === undefined) return
+  if (typeof access === 'string') return checkPolicy(name, 'access', access)
+  if (typeof access !== 'object' || access === null || Array.isArray(access)) {
+    throw new Error(`collection "${name}" has an access declaration that is not a policy, a grant or a per-verb object`)
+  }
   if (isGrant(access)) return checkGrant(name, 'access', access)
-  for (const key of Object.keys(access)) {
+  for (const [key, rule] of Object.entries(access)) {
     if (!VERBS.includes(key as Verb)) {
       throw new Error(
         `collection "${name}" names "${key}" in access. Use read, insert, update and delete, or a single grant { owner, roles }.`,
       )
     }
-    const rule = (access as Record<string, unknown>)[key]
-    if (typeof rule === 'object' && rule !== null) checkGrant(name, `access.${key}`, rule as AccessGrant)
+    if (rule === undefined) continue
+    if (typeof rule === 'string') checkPolicy(name, `access.${key}`, rule)
+    else if (typeof rule === 'object' && rule !== null && !Array.isArray(rule)) checkGrant(name, `access.${key}`, rule as AccessGrant)
+    else throw new Error(`collection "${name}" access.${key} is not a policy or a grant`)
+  }
+}
+
+const POLICIES: readonly string[] = ['public', 'authed', 'owner', 'none'] satisfies AccessPolicy[]
+
+function checkPolicy(name: string, where: string, policy: string): void {
+  if (!POLICIES.includes(policy)) {
+    throw new Error(`collection "${name}" ${where} is "${policy}". A policy is 'public', 'authed', 'owner' or 'none'.`)
   }
 }
 
