@@ -689,9 +689,33 @@ the host's `connections` (§15) for such a collection, and `init` refuses to sta
 without them.
 
 A socket's identity is fixed at connect. When it changes, the room closes the
-socket with `CLOSE_IDENTITY_CHANGED` (4001), and the client redials without
-`?since`. A delta never takes back rows the old identity could read, so the client
-loads a `reset` snapshot instead. Sliced collections do not do this yet (#68).
+socket with `CLOSE_IDENTITY_CHANGED` (4001). A delta never takes back rows the old
+identity could read, so the client does not try to repair what it holds. It starts
+over: `SyncClient.reset`, which the app can also call after it signs in someone else.
+
+A reset is two steps. The first drops everything held. The second loads fresh, and
+by then a role change, a user switch and a sign-in look the same:
+
+1. **Drop, on the event itself.** A 4001 restarts the client in its close handler,
+   not on the next open, so a redial the lobby refuses leaves nothing behind.
+   - The cursor is forgotten. The client owns it, beside the rows it vouches for,
+     and the transport only reads it at dial time.
+   - In-flight writes reject with `DroppedError`, and TanStack rolls their overlays
+     back.
+   - Until the next socket opens, frames from the old one are ignored and no
+     subscribe is sent.
+   - Every old collection is emptied, then detached. A query nobody rebuilds shows
+     it empty, never the old rows. A sliced collection gets a delete per row, not a
+     truncate: on an on-demand collection TanStack holds a truncate's deletes back
+     until its subsets reload, and a retired collection never reloads.
+2. **Load, into new collections.** Each `db` property gets a fresh TanStack
+   collection on the same `SyncClient`. It starts in `loading` and asks for its
+   snapshot through the re-register path (§8a), or through its live queries' slices
+   (§18). `onReset` tells the app to rebuild its queries on them.
+
+Replacing the collection, rather than emptying it in place, is what gives the app a
+real loading state: TanStack never moves a `ready` collection back to `loading`. It
+also keeps the old identity's optimistic writes on the old object.
 
 ### A row that changes hands
 
@@ -813,6 +837,8 @@ delta.
 A release waits one microtask before unsubscribing. TanStack reloads every subset
 after a truncate as an unload/load pair, and that pair must not cost a round trip.
 When the socket reopens, every live subscription goes up again from the same seq.
+A reset (§17) is the exception: it retires the collection with its subscriptions,
+and the fresh collection's live queries subscribe with no cursor.
 
 **Two client-side rules make over-delivery harmless:**
 

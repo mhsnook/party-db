@@ -11,10 +11,24 @@ owner or by a signed-in user holding one of its roles.
   `claims.roles`, and count only beside a `sub`. Boot refuses a grant with an unknown
   key, so `{ role: 'editor' }` fails at startup instead of denying everyone.
 - **`PartyDbServer.reconnectUser(uid)`.** It closes that user's sockets with
-  `CLOSE_IDENTITY_CHANGED` (4001). The client redials without `?since` and loads a
-  fresh snapshot under its new identity. Call it when someone's roles change or they
-  are deactivated. It closes nothing in a room whose reads are all public, since those
-  sockets are never tagged.
+  `CLOSE_IDENTITY_CHANGED` (4001), and the client resets (below). Call it when
+  someone's roles change or they are deactivated. It closes nothing in a room whose
+  reads are all public, since those sockets are never tagged.
+- **`reset()` and `onReset` on `createPartyDb`.** A reset replaces every collection in
+  `db` with a fresh one, which is `loading` until it fills from a snapshot under the
+  new identity. Sliced collections included (#68). The client resets on a 4001 by
+  itself; call `reset()` after the app signs in someone else. `onReset(reason)`
+  says when to rebuild queries, with `'identity-changed'` or `'requested'`. The old
+  collections are emptied, so a query nobody rebuilt shows nothing stale. Read
+  collections through `db`, not a copy taken before the reset.
+- **`DroppedError`.** A write still settling across a reset rejects with it, and its
+  optimistic change rolls back. So does a write to a collection a reset replaced.
+- **Custom transports.** The client now owns the `?since` cursor:
+  `subscribe(onBatch, { since })` hands the transport a getter to read on each
+  (re)connect. Two optional capabilities are new: `onClose(code)`, which a 4001
+  reset needs, and `reconnect()`, which `reset()` needs and throws without. With
+  `onOpen`, a reset also sends no subscribe until the next socket opens. A transport
+  that ignores `since` still works, and reloads in full on every reconnect.
 - **Composed hosts: `broadcast` can be handed `{ role }`.** `audienceTag` covers it, so a
   host that looks sockets up by `audienceTag(audience)` needs no change. A collection
   whose read grant names an owner and a role, or several roles, needs the core's

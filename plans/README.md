@@ -27,7 +27,8 @@ update your row when done.
 | 014 | D1 adapter — second v1 persistence target (one `batch()` commits data + oplog + seq; `?since` preserved) | P1 | M | 001–004, 006 (**003, 004 hard**) | DONE |
 | 015 | Postgres harness — real PG in CI (`wal_level=logical`) + workerd connectivity spike | P1 | M | — | DONE |
 | 016 | PostgresAdapter — mode 3 first rung (v1 semantics, oplog beside the data, SQLSTATE classification) | P1 | L | **015 (hard)** | DONE |
-| 017 | Access policies — RLS in the JS layer (A: cookbook 5 string policies · B: cookbook 6 expression rules) | P1 | L | — (coordinate 011, 016) | A: SHIPPED v0.0.5 (#33, #59) · role grants: v0.2.0 · A2 (below): TODO · B: TODO |
+| 017 | Access policies — RLS in the JS layer (A: cookbook 5 string policies · B: cookbook 6 expression rules) | P1 | L | — (coordinate 011, 016) | A: SHIPPED v0.0.5 (#33, #59) · role grants: v0.2.0 · A2 (below): item 1 DONE v0.2.0 (`reset()`), rest TODO · B: TODO |
+| 018 | Every channel is a subscription: per-scope cursors, one load path, idempotent apply | P2 | M | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
@@ -71,7 +72,7 @@ routing, and the read filter at snapshot, `?since` delta and fan-out
 doing. Nothing here is a regression; each is named as unbuilt in §17 or found by the
 review on #59.
 
-1. **Re-authenticate the transport without a page reload.** A socket keeps the uid
+1. **DONE in v0.2.0: `createPartyDb(...).reset()`.** Re-authenticate the transport without a page reload. A socket keeps the uid
    it connected with, so signing in or out only takes effect on reconnect, and
    `example-react-polyglot` reloads the tab to get one. That is the opposite of what
    a local-first library is for. The client needs a way to redial when the token
