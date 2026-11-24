@@ -686,7 +686,16 @@ A read grant that names an owner and a role, or several roles, fans out per sock
 not per audience. One user can be in two audiences, such as an editor who owns the
 note, and an audience split would send that socket the op twice. So the core needs
 the host's `connections` (§15) for such a collection, and `init` refuses to start
-without them.
+without them. The core asks `connections` for one audience at a time, each role the
+grant names and each owner in the batch, so a write costs the sockets that can read
+it, not every socket in the room.
+
+A socket's tags are the only record of who it is, and a client picks its own
+connection id, which partyserver stores as a tag. So a connect whose id starts with
+`party-db:` is refused before the socket is accepted (`assertConnectionId`). A room
+names at most 7 roles, the number a socket can pin: the write's answer is judged by
+the POST's roles, and a role the socket could not pin would acknowledge a seq that
+never streams back.
 
 A socket's identity is fixed at connect. When it changes, the room closes the
 socket with `CLOSE_IDENTITY_CHANGED` (4001), and the client redials without

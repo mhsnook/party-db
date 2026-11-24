@@ -322,6 +322,24 @@ export function audiencesOf(access: CollectionAccess, batch: SequencedBatch): { 
   return [...byOwner].map(([uid, ops]) => ({ audience: { uid }, batch: { ...batch, ops } }))
 }
 
+// The audiences whose sockets may read some op of `batch` on a `perSocket`
+// collection: each role the read grant names, and each row's owner before and
+// after the write. One socket can be in several, so the caller dedupes.
+export function readersOf(access: CollectionAccess, batch: SequencedBatch): Exclude<Audience, 'all'>[] {
+  const read = access.policies.read
+  if (typeof read !== 'object') return []
+  const uids = new Set<string>()
+  if (read.owner) {
+    for (const op of batch.ops) {
+      for (const row of [op.value, priorOf(op)]) {
+        const uid = ownerOf(access, row)
+        if (uid !== null) uids.add(uid)
+      }
+    }
+  }
+  return [...read.roles.map((role) => ({ role })), ...[...uids].map((uid) => ({ uid }))]
+}
+
 // ---- writes ----
 
 // A write the policies refuse. It carries a `WriteRejection` for the same reason
@@ -480,13 +498,22 @@ function ownerOf(access: CollectionAccess, row: unknown): string | null {
 // `getConnections(tag)`: the fan-out finds a user's sockets with one lookup.
 // `PartyDbServer` uses exactly this scheme; a composed host (§15) can reuse it.
 
-const AUTHED_TAG = 'party-db:authed'
-const UID_TAG = 'party-db:uid:'
-const ROLE_TAG = 'party-db:role:'
+const TAG_PREFIX = 'party-db:'
+const AUTHED_TAG = `${TAG_PREFIX}authed`
+const UID_TAG = `${TAG_PREFIX}uid:`
+const ROLE_TAG = `${TAG_PREFIX}role:`
 // partyserver caps a tag at 256 characters, and a socket at 9 tags of its own.
 const MAX_TAG = 256
 // what is left of the 9 after the authed and uid tags
 export const MAX_ROLE_TAGS = 7
+
+// partyserver takes a socket's id from the client's `?_pk=` and stores it as the
+// socket's first tag. An id shaped like one of our tags would read back as a uid
+// or a role the `auth` hook never gave, so refuse it BEFORE the socket is
+// accepted: call this first in `getConnectionTags`.
+export function assertConnectionId(id: string): void {
+  if (id.startsWith(TAG_PREFIX)) throw new Error(`a connection id cannot start with "${TAG_PREFIX}"`)
+}
 
 // The tags that pin `viewer` to its socket. A uid too long to fit in a tag is not
 // pinned: that socket reads as anonymous, and a warning says why. Past

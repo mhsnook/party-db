@@ -5,7 +5,7 @@ export { definePartyCollection, type Access, type AccessGrant, type AccessPolicy
 export { authHooks, bearer, getTokenFromRequest, type AuthContext, type AuthDecision, type AuthKind, type Authorize } from './auth.ts'
 export { MissedUpdateError } from './persistence.ts'
 export { MAX_SUBSCRIPTIONS, type PartyDbConnection, type Subscription } from './slices.ts'
-export { audienceTag, MAX_ROLE_TAGS, viewerFromTags, viewerOf, viewerTags, type Audience, type Viewer } from './access.ts'
+export { assertConnectionId, audienceTag, MAX_ROLE_TAGS, viewerFromTags, viewerOf, viewerTags, type Audience, type Viewer } from './access.ts'
 export type { PersistenceAdapter, WriteIdentity, WriteRejection } from './persistence.ts'
 export { SqliteAdapter, type SqlEngine, type SqlResult } from './sqlite-adapter.ts'
 export { D1Adapter, type D1AdapterOptions } from './d1-adapter.ts'

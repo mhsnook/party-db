@@ -47,6 +47,7 @@ async function room(opts: { connections?: boolean } = {}) {
   db.exec(`CREATE TABLE memos (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
   db.exec(`CREATE TABLE notes (id TEXT PRIMARY KEY, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`)
   const sockets: Socket[] = []
+  const asked: unknown[] = []
   const core = new PartyDbCore({
     collections,
     adapter: new SqliteAdapter(engine, collections),
@@ -55,7 +56,14 @@ async function room(opts: { connections?: boolean } = {}) {
       to.forEach((s) => s.frames.push(JSON.parse(m)))
     },
     auth: () => auth,
-    ...(opts.connections === false ? {} : { connections: () => sockets }),
+    ...(opts.connections === false
+      ? {}
+      : {
+          connections: (audience) => {
+            asked.push(audience)
+            return audience ? sockets.filter((s) => s.tags.includes(audienceTag(audience))) : sockets
+          },
+        }),
   })
   await core.init()
 
@@ -87,7 +95,7 @@ async function room(opts: { connections?: boolean } = {}) {
     )
     return { status: res.status, body: (await res.json()) as WriteAck & WriteReject }
   }
-  return { core, db, connect, close, post }
+  return { core, db, connect, close, post, asked }
 }
 
 const op = (channel: string, type: 'insert' | 'update' | 'delete', value: Record<string, unknown>): WriteBatch[] => [
@@ -186,6 +194,20 @@ describe('role grants — the reads', () => {
     await post(op('notes', 'insert', { id: 'n1', text: 'mine' }), 'dana:editor')
     expect(live(dana.frames).filter((f) => f.channel === 'notes')).toHaveLength(1)
     expect(ids(live(dana.frames), 'notes')).toEqual(['insert:n1'])
+  })
+
+  it('looks up only the sockets of the roles and owners a note can reach, never the whole room', async () => {
+    const { connect, post, asked } = await room()
+    await connect(BOB)
+    await post(op('notes', 'insert', { id: 'n1', text: 'a' }), ALICE)
+    expect(asked).toEqual([{ role: 'editor' }, { uid: 'alice' }])
+  })
+
+  it('refuses to start a room that names more roles than a socket can pin', async () => {
+    const { engine } = memoryEngine()
+    const many = definePartyCollection({ name: 'drafts', key: 'id', schema: draftSchema, access: { roles: Array.from({ length: 8 }, (_, i) => `r${i}`) } })
+    const core = new PartyDbCore({ collections: [many], adapter: new SqliteAdapter(engine, [many]), broadcast: () => {}, auth: () => auth, connections: () => [] })
+    await expect(core.init()).rejects.toThrow(/name 8 roles/)
   })
 
   it('sends a two-role read once to a socket holding both roles, and once to each single holder', async () => {

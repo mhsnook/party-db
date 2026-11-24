@@ -34,6 +34,8 @@ import {
   audiencesOf,
   checkAccess,
   gateWrite,
+  MAX_ROLE_TAGS,
+  readersOf,
   rolesNamed,
   storedKeysNeeded,
   viewerOf,
@@ -102,7 +104,10 @@ export interface PartyDbCoreOptions {
   // A collection whose read grant names an owner and a role, or several roles,
   // needs it too: one user can match two of those audiences, so the core sends
   // each socket its own frame instead, and `init` refuses to start without it.
-  connections?: () => Iterable<PartyDbConnection>
+  // For such a write the core passes an audience, once per role and per owner:
+  // return only that audience's sockets (`getConnections(audienceTag(audience))`),
+  // or every write loops over every socket in the room.
+  connections?: (audience?: Exclude<Audience, 'all'>) => Iterable<PartyDbConnection>
 }
 
 // What `connect` and `handleMessage` reply through: a bare send function, or a
@@ -130,7 +135,7 @@ export class PartyDbCore {
   private channels: Set<string>
   // channel → its `sliceBy` column, for the collections that load by slice.
   private sliceBy: Map<string, string>
-  private connections?: () => Iterable<PartyDbConnection>
+  private connections?: PartyDbCoreOptions['connections']
   // built on first use after construction — i.e. after every wake — from the
   // connections' own saved subscriptions.
   private routes?: SliceRoutes
@@ -215,6 +220,12 @@ export class PartyDbCore {
             'so the room needs an adapter with readRows, to read the row as it stood before the write',
         )
       }
+    }
+    if (this.roles.size > MAX_ROLE_TAGS) {
+      throw new Error(
+        `the collections name ${this.roles.size} roles, and a socket can pin ${MAX_ROLE_TAGS}: a user holding more ` +
+          'would be acknowledged writes that never reach their socket',
+      )
     }
     if (!this.connections) {
       const perSocket = this.collections.filter((c) => this.access.get(c.name)!.perSocket)
@@ -583,7 +594,11 @@ export class PartyDbCore {
         return this.sendEach(routes.recipients(batch.channel, keys), batch, access, (conn) => routes.remove(conn.id))
       }
     }
-    if (access.perSocket) return this.sendEach(this.connections!(), batch, access)
+    if (access.perSocket) {
+      const conns = new Map<string, PartyDbConnection>()
+      for (const audience of readersOf(access, batch)) for (const conn of this.connections!(audience)) conns.set(conn.id, conn)
+      return this.sendEach(conns.values(), batch, access)
+    }
     for (const { audience, batch: frame } of audiencesOf(access, batch)) this.broadcast(JSON.stringify(frame), audience)
   }
 
