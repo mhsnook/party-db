@@ -105,6 +105,7 @@ export class SyncClient {
   private resetListeners = new Set<(reason: ResetReason) => void>()
   private restarting = false
   private publicChannels = new Set<string>()
+  private tailChannels = new Set<string>()
   private settleTimeoutMs: number
   private unsubscribe?: () => void
   private offOpen?: () => void
@@ -169,6 +170,10 @@ export class SyncClient {
   private apply(sink: ChannelSink, batch: SequencedBatch) {
     const slices = this.slices.get(batch.channel)
     if (batch.reset && batch.ready) this.awaitingSnapshot.delete(batch.channel)
+    // the room answers a cursorless connect for a `snapshot: false` channel with an
+    // empty `reset`, meaning "live from now". On a collection a reset kept, that
+    // must not clear the rows it already tailed.
+    if (batch.reset && !batch.ops.length && this.tailChannels.has(batch.channel)) batch = { ...batch, reset: false }
     const receipt = applyBatch(sink, batch, slices)
     slices?.applied(batch, receipt)
     this.tracker.observe(batch.channel, batch.seq)
@@ -202,8 +207,10 @@ export class SyncClient {
 
   // A channel whose rows are the same for every identity: a reset keeps its
   // collection (`readsPublic`).
-  declarePublic(channel: string) {
+  // `tail` is for a `snapshot: false` collection, which has only ever tailed.
+  declarePublic(channel: string, tail = false) {
     this.publicChannels.add(channel)
+    if (tail) this.tailChannels.add(channel)
   }
 
   // Call before the collection's first sync, so the room's over-delivery for it is

@@ -167,6 +167,21 @@ describe('reset()', () => {
     expect([...oldCatalog.keys()]).toEqual(['p2', 'p3'])
   })
 
+  it('keeps the rows a public `snapshot: false` collection tailed, though the room answers the redial with an empty reset', async () => {
+    const t = hand()
+    const feed = definePartyCollection<Row, 'feed'>({ name: 'feed', key: 'id', snapshot: false })
+    const party = createPartyDb(t.transport, [feed])
+    const ready = party.db.feed.preload()
+    t.deliver(snapshot('feed', 3, []))
+    await ready
+    t.deliver({ channel: 'feed', seq: 4, ops: [{ type: 'insert', value: { id: 'f1' } }] })
+
+    party.reset()
+    t.open()
+    t.deliver(snapshot('feed', 9, []))
+    expect([...party.db.feed.keys()]).toEqual(['f1'])
+  })
+
   it('still redials when an onReset listener throws, and calls the listeners after it', async () => {
     const { t, party, reasons } = await loaded()
     const later = vi.fn()

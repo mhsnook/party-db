@@ -110,7 +110,7 @@ export function wireCollections(client: SyncClient, configs: readonly PartyColle
   }
   for (const cfg of configs) {
     if (cfg.sliceBy !== undefined) client.declareSliced(cfg.name)
-    if (readsPublic(cfg)) client.declarePublic(cfg.name)
+    if (readsPublic(cfg)) client.declarePublic(cfg.name, cfg.snapshot === false)
     db[cfg.name] = build(cfg)
   }
   // After a reset emptied every collection an identity can change: put a fresh one

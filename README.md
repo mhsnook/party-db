@@ -440,7 +440,9 @@ reads depend on the user with a fresh one. Each fresh collection is `loading` un
 its snapshot arrives under the new identity, and the old ones are emptied.
 
 A collection with a `'public'` read is the same for everyone, so a reset keeps it.
-Its rows stay on screen, and the next snapshot replaces them in place.
+Its rows stay on screen, and the next snapshot replaces them in place. A kept
+`snapshot: false` collection keeps the rows it tailed, and misses any written while
+the socket redials.
 
 A reset happens two ways:
 

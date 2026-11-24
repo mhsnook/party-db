@@ -86,13 +86,24 @@ export type PartyCollection<
 // Passing the row type explicitly (`definePartyCollection<Todo>(...)`) checks `key`
 // against it, but TypeScript then cannot infer the name: that collection is typed
 // on `db` as `Collection<any>`, as before. Let the schema carry the type instead.
+// What a collection declares for one verb, with the shorthands resolved:
+//   - no `access`, no `ownerColumn` → 'public' on all four verbs
+//   - no `access`, an `ownerColumn` → 'owner' on all four (fully private)
+//   - a single policy or grant → that one on all four
+//   - the object form → the named verbs; every verb you don't name is 'none'
+// The one spelling of these rules: the server's policies and the client's reset
+// both read it.
+export function accessFor(collection: PartyCollection<any>, verb: 'read' | 'insert' | 'update' | 'delete'): VerbAccess {
+  const access = collection.access
+  if (access === undefined) return collection.ownerColumn === undefined ? 'public' : 'owner'
+  if (typeof access === 'string' || 'owner' in access || 'roles' in access) return access as VerbAccess
+  return (access as Partial<Record<typeof verb, VerbAccess>>)[verb] ?? 'none'
+}
+
 // Whether everyone reads the same rows of this collection, whoever they are. A
 // client keeps such a collection across a reset: no identity changes what it holds.
 export function readsPublic(collection: PartyCollection<any>): boolean {
-  const access = collection.access
-  if (access === undefined) return collection.ownerColumn === undefined
-  if (typeof access === 'string') return access === 'public'
-  return 'read' in access && access.read === 'public'
+  return accessFor(collection, 'read') === 'public'
 }
 
 export function definePartyCollection<
