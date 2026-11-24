@@ -117,6 +117,15 @@ export function partyTransport(opts: {
       openListeners.add(listener)
       return () => openListeners.delete(listener)
     },
+    // PartySocket closes the old socket with 1000, which the close listener above
+    // ignores, then dials through `query()` again, so the cleared cursor applies.
+    reconnect(opts) {
+      if (opts?.identityChanged) {
+        lastSeq = undefined
+        identityChanged = true
+      }
+      socket.reconnect()
+    },
     isConnecting: () => socket.readyState === socket.CONNECTING,
     onAuthError(listener) {
       authListeners.add(listener)
@@ -152,6 +161,11 @@ export function createPartyDb<const C extends readonly PartyCollectionConfig<any
     // (and an inert unsubscribe) for a transport without an auth-gated down path.
     onAuthError(listener: (error: AuthError) => void): () => void {
       return transport.onAuthError?.(listener) ?? (() => {})
+    },
+    // redial now; `{ identityChanged: true }` reloads every collection under the
+    // token the transport reads next. Throws if the transport has no `reconnect`.
+    reconnect(opts?: OpenEvent) {
+      client.reconnect(opts)
     },
     close() {
       client.close()

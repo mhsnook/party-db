@@ -403,9 +403,24 @@ user is deactivated, call `this.reconnectUser(uid)` from your `PartyDbServer`. I
 closes that user's sockets with `CLOSE_IDENTITY_CHANGED` (4001). The client redials
 without its `?since` cursor, so it loads a fresh snapshot under the new identity. A
 `sliceBy` collection reloads each slice it is subscribed to, and drops the rows of
-slices it let go of. A custom `Transport` gets the same in two steps: after a
-4001 close, redial without `?since`, then call the `onOpen` listeners with
-`{ identityChanged: true }`. A composed host does the same with
+slices it let go of.
+
+If the app switches who is signed in, the room sends no 4001. Call
+`reconnect({ identityChanged: true })` from `createPartyDb` to get the same reload.
+`partyTransport` reads the token again on the redial, so pass `token` as a function.
+
+```ts
+const { db, reconnect } = createPartyDb(partyTransport({ host, room, token: () => session.token }), [notes])
+await signIn(otherUser)
+reconnect({ identityChanged: true })
+```
+
+A custom `Transport` does both halves itself. Whenever what the user can read may
+have shrunk (after a 4001 close, or in its own `reconnect({ identityChanged: true })`),
+it redials without `?since` and calls its `onOpen` listeners with
+`{ identityChanged: true }`. Every other redial keeps its `?since`.
+
+A composed host closes a user's sockets with
 `getConnections(audienceTag({ uid }))` and `conn.close(CLOSE_IDENTITY_CHANGED)`. In a room whose reads are all
 public, sockets are not tagged by user, and this closes nothing.
 
@@ -430,6 +445,9 @@ onAuthError((err) => {
   redirectToLogin()
 })
 ```
+
+Once the user signs in again, `reconnect()` redials. If a different user signed in,
+pass `{ identityChanged: true }`.
 
 The write (up) path already surfaces its own verdict: `transport.send` throws a
 `WriteError` carrying the `401` on a rejected POST.

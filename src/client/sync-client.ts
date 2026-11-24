@@ -47,13 +47,19 @@ export type Transport = {
   // Pass an `OpenEvent` to say why; a listener called with nothing treats it as an
   // ordinary reconnect. Returns an unsubscribe.
   onOpen?: (listener: (event?: OpenEvent) => void) => () => void
+  // hang up the down-stream and dial again now. With `{ identityChanged: true }`,
+  // drop the cursor and report the next open that way: the app's way to reload
+  // under a new identity when the room won't close the socket for it.
+  reconnect?: (opts?: OpenEvent) => void
 }
 
 // Why the down-stream opened, as far as the transport knows.
 export type OpenEvent = {
-  // The room closed the last socket with `CLOSE_IDENTITY_CHANGED` (4001). Set it
-  // only if this socket's connect carried no `?since`, so non-sliced collections
-  // get a `reset` snapshot. Sliced collections then reload each slice from scratch.
+  // What this user can read may have shrunk: the room closed the last socket
+  // with `CLOSE_IDENTITY_CHANGED` (4001), or the app called `reconnect` with this
+  // set. A transport that sets it must also have connected without `?since`, or
+  // the non-sliced collections replay a delta and keep the rows the user lost.
+  // A fresh connect for any other reason leaves it unset.
   identityChanged?: boolean
 }
 
@@ -219,6 +225,14 @@ export class SyncClient {
   waitForSeq(channel: string, seq: Cursor): Promise<void> {
     if (!this.transport) return Promise.reject(new ClosedError())
     return this.tracker.waitFor(channel, seq, this.settleTimeoutMs)
+  }
+
+  // Redial the down-stream now (`Transport.reconnect`). Pass
+  // `{ identityChanged: true }` after the app switches who is signed in.
+  reconnect(opts?: OpenEvent) {
+    if (!this.transport) throw new ClosedError()
+    if (!this.transport.reconnect) throw new Error('this transport cannot reconnect on demand: it has no reconnect()')
+    this.transport.reconnect(opts)
   }
 
   // One-way: a closed client never reopens, so build a new one.

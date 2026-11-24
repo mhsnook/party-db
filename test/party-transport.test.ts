@@ -29,6 +29,8 @@ const hoisted = vi.hoisted(() => {
       this.listeners[type] = (this.listeners[type] ?? []).filter((x) => x !== h)
     }
     send = vi.fn()
+    // the real one closes with 1000 and dials again; the test fires the 'open'
+    reconnect = vi.fn(() => this.emit('close', { code: 1000, reason: '' }))
     // the real PartySocket.close() stops the re-dial and dispatches the close
     // event synchronously, with code 1000 unless told otherwise.
     close = vi.fn((code = 1000, reason = '') => {
@@ -381,6 +383,26 @@ describe('partyTransport up-frames', () => {
     off()
     lastSocket().emit('open', {})
     expect(opened).toHaveBeenCalledTimes(1)
+  })
+
+  it('redials on demand, from its cursor unless told the identity changed', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    transport.subscribe(() => {})
+    const opened = vi.fn()
+    transport.onOpen!(opened)
+    const socket = lastSocket()
+    socket.emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
+
+    transport.reconnect!()
+    expect(socket.reconnect).toHaveBeenCalledTimes(1)
+    expect(socket.opts.query()).toEqual({ proto: 'party-db', since: '7' })
+    socket.emit('open', {})
+
+    transport.reconnect!({ identityChanged: true })
+    expect(socket.reconnect).toHaveBeenCalledTimes(2)
+    expect(socket.opts.query()).toEqual({ proto: 'party-db' })
+    socket.emit('open', {})
+    expect(opened.mock.calls).toEqual([[{ identityChanged: false }], [{ identityChanged: true }]])
   })
 
   it('tells the open after a changed-identity close apart from an ordinary reopen', () => {

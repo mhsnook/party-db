@@ -74,9 +74,9 @@ describe('role grants at the wire', () => {
   })
 })
 
-// partysocket can't dial `SELF`, so this transport plays its part: on a 4001 close
-// it redials with no `?since`, under whatever token `as` set last, and reports the
-// open as an identity change.
+// partysocket can't dial `SELF`, so this transport plays its part: on a 4001 close,
+// or a `reconnect({ identityChanged: true })`, it redials with no `?since` under
+// whatever token `as` set last, and reports the open as an identity change.
 async function redialing(room: string, token: string) {
   let current = token
   let ws: WebSocket | undefined
@@ -93,7 +93,7 @@ async function redialing(room: string, token: string) {
       for (const listener of listeners) listener(batch)
     })
     socket.addEventListener('close', (e) => {
-      ws = undefined
+      if (ws === socket) ws = undefined // a reconnect's old socket can close after the new one opened
       if (!closed && e.code === CLOSE_IDENTITY_CHANGED) redial = dial(true)
     })
     ws = socket
@@ -110,6 +110,10 @@ async function redialing(room: string, token: string) {
     sendFrame: (frame) => ws?.send(JSON.stringify(frame)),
     isOpen: () => ws !== undefined,
     onOpen: (listener) => (openers.add(listener), () => openers.delete(listener)),
+    reconnect(opts) {
+      ws?.close()
+      redial = dial(opts?.identityChanged === true)
+    },
     close: () => ((closed = true), ws?.close()),
   }
   return { transport, as: (token: string) => void (current = token), redialed: () => redial }
@@ -134,6 +138,25 @@ describe('a sliced collection under a changed identity (#68)', () => {
     await carol.redialed()
     await vi.waitFor(() => expect(rowIds(thread)).toEqual(['r2']))
     expect(db.remarks.has('r1')).toBe(false)
+    close()
+  })
+
+  it('drops them when the app redials under a new token itself', async () => {
+    const room = 'roles-sliced-app-reconnect'
+    const remark = (id: string, text: string): WriteBatch[] => [{ channel: 'remarks', ops: [{ type: 'insert', value: { id, thread_id: 'T', text } }] }]
+    expect((await post(room, remark('r1', "alice's"), 'alice')).status).toBe(200)
+    expect((await post(room, remark('r2', "carol's"), 'carol:editor')).status).toBe(200)
+
+    const carol = await redialing(room, 'carol:editor')
+    const { db, close, reconnect } = createPartyDb(carol.transport, [remarks])
+    const thread = createLiveQueryCollection((q) => q.from({ r: db.remarks }).where(({ r }) => eq(r.thread_id, 'T')))
+    await thread.preload()
+    expect(rowIds(thread)).toEqual(['r1', 'r2'])
+
+    carol.as('carol') // she signs in again without the editor role; the room sends no 4001
+    reconnect({ identityChanged: true })
+    await carol.redialed()
+    await vi.waitFor(() => expect(rowIds(thread)).toEqual(['r2']))
     close()
   })
 })

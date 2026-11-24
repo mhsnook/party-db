@@ -449,6 +449,24 @@ describe('SyncClient sliced registration', () => {
   })
 })
 
+describe('SyncClient.reconnect', () => {
+  it("hands the request to the transport's reconnect", () => {
+    const t = fakeTransport()
+    const reconnect = vi.fn()
+    const client = new SyncClient({ ...t.transport, reconnect })
+    client.reconnect({ identityChanged: true })
+    client.reconnect()
+    expect(reconnect.mock.calls).toEqual([[{ identityChanged: true }], [undefined]])
+  })
+
+  it('throws on a transport that cannot reconnect, and on a closed client', () => {
+    expect(() => new SyncClient(fakeTransport().transport).reconnect()).toThrow(/cannot reconnect on demand/)
+    const client = new SyncClient({ ...fakeTransport().transport, reconnect: vi.fn() })
+    client.close()
+    expect(() => client.reconnect()).toThrow(ClosedError)
+  })
+})
+
 describe('SyncClient and a sliced channel that has not registered', () => {
   it('drops its batches instead of buffering them for a register that may never come', () => {
     const t = fakeTransport()

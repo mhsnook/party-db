@@ -710,6 +710,14 @@ later subscribe to one asks for a snapshot too. `onOpen`'s argument is optional:
 a custom transport that calls its listeners with nothing gets the ordinary
 reconnect, from each slice's cursor.
 
+The room is not the only one that knows an identity changed. When the app switches
+who is signed in, no 4001 arrives, so the client takes the same path on request:
+`reconnect({ identityChanged: true })` on `createPartyDb`, which `Transport.reconnect`
+carries out. `partyTransport` drops its cursor, sets the flag, and calls
+PartySocket's own `reconnect()`. The flag means one thing on every path: what this
+user can read may have shrunk. A fresh connect for another reason does not set it,
+because a slice's delta is still correct for the same reader.
+
 ### A row that changes hands
 
 A row can leave a viewer's reach without being deleted: reassign the owner column

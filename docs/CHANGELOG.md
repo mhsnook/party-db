@@ -11,6 +11,15 @@
   close. A custom transport that calls its listeners with no argument still works,
   and its sliced collections reconnect from their cursors as before. `OpenEvent` is
   exported from `party-db/client`.
+- **`reconnect()` on `createPartyDb`, and an optional `Transport.reconnect`.** It
+  redials now. Pass `{ identityChanged: true }` when the app switches who is signed
+  in: every collection reloads under the next token, sliced ones included.
+  `partyTransport` implements it with PartySocket's `reconnect()`, which also redials
+  after a 1008 close stopped the socket. A transport without `reconnect` makes the
+  call throw.
+- **Fixed: a socket that dropped before a slice's identity snapshot arrived** asked
+  for a delta on the next reopen, and kept the old identity's rows. A slice now asks
+  for its snapshot on every reopen until one arrives.
 
 ## 2026-11-24 - v0.2.0
 
