@@ -28,7 +28,7 @@ import type { PartyCollection } from '../schema.ts'
 import type { PersistenceAdapter, WriteIdentity } from './persistence.ts'
 import { SqliteAdapter, type SqlEngine } from './sqlite-adapter.ts'
 import { PartyDbCore, DEFAULT_MAX_WRITE_BYTES, DEFAULT_MAX_WRITE_OPS } from './core.ts'
-import { audienceTag, viewerFromTags, viewerTags } from './access.ts'
+import { assertConnectionId, audienceTag, viewerFromTags, viewerTags } from './access.ts'
 import type { PartyDbConnection, Subscription } from './slices.ts'
 
 export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends Server<Env> {
@@ -115,6 +115,7 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       maxWriteBytes: this.maxWriteBytes,
       maxWriteOps: this.maxWriteOps,
       connections: () => [...this.getConnections()].map(partyConnection),
+      connectionsOf: (audience) => [...this.getConnections(audienceTag(audience))].map(partyConnection),
     })
     await this.core.init()
   }
@@ -125,7 +126,8 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
   // `return [...(await super.getConnectionTags(conn, ctx)), ...yours]`. A socket
   // holds 9 tags and these take up to 2 + MAX_ROLE_TAGS of them; past 9 in total,
   // partyserver refuses the connect.
-  async getConnectionTags(_conn: Connection, ctx: ConnectionContext): Promise<string[]> {
+  async getConnectionTags(conn: Connection, ctx: ConnectionContext): Promise<string[]> {
+    assertConnectionId(conn.id)
     return viewerTags(await this.core.resolveViewer(ctx.request))
   }
 

@@ -155,7 +155,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `SqliteAdapter` / `D1Adapter` / `PgAdapter` — each implements `init` / `write` / `snapshot` / `replaySince`;
   `PgAdapter` adds `classifyError` and `verifyAnonRole`
 - `SliceRoutes` / `PartyDbConnection` / `PartyDbCore.disconnect` — `src/server/slices.ts`, routing a sliced write to its watchers
-- `policiesOf` / `gateWrite` / `needsPriorRow` / `applyPriorRows` / `opFor` / `visibleTo` / `audiencesOf` / `viewerOf` / `viewerTags` / `viewerFromTags` / `rolesNamed` — `src/server/access.ts`, the access policies and role grants
+- `policiesOf` / `gateWrite` / `needsPriorRow` / `applyPriorRows` / `opFor` / `visibleTo` / `audiencesOf` / `readersOf` / `viewerOf` / `viewerTags` / `viewerFromTags` / `assertConnectionId` / `rolesNamed` — `src/server/access.ts`, the access policies and role grants
   (`opFor` is the one op-level read filter; the snapshot, the delta, the fan-out and the ack all go through it)
 
 ## Commands
