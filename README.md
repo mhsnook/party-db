@@ -271,9 +271,12 @@ export class ArticleAgent extends AIChatAgent<Env> {
   // also needs each socket's user: pin
   // `viewerTags(await this.db.resolveViewer(ctx.request))` in getConnectionTags and
   // pass `viewerFromTags(conn.tags)` to connect/handleMessage. PartyDbServer does
-  // exactly this. A read grant that names an owner and a role, or several roles,
-  // also needs `connections` (below): one user can be in two of those audiences,
-  // so the core sends each socket its own frame.
+  // exactly this. Call `assertConnectionId(conn.id)` first in getConnectionTags:
+  // a client picks its own connection id, and partyserver stores it as a tag.
+  // A read grant that names an owner and a role, or several roles,
+  // also needs `connectionsOf: (audience) => <the wrappers below, for
+  // this.getConnections(audienceTag(audience))>`: one user can be in two of those
+  // audiences, so the core sends each socket its own frame.
 
   // Using `sliceBy`? This host works as written, but every client is sent every
   // slice. To route each write to that slice's watchers, wrap each party-db socket
@@ -406,8 +409,13 @@ composed host does the same with
 `getConnections(audienceTag({ uid }))` and `conn.close(CLOSE_IDENTITY_CHANGED)`. In a room whose reads are all
 public, sockets are not tagged by user, and this closes nothing.
 
+Until a socket reconnects, a write its user makes under a new role commits, but the
+row does not stream back to that socket, so the client's write times out.
+
 Roles are pinned to the socket as partyserver tags. A socket holds 9 tags, so it pins
-at most 7 roles, and only the roles some collection names. A role grant is not
+at most 7 roles, and only the roles some collection's read names. A room whose read
+rules name more than 7 roles refuses to start. Roles that only gate writes are not
+pinned and do not count. A role grant is not
 `WriteIdentity.role`, which is the Postgres role a write runs as.
 
 ## onAuthError callback

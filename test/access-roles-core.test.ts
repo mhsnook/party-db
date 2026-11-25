@@ -40,13 +40,14 @@ const auth = (req: Request): WriteIdentity | null => {
 
 type Socket = PartyDbConnection & { tags: string[]; frames: SequencedBatch[] }
 
-async function room(opts: { connections?: boolean } = {}) {
+async function room(opts: { connectionsOf?: boolean } = {}) {
   const { engine, db } = memoryEngine()
   db.exec(`CREATE TABLE reviews (id TEXT PRIMARY KEY, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`)
   db.exec(`CREATE TABLE drafts (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
   db.exec(`CREATE TABLE memos (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
   db.exec(`CREATE TABLE notes (id TEXT PRIMARY KEY, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`)
   const sockets: Socket[] = []
+  const asked: unknown[] = []
   const core = new PartyDbCore({
     collections,
     adapter: new SqliteAdapter(engine, collections),
@@ -55,7 +56,15 @@ async function room(opts: { connections?: boolean } = {}) {
       to.forEach((s) => s.frames.push(JSON.parse(m)))
     },
     auth: () => auth,
-    ...(opts.connections === false ? {} : { connections: () => sockets }),
+    connections: () => sockets,
+    ...(opts.connectionsOf === false
+      ? {}
+      : {
+          connectionsOf: (audience) => {
+            asked.push(audience)
+            return sockets.filter((s) => s.tags.includes(audienceTag(audience)))
+          },
+        }),
   })
   await core.init()
 
@@ -87,7 +96,7 @@ async function room(opts: { connections?: boolean } = {}) {
     )
     return { status: res.status, body: (await res.json()) as WriteAck & WriteReject }
   }
-  return { core, db, connect, close, post }
+  return { core, db, connect, close, post, asked }
 }
 
 const op = (channel: string, type: 'insert' | 'update' | 'delete', value: Record<string, unknown>): WriteBatch[] => [
@@ -188,6 +197,29 @@ describe('role grants — the reads', () => {
     expect(ids(live(dana.frames), 'notes')).toEqual(['insert:n1'])
   })
 
+  it('looks up only the sockets of the roles and owners a note can reach, never the whole room', async () => {
+    const { connect, post, asked } = await room()
+    await connect(BOB)
+    await post(op('notes', 'insert', { id: 'n1', text: 'a' }), ALICE)
+    expect(asked).toEqual([{ role: 'editor' }, { uid: 'alice' }])
+  })
+
+  it('refuses to start a room that names more roles than a socket can pin', async () => {
+    const { engine } = memoryEngine()
+    const many = definePartyCollection({ name: 'drafts', key: 'id', schema: draftSchema, access: { roles: Array.from({ length: 8 }, (_, i) => `r${i}`) } })
+    const core = new PartyDbCore({ collections: [many], adapter: new SqliteAdapter(engine, [many]), broadcast: () => {}, auth: () => auth, connectionsOf: () => [] })
+    await expect(core.init()).rejects.toThrow(/name 8 roles/)
+  })
+
+  it('starts a room whose extra roles only gate writes, since no socket pins them', async () => {
+    const { engine, db } = memoryEngine()
+    db.exec(`CREATE TABLE drafts (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
+    const writers = Array.from({ length: 8 }, (_, i) => `w${i}`)
+    const many = definePartyCollection({ name: 'drafts', key: 'id', schema: draftSchema, access: { read: { roles: ['editor'] }, update: { roles: writers } } })
+    const core = new PartyDbCore({ collections: [many], adapter: new SqliteAdapter(engine, [many]), broadcast: () => {}, auth: () => auth })
+    await expect(core.init()).resolves.toBeUndefined()
+  })
+
   it('sends a two-role read once to a socket holding both roles, and once to each single holder', async () => {
     const { core, connect } = await room()
     const [both, editor, admin, bob] = [await connect('erin:editor,admin'), await connect(CAROL), await connect('ada:admin'), await connect(BOB)]
@@ -211,8 +243,8 @@ describe('role grants — the reads', () => {
     expect((await post(op('drafts', 'insert', { id: 'd1', text: 'x' }), CAROL)).body.accepted).toHaveLength(1)
   })
 
-  it('refuses to start an owner-or-role read without connections to send each socket its own frame', async () => {
-    await expect(room({ connections: false })).rejects.toThrow(/"notes".*connections/)
+  it('refuses to start an owner-or-role read without connectionsOf, even when it has connections', async () => {
+    await expect(room({ connectionsOf: false })).rejects.toThrow(/"notes".*connectionsOf/)
   })
 })
 

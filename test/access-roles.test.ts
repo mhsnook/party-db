@@ -9,6 +9,7 @@ import {
   AccessDenied,
   ANONYMOUS,
   applyPriorRows,
+  assertConnectionId,
   audiencesOf,
   audienceTag,
   canRead,
@@ -16,6 +17,7 @@ import {
   gateWrite,
   MAX_ROLE_TAGS,
   needsPriorRow,
+  readersOf,
   rolesNamed,
   viewerFromTags,
   viewerOf,
@@ -252,6 +254,26 @@ describe('identity — roles from claims, and role tags', () => {
     expect(tags).toHaveLength(9)
     expect(warn).toHaveBeenCalledOnce()
     warn.mockRestore()
+  })
+
+  it('refuses a connection id shaped like one of its tags, which a client could pick to read as a uid or a role', () => {
+    expect(() => assertConnectionId(audienceTag({ role: 'editor' }))).toThrow(/cannot start with/)
+    expect(() => assertConnectionId(audienceTag({ uid: 'alice' }))).toThrow(/cannot start with/)
+    expect(() => assertConnectionId('V1StGXR8_Z5jdHi6B-myT')).not.toThrow()
+    const stackOf = (fn: () => void) => {
+      try {
+        fn()
+      } catch (e) {
+        return (e as Error).stack
+      }
+    }
+    expect(stackOf(() => assertConnectionId('party-db:authed'))).toBe('a connection id cannot start with "party-db:"')
+  })
+
+  it('names the audiences that can read a per-socket batch: each role, and each owner before and after', () => {
+    const row = { id: 'n1', reviewed_by: 'alice', text: 'x' }
+    const handOff: WriteEvent = { type: 'update', value: { ...row, reviewed_by: 'bob' }, previousValue: row }
+    expect(readersOf(access('notes'), batch('notes', [handOff, ins(row)]))).toEqual([{ role: 'editor' }, { uid: 'bob' }, { uid: 'alice' }])
   })
 
   it('lists the roles a room names, which are the only ones worth pinning', () => {

@@ -60,6 +60,22 @@ describe('role grants at the wire', () => {
     expect((await post(room, op('reviews', 'delete', { id: 'r1' }), 'carol:editor')).status).toBe(200)
   })
 
+  it('refuses a connection id shaped like a role or uid tag, so a client cannot pick its way into an audience', async () => {
+    const room = 'roles-spoof'
+    for (const _pk of ['party-db:role:editor', 'party-db:uid:carol']) {
+      const res = await SELF.fetch(url(room, { _pk }), { headers: { Upgrade: 'websocket', ...roomHeader(room) } })
+      const ws = res.webSocket!
+      ws.accept()
+      const frames: { channel?: string; error?: string }[] = []
+      const closes: number[] = []
+      ws.addEventListener('message', (e) => frames.push(JSON.parse(e.data as string)))
+      ws.addEventListener('close', (e) => closes.push(e.code))
+      await expect.poll(() => closes).toEqual([1011])
+      expect((await post(room, op('drafts', 'insert', { id: `d-${_pk}`, text: 'x' }), 'carol:editor')).status).toBe(200)
+      expect(frames).toEqual([{ error: 'a connection id cannot start with "party-db:"' }]) // no stack trace, no batch
+    }
+  })
+
   it("closes a user's sockets for a changed identity, with the close code that drops the client's cursor", async () => {
     const room = 'roles-reconnect'
     const [bob, carol] = [await connect(room, 'bob'), await connect(room, 'carol:editor')]
