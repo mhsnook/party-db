@@ -61,6 +61,9 @@ export class ChannelSlices implements SliceApply {
   // released slices: the room seq they were dropped at. Their rows stay in the
   // collection, so subscribing again asks only for what changed after this.
   private cursors = new Map<string, Cursor>()
+  // set by a dispose that failed its waiters: the collection was replaced or the
+  // client closed, so a query still on it must not subscribe on the next socket
+  private retired?: Error
 
   constructor(
     readonly channel: string,
@@ -77,6 +80,7 @@ export class ChannelSlices implements SliceApply {
   }
 
   acquire(targets: SliceTarget[]): true | Promise<void> {
+    if (this.retired) return Promise.reject(this.retired)
     const waits: Promise<void>[] = []
     for (const target of targets) {
       const key = subscriptionKey(target)
@@ -143,6 +147,7 @@ export class ChannelSlices implements SliceApply {
 
   // The collection was cleaned up and its rows dropped: no cursor still applies.
   dispose(error?: Error): void {
+    this.retired = error
     for (const entry of this.entries.values()) {
       for (const w of entry.waiters.splice(0)) (error ? w.reject(error) : w.resolve())
       if (!error) this.send(this.unsubscribeFrame(entry.target))

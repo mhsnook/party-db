@@ -2,10 +2,10 @@
 // configs, get back live TanStack DB collections. That's the whole surface.
 
 import PartySocket from 'partysocket'
-import { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
+import { SyncClient, type ResetReason, type Transport, type SyncClientOptions } from './sync-client.ts'
 import { wireCollections, type DbOf, type PartyCollectionConfig } from './collection.ts'
 import { WriteError, TransportError, AuthError, toWriteReject } from './errors.ts'
-import { CLOSE_IDENTITY_CHANGED, isSequencedBatch, parseFrame, PROTO_PARAM, PROTO_VALUE } from '../protocol.ts'
+import { isSequencedBatch, parseFrame, PROTO_PARAM, PROTO_VALUE, type Cursor } from '../protocol.ts'
 
 // WebSocket close code the server uses when a room-aware auth check rejects the
 // connection (docs/auth.md §2). Unlike 1006 (network) / 1011 (server) / normal,
@@ -25,7 +25,8 @@ export function partyTransport(opts: {
 }): Transport {
   const party = opts.party ?? 'main'
   const tokenOf = () => (typeof opts.token === 'function' ? opts.token() : opts.token)
-  let lastSeq: number | undefined // highest seq applied; drives delta reconnect
+  // the SyncClient's cursor, handed over in `subscribe`
+  let since: (() => Cursor | undefined) | undefined
   // consumers waiting to hear that the down path was auth-rejected (1008). We
   // fan out to a set so an app can register a handler without racing construction.
   const authListeners = new Set<(error: AuthError) => void>()
@@ -39,9 +40,10 @@ export function partyTransport(opts: {
     // party-db requests (docs/architecture.md §15); a PartyDbServer ignores it.
     query: () => {
       const token = tokenOf()
+      const cursor = since?.()
       return {
         [PROTO_PARAM]: PROTO_VALUE,
-        ...(lastSeq === undefined ? {} : { since: String(lastSeq) }),
+        ...(cursor === undefined ? {} : { since: String(cursor) }),
         ...(token ? { token } : {}),
       }
     },
@@ -53,22 +55,25 @@ export function partyTransport(opts: {
   // ...and surface it, so the app can prompt re-auth instead of watching a silent
   // dead socket. shouldReconnectOnClose above already ran on this same event, so
   // by the time we notify, the reconnect has been suppressed.
+  const closeListeners = new Set<(code: number) => void>()
   socket.addEventListener('close', (event) => {
-    if (event.code === CLOSE_IDENTITY_CHANGED) lastSeq = undefined
+    for (const listener of closeListeners) listener(event.code)
     if (event.code !== CLOSE_POLICY_VIOLATION) return
     const error = new AuthError(event.reason || 'websocket closed by server auth policy (1008)', event.code)
     for (const listener of authListeners) listener(error)
   })
   return {
-    subscribe(onBatch) {
+    subscribe(onBatch, opts) {
       const handler = (e: MessageEvent) => {
         const batch = parseFrame(e.data, isSequencedBatch)
-        if (!batch) return
-        if (typeof batch.seq === 'number') lastSeq = Math.max(lastSeq ?? 0, batch.seq)
-        onBatch(batch)
+        if (batch) onBatch(batch)
       }
+      if (opts?.since) since = opts.since
       socket.addEventListener('message', handler)
-      return () => socket.removeEventListener('message', handler)
+      return () => {
+        socket.removeEventListener('message', handler)
+        if (since === opts?.since) since = undefined
+      }
     },
     async send(batches) {
       // PartySocket.fetch builds the party URL for us (host/scheme/route) — the
@@ -105,6 +110,13 @@ export function partyTransport(opts: {
       socket.addEventListener('open', listener)
       return () => socket.removeEventListener('open', listener)
     },
+    onClose(listener) {
+      closeListeners.add(listener)
+      return () => closeListeners.delete(listener)
+    },
+    reconnect() {
+      socket.reconnect()
+    },
     isConnecting: () => socket.readyState === socket.CONNECTING,
     onAuthError(listener) {
       authListeners.add(listener)
@@ -125,7 +137,20 @@ export function createPartyDb<const C extends readonly PartyCollectionConfig<any
   options?: SyncClientOptions,
 ) {
   const client = new SyncClient(transport, options)
-  const { db, persist } = wireCollections(client, configs)
+  const { db, persist, renew } = wireCollections(client, configs)
+  const resetListeners = new Set<(reason: ResetReason) => void>()
+  client.onReset((reason) => {
+    renew()
+    const failures: unknown[] = []
+    for (const listener of resetListeners) {
+      try {
+        listener(reason)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    if (failures.length) throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'more than one onReset listener threw')
+  })
   return {
     db: db as DbOf<C>,
     // the mutationFn for cross-collection atomic writes via TanStack's
@@ -141,7 +166,22 @@ export function createPartyDb<const C extends readonly PartyCollectionConfig<any
     onAuthError(listener: (error: AuthError) => void): () => void {
       return transport.onAuthError?.(listener) ?? (() => {})
     },
+    // Start over under the identity the transport dials as next, such as after
+    // the app signs in someone else. Every collection in `db` is replaced by a
+    // fresh one that loads from a snapshot; a query built on an old one shows it
+    // empty. Throws if the transport cannot reconnect.
+    reset() {
+      client.reset()
+    },
+    // Called after every reset: `reset()`'s ('requested'), or the room's when this
+    // user's identity changed ('identity-changed'). Rebuild queries on the
+    // collections now in `db`. Returns an unsubscribe.
+    onReset(listener: (reason: ResetReason) => void): () => void {
+      resetListeners.add(listener)
+      return () => resetListeners.delete(listener)
+    },
     close() {
+      resetListeners.clear()
       client.close()
     },
   }

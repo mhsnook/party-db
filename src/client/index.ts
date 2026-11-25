@@ -1,4 +1,4 @@
-export { SyncClient, type Transport, type SyncClientOptions } from './sync-client.ts'
+export { SyncClient, type Transport, type ResetReason, type SyncClientOptions } from './sync-client.ts'
 export { SeqTracker, compareCursor, type CursorCompare } from './seq-tracker.ts'
 export {
   definePartyCollection,
@@ -7,4 +7,4 @@ export {
   type DbOf,
 } from './collection.ts'
 export { createPartyDb, partyTransport } from './party-db.ts'
-export { WriteError, TransportError, AuthError, ClosedError } from './errors.ts'
+export { WriteError, TransportError, AuthError, ClosedError, DroppedError } from './errors.ts'

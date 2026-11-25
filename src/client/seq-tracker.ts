@@ -98,4 +98,11 @@ export class SeqTracker {
     }
     this.waiters.clear()
   }
+
+  // Start over: reject every waiter and forget every mark.
+  reset(error: Error): void {
+    this.rejectAll(error)
+    this.highest.clear()
+    this.room = undefined
+  }
 }

@@ -126,7 +126,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
   and `SubscribeFrame` / `UnsubscribeFrame` — the frames a client sends UP the socket
   (`docs/architecture.md` §8a, §18).
 - **`src/schema.ts`** — `PartyCollection<T>` = `{ name, key, schema?, ownerColumn?, access?, sliceBy?, snapshot? }` (`access` takes a policy or an `AccessGrant` per verb), the one
-  collection interface both sides import, plus `definePartyCollection` for inference. `ownerColumn`
+  collection interface both sides import, plus `definePartyCollection` for inference, `accessFor` (the one place the `access` shorthands resolve) and `readsPublic`, which a client reset keeps. `ownerColumn`
   is typed `UidColumn<T>` — a string or number column, since a `SERIAL` user id is as common as a
   uuid. Owners compare as text (`idOf`), so `user_id` 1 matches the `sub` claim "1".
 - **`src/server/persistence.ts`** — `PersistenceAdapter` (the storage seam), `WriteIdentity`,
@@ -140,9 +140,10 @@ Four files hold the whole contract. Read them before changing anything under `sr
 - `createPartyDb(transport, configs)` / `partyTransport({host, room, token})` — `src/client/party-db.ts`
 - `makePersist(client, channelOf)` / `wireCollections(client, configs)` / `toEvent(mutation)` — `src/client/collection.ts`
 - `applyBatch(sink, batch)` — `src/client/apply.ts`, the only place a batch reaches a collection
-- `SeqTracker.observe` / `.waitFor` / `.rejectAll` — `src/client/seq-tracker.ts`, settlement with no transport attached
+- `SyncClient.reset` / `.onReset` — `src/client/sync-client.ts`, starting over under a new identity (`docs/architecture.md` §17)
+- `SeqTracker.observe` / `.waitFor` / `.rejectAll` / `.reset` — `src/client/seq-tracker.ts`, settlement with no transport attached
 - `sliceTargets(where, column)` / `ChannelSlices` / `SyncClient.registerSliced` — `src/client/slices.ts`, a `sliceBy` collection's subscriptions
-- `WriteError` / `TransportError` / `AuthError` / `ClosedError` / `toWriteReject` — `src/client/errors.ts`
+- `WriteError` / `TransportError` / `AuthError` / `ClosedError` / `DroppedError` / `toWriteReject` — `src/client/errors.ts`
 
 **Server**
 
