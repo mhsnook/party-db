@@ -11,7 +11,7 @@
 // that writes rows with `commit()` is trusted and bypasses the write gate.
 
 import type { SequencedBatch, WriteBatch, WriteEvent } from '../protocol.ts'
-import type { AccessGrant, AccessPolicy, PartyCollection, VerbAccess } from '../schema.ts'
+import { accessFor, type AccessGrant, type AccessPolicy, type PartyCollection, type VerbAccess } from '../schema.ts'
 import type { WriteIdentity, WriteRejection } from './persistence.ts'
 import { canHoldUid, columnsOf, idOf } from './columns.ts'
 
@@ -88,20 +88,14 @@ function holdsAny(viewer: Viewer, roles: readonly string[]): boolean {
   return viewer.uid !== null && roles.some((role) => viewer.roles?.includes(role) === true)
 }
 
-// The shorthands, exactly as cookbook 5 states them:
-//   - no `access`, no `ownerColumn` → 'public' on all four verbs
-//   - no `access`, an `ownerColumn` → 'owner' on all four (fully private)
-//   - a single policy or grant → that rule on all four
-//   - the object form → the named verbs; every verb you don't name is 'none'
+// The shorthands are resolved in `accessFor` (schema.ts), exactly as cookbook 5
+// states them.
 export function policiesOf(collection: PartyCollection<any>): Policies {
-  const access = collection.access
-  if (access === undefined) return every(ruleOf(collection.ownerColumn === undefined ? 'public' : 'owner'))
-  if (typeof access === 'string' || isGrant(access)) return every(ruleOf(access))
   return {
-    read: ruleOf(access.read),
-    insert: ruleOf(access.insert),
-    update: ruleOf(access.update),
-    delete: ruleOf(access.delete),
+    read: ruleOf(accessFor(collection, 'read')),
+    insert: ruleOf(accessFor(collection, 'insert')),
+    update: ruleOf(accessFor(collection, 'update')),
+    delete: ruleOf(accessFor(collection, 'delete')),
   }
 }
 

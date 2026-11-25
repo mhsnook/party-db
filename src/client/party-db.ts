@@ -141,7 +141,15 @@ export function createPartyDb<const C extends readonly PartyCollectionConfig<any
   const resetListeners = new Set<(reason: ResetReason) => void>()
   client.onReset((reason) => {
     renew()
-    for (const listener of resetListeners) listener(reason)
+    const failures: unknown[] = []
+    for (const listener of resetListeners) {
+      try {
+        listener(reason)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    if (failures.length) throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'more than one onReset listener threw')
   })
   return {
     db: db as DbOf<C>,

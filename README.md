@@ -401,8 +401,8 @@ writer holds one of the roles. A role holder may write a row for any owner.
 A socket's identity is fixed when it connects. When a user's roles change, or the
 user is deactivated, call `this.reconnectUser(uid)` from your `PartyDbServer`. It
 closes that user's sockets with `CLOSE_IDENTITY_CHANGED` (4001), and the client
-resets: every collection is replaced by a fresh one that loads under the new
-identity (see [Resetting for a new identity](#resetting-for-a-new-identity)). A
+resets: every collection whose reads depend on the user is replaced by a fresh one
+that loads under the new identity (see [Resetting for a new identity](#resetting-for-a-new-identity)). A
 composed host does the same with
 `getConnections(audienceTag({ uid }))` and `conn.close(CLOSE_IDENTITY_CHANGED)`. In a room whose reads are all
 public, sockets are not tagged by user, and this closes nothing.
@@ -435,9 +435,14 @@ The write (up) path already surfaces its own verdict: `transport.send` throws a
 ## Resetting for a new identity
 
 A delta can't take back rows the old identity could read, so when the identity
-changes, the client starts over. `reset()` replaces every collection in `db` with a
-fresh one. Each fresh collection is `loading` until its snapshot arrives under the
-new identity, and the old ones are emptied.
+changes, the client starts over. `reset()` replaces each collection in `db` whose
+reads depend on the user with a fresh one. Each fresh collection is `loading` until
+its snapshot arrives under the new identity, and the old ones are emptied.
+
+A collection with a `'public'` read is the same for everyone, so a reset keeps it.
+Its rows stay on screen, and the next snapshot replaces them in place. A kept
+`snapshot: false` collection keeps the rows it tailed, and misses any written while
+the socket redials.
 
 A reset happens two ways:
 
@@ -469,7 +474,11 @@ function Root() {
 A query nobody rebuilt shows its old collection empty, and TanStack logs that its
 source was cleaned up. A write still waiting to settle across a reset rejects with
 `DroppedError`, and its optimistic change rolls back. The write may still have
-committed on the server, under the identity it was sent with.
+committed on the server, under the identity it was sent with. That holds for a write
+to a public collection too.
+
+Do not call `reset()` from an `onReset` listener: it throws. If a listener throws,
+the others still run and the client still redials, then `reset()` rethrows.
 
 To sign out of a room with public reads, clear the token and call `reset()`: the
 client loads again as anonymous. `example-react-polyglot` signs in and out this

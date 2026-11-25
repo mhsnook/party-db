@@ -704,11 +704,13 @@ by then a role change, a user switch and a sign-in look the same:
      back.
    - Until the next socket opens, frames from the old one are ignored and no
      subscribe is sent.
-   - Every old collection is emptied, then detached. A query nobody rebuilds shows
+   - A collection with a `'public'` read is kept: everyone reads the same rows of
+     it, so the redial's `reset` snapshot replaces them in place (`readsPublic`).
+   - Every other old collection is emptied, then detached. A query nobody rebuilds shows
      it empty, never the old rows. A sliced collection gets a delete per row, not a
      truncate: on an on-demand collection TanStack holds a truncate's deletes back
      until its subsets reload, and a retired collection never reloads.
-2. **Load, into new collections.** Each `db` property gets a fresh TanStack
+2. **Load, into new collections.** Each `db` property that was emptied gets a fresh TanStack
    collection on the same `SyncClient`. It starts in `loading` and asks for its
    snapshot through the re-register path (§8a), or through its live queries' slices
    (§18). `onReset` tells the app to rebuild its queries on them.

@@ -103,6 +103,9 @@ export class SyncClient {
   // frames, or carry a subscribe, under the identity the reset left behind
   private waitingForOpen = false
   private resetListeners = new Set<(reason: ResetReason) => void>()
+  private restarting = false
+  private publicChannels = new Set<string>()
+  private tailChannels = new Set<string>()
   private settleTimeoutMs: number
   private unsubscribe?: () => void
   private offOpen?: () => void
@@ -167,6 +170,10 @@ export class SyncClient {
   private apply(sink: ChannelSink, batch: SequencedBatch) {
     const slices = this.slices.get(batch.channel)
     if (batch.reset && batch.ready) this.awaitingSnapshot.delete(batch.channel)
+    // the room answers a cursorless connect for a `snapshot: false` channel with an
+    // empty `reset`, meaning "live from now". On a collection a reset kept, that
+    // must not clear the rows it already tailed.
+    if (batch.reset && !batch.ops.length && this.tailChannels.has(batch.channel)) batch = { ...batch, reset: false }
     const receipt = applyBatch(sink, batch, slices)
     slices?.applied(batch, receipt)
     this.tracker.observe(batch.channel, batch.seq)
@@ -196,6 +203,14 @@ export class SyncClient {
       this.awaitingSnapshot.delete(channel)
       this.torndown.add(channel)
     }
+  }
+
+  // A channel whose rows are the same for every identity: a reset keeps its
+  // collection (`readsPublic`).
+  // `tail` is for a `snapshot: false` collection, which has only ever tailed.
+  declarePublic(channel: string, tail = false) {
+    this.publicChannels.add(channel)
+    if (tail) this.tailChannels.add(channel)
   }
 
   // Call before the collection's first sync, so the room's over-delivery for it is
@@ -258,10 +273,17 @@ export class SyncClient {
   // Start over under the identity the transport dials as next: hang up, replace
   // every collection with a fresh one (`onReset`), and redial with no cursor.
   reset() {
-    if (!this.transport) throw new ClosedError()
-    if (!this.transport.reconnect) throw new Error('reset() needs a transport that can reconnect: it has no reconnect()')
-    this.restart('requested')
-    this.transport.reconnect()
+    const transport = this.transport
+    if (!transport) throw new ClosedError()
+    if (!transport.reconnect) throw new Error('reset() needs a transport that can reconnect: it has no reconnect()')
+    if (this.restarting) throw new Error('reset() was called from an onReset listener: a reset is already running')
+    try {
+      this.restart('requested')
+    } finally {
+      // even when a listener threw: the gate `restart` raised lifts only on the
+      // next open, and without a redial the socket stays as the old identity
+      if (this.transport === transport) transport.reconnect()
+    }
   }
 
   // Called after a reset has emptied and detached every collection; the
@@ -274,16 +296,27 @@ export class SyncClient {
   // Everything held belongs to an identity that is gone, so forget it all and let
   // fresh collections register: each asks for its snapshot on the next socket.
   private restart(reason: ResetReason) {
+    this.restarting = true
+    try {
+      this.drop(reason)
+    } finally {
+      this.restarting = false
+    }
+  }
+
+  private drop(reason: ResetReason) {
     this.generation++
     this.received = undefined
     // a transport that reports no opens could never lift the gate
     this.waitingForOpen = this.transport?.onOpen !== undefined
     this.tracker.reset(new DroppedError())
     this.pending.clear()
-    this.awaitingSnapshot.clear()
     // a query still built on an old collection shows it empty, never stale
     const failures: unknown[] = []
     for (const [channel, sink] of this.sinks) {
+      // everyone reads the same rows of a public channel, so it stays: the redial
+      // carries no cursor, and its `reset` snapshot replaces the rows in place
+      if (this.publicChannels.has(channel)) continue
       try {
         sink.begin()
         const slices = this.slices.get(channel)
@@ -296,12 +329,19 @@ export class SyncClient {
         failures.push(error)
       }
       if (!this.slicedChannels.has(channel)) this.torndown.add(channel)
+      this.slices.get(channel)?.dispose(new DroppedError())
+      this.slices.delete(channel)
+      this.sinks.delete(channel)
+      this.awaitingSnapshot.delete(channel)
     }
-    for (const slices of this.slices.values()) slices.dispose(new DroppedError())
-    this.sinks.clear()
-    this.slices.clear()
-    for (const listener of this.resetListeners) listener(reason)
-    if (failures.length) throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'reset could not empty every collection')
+    for (const listener of this.resetListeners) {
+      try {
+        listener(reason)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    if (failures.length) throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'reset failed in more than one place')
   }
 
   // One-way: a closed client never reopens, so build a new one.

@@ -73,6 +73,17 @@ to win it back:
   `close()` from its own auth state. A terminal close code from the room would let
   the client stop by itself.
 
+- **A 4001 reset shows the replaced collections empty for about 3 seconds.** The
+  client empties them on the close, and the redial is PartySocket's ordinary one,
+  which waits `minReconnectionDelay` (3000 ms) after a socket that had opened.
+  `socket.reconnect()` from the close handler does not skip a wait already scheduled.
+  An app-called `reset()` has no delay. Public collections keep their rows meanwhile.
+- **`loadSubset` on a retired sliced collection returns a rejected promise**
+  (`ChannelSlices.acquire`). Nobody has confirmed that TanStack DB catches it. If it
+  does not, a query nobody rebuilt raises an unhandled `DroppedError`.
+- **A reset drops in-flight writes to kept public collections too.** The settle
+  waiters are room-wide. Per-scope cursors (item 1) would let those writes settle.
+
 ## STOP conditions
 
 - If a stored `_oplog` op would need a new shape, stop: that is durable state
