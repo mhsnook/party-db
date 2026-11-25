@@ -1,6 +1,6 @@
 # Changes
 
-## 2026-11-24 - v0.2.0
+## 2026-11-25 - v0.2.0
 
 Access policies can name roles. A verb's policy can be a grant, met by the row's
 owner or by a signed-in user holding one of its roles.
@@ -17,11 +17,14 @@ owner or by a signed-in user holding one of its roles.
 - **`reset()` and `onReset` on `createPartyDb`.** A reset replaces each collection in
   `db` whose reads depend on the user with a fresh one, which is `loading` until it
   fills from a snapshot under the new identity. Sliced collections included (#68). A
-  collection with a `'public'` read is kept, and refills in place. The client resets on a 4001 by
-  itself; call `reset()` after the app signs in someone else. `onReset(reason)`
+  collection with a `'public'` read is kept, and refills in place; a kept
+  `snapshot: false` collection keeps the rows it tailed. The client resets on a 4001
+  by itself; call `reset()` after the app signs in someone else. `onReset(reason)`
   says when to rebuild queries, with `'identity-changed'` or `'requested'`. The old
   collections are emptied, so a query nobody rebuilt shows nothing stale. Read
-  collections through `db`, not a copy taken before the reset.
+  collections through `db`, not a copy taken before the reset. `reset()` called from
+  an `onReset` listener throws. If a listener throws, the others still run and the
+  client still redials.
 - **`DroppedError`.** A write still settling across a reset rejects with it, and its
   optimistic change rolls back. So does a write to a collection a reset replaced.
 - **Custom transports.** The client now owns the `?since` cursor:
@@ -45,6 +48,14 @@ owner or by a signed-in user holding one of its roles.
 - **`Viewer` gains an optional `roles`.** `viewerOf(identity)` builds one from verified
   claims, and `viewerTags` pins up to `MAX_ROLE_TAGS` (7) roles as tags. Your own
   connection tags share partyserver's 9 with these.
+
+Upgrading a composed host (one that holds a `PartyDbCore`):
+
+1. Call `assertConnectionId(conn.id)` first in `getConnectionTags`.
+2. If a read grant names an owner and a role, or several roles, pass `connectionsOf`.
+3. Keep the roles your read rules name to 7 or fewer.
+
+A `PartyDbServer` subclass needs none of these.
 
 Also in this release, from #65:
 
