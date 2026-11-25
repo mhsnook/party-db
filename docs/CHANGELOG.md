@@ -18,9 +18,8 @@ owner or by a signed-in user holding one of its roles.
 - **Composed hosts: `broadcast` can be handed `{ role }`.** `audienceTag` covers it, so a
   host that looks sockets up by `audienceTag(audience)` needs no change. A collection
   whose read grant names an owner and a role, or several roles, needs the core's
-  `connections` option, and `init` refuses to start without it. For such a write the
-  core passes `connections` an audience, once per role and per owner; return only that
-  audience's sockets.
+  `connectionsOf(audience)` option, and `init` refuses to start without it. It returns
+  one audience's sockets, and the core calls it once per role and per owner.
 - **A connection id cannot start with `party-db:`.** A client picks its id (`?_pk=`),
   and partyserver stores it as the socket's first tag, so an id shaped like
   `party-db:uid:<uid>` read as that user. `PartyDbServer` now refuses such a connect.

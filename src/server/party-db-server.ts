@@ -114,7 +114,8 @@ export class PartyDbServer<Env extends Cloudflare.Env = Cloudflare.Env> extends 
       anonRole: this.anonRole,
       maxWriteBytes: this.maxWriteBytes,
       maxWriteOps: this.maxWriteOps,
-      connections: (audience) => [...this.getConnections(audience && audienceTag(audience))].map(partyConnection),
+      connections: () => [...this.getConnections()].map(partyConnection),
+      connectionsOf: (audience) => [...this.getConnections(audienceTag(audience))].map(partyConnection),
     })
     await this.core.init()
   }

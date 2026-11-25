@@ -274,9 +274,9 @@ export class ArticleAgent extends AIChatAgent<Env> {
   // exactly this. Call `assertConnectionId(conn.id)` first in getConnectionTags:
   // a client picks its own connection id, and partyserver stores it as a tag.
   // A read grant that names an owner and a role, or several roles,
-  // also needs `connections` (below): one user can be in two of those audiences,
-  // so the core sends each socket its own frame. It passes an audience there;
-  // return only `this.getConnections(audienceTag(audience))` for it.
+  // also needs `connectionsOf: (audience) => <the wrappers below, for
+  // this.getConnections(audienceTag(audience))>`: one user can be in two of those
+  // audiences, so the core sends each socket its own frame.
 
   // Using `sliceBy`? This host works as written, but every client is sent every
   // slice. To route each write to that slice's watchers, wrap each party-db socket

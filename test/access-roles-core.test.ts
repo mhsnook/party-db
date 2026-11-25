@@ -40,7 +40,7 @@ const auth = (req: Request): WriteIdentity | null => {
 
 type Socket = PartyDbConnection & { tags: string[]; frames: SequencedBatch[] }
 
-async function room(opts: { connections?: boolean } = {}) {
+async function room(opts: { connectionsOf?: boolean } = {}) {
   const { engine, db } = memoryEngine()
   db.exec(`CREATE TABLE reviews (id TEXT PRIMARY KEY, reviewed_by TEXT NOT NULL, text TEXT NOT NULL)`)
   db.exec(`CREATE TABLE drafts (id TEXT PRIMARY KEY, text TEXT NOT NULL)`)
@@ -56,12 +56,13 @@ async function room(opts: { connections?: boolean } = {}) {
       to.forEach((s) => s.frames.push(JSON.parse(m)))
     },
     auth: () => auth,
-    ...(opts.connections === false
+    connections: () => sockets,
+    ...(opts.connectionsOf === false
       ? {}
       : {
-          connections: (audience) => {
+          connectionsOf: (audience) => {
             asked.push(audience)
-            return audience ? sockets.filter((s) => s.tags.includes(audienceTag(audience))) : sockets
+            return sockets.filter((s) => s.tags.includes(audienceTag(audience)))
           },
         }),
   })
@@ -206,7 +207,7 @@ describe('role grants — the reads', () => {
   it('refuses to start a room that names more roles than a socket can pin', async () => {
     const { engine } = memoryEngine()
     const many = definePartyCollection({ name: 'drafts', key: 'id', schema: draftSchema, access: { roles: Array.from({ length: 8 }, (_, i) => `r${i}`) } })
-    const core = new PartyDbCore({ collections: [many], adapter: new SqliteAdapter(engine, [many]), broadcast: () => {}, auth: () => auth, connections: () => [] })
+    const core = new PartyDbCore({ collections: [many], adapter: new SqliteAdapter(engine, [many]), broadcast: () => {}, auth: () => auth, connectionsOf: () => [] })
     await expect(core.init()).rejects.toThrow(/name 8 roles/)
   })
 
@@ -242,8 +243,8 @@ describe('role grants — the reads', () => {
     expect((await post(op('drafts', 'insert', { id: 'd1', text: 'x' }), CAROL)).body.accepted).toHaveLength(1)
   })
 
-  it('refuses to start an owner-or-role read without connections to send each socket its own frame', async () => {
-    await expect(room({ connections: false })).rejects.toThrow(/"notes".*connections/)
+  it('refuses to start an owner-or-role read without connectionsOf, even when it has connections', async () => {
+    await expect(room({ connectionsOf: false })).rejects.toThrow(/"notes".*connectionsOf/)
   })
 })
 
