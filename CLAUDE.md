@@ -112,10 +112,11 @@ userspace, shipped without ceremony.
 | `docs/postgres-todo.md` | the v2 plan: WAL tailing, RPCs, identity-aware reads |
 | `docs/collection-types.md` | TanStack DB's other collection types, and our read-side capabilities |
 | `docs/cookbooks/` | 9 worked recipes; ✅ = works today, 🚧 = the seam exists but the use is proposed |
-| `plans/README.md` | the plan queue with status, dependencies, and findings already rejected |
+| `docs/rejected.md` | findings the maintainer already considered and rejected |
+| [GitHub issues](https://github.com/mhsnook/party-db/issues) | open work — there is no plan queue in the repo |
 
-Before proposing something, check `plans/README.md` — its "Findings considered and rejected" section
-records decisions the maintainer already made, so nobody re-audits them.
+Before proposing something, check `docs/rejected.md`. It records decisions the maintainer
+already made, so nobody re-audits them.
 
 ## Types to read first
 
@@ -171,7 +172,7 @@ Four files hold the whole contract. Read them before changing anything under `sr
 | `cd <example> && pnpm build` | that example's site (vite) — run before `build:worker`, which needs `dist/` |
 | `cd <example> && pnpm build:worker` | bundles that example's worker exactly as a deploy would, without deploying |
 
-There is no lint gate yet (plan 012 is TODO). The `test:pg` lane and `test/integration/pg-connect.test.ts`
+There is no lint gate yet (#75). The `test:pg` lane and `test/integration/pg-connect.test.ts`
 need a real Postgres at `PG_URL`; without it they skip, so `pnpm test` stays green with no Docker.
 The README's Testing section has the `docker run` line CI uses.
 

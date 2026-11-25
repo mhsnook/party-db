@@ -1,9 +1,9 @@
 # PartyDB — Tanstack DB meets PartyKit
 
 > incubating. Cookbooks: [`docs/cookbooks`](./docs/cookbooks/) · Design:
-> [`architecture.md`](./docs/architecture.md) · active plans:
-> [`plans/`](./plans/) · open questions:
-> [`unspecified.md`](./docs/unspecified.md).
+> [`architecture.md`](./docs/architecture.md) · open questions:
+> [`unspecified.md`](./docs/unspecified.md) · open work:
+> [issues](https://github.com/mhsnook/party-db/issues).
 
 **PartyDB connects your TanStack DB collections to your Database with
 optimistic updates and realtime sync — and near-zero config — over a
