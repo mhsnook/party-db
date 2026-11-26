@@ -526,8 +526,9 @@ story (`postgres-todo.md`), not something `commit` can close.
 - `connections` + `disconnect(id)` — optional: hand the core your party-db
   connections (and pass those same objects to `connect` / `handleMessage`) and it
   routes each write on a `sliceBy` collection to that slice's watchers itself (§18);
-  without them, sliced writes go through `broadcast`. A collection whose read grant
-  names an owner and a role, or several roles, requires them (§17)
+  without them, sliced writes go through `broadcast`
+- `connectionsOf(audience)` — one audience's party-db connections. A collection
+  whose read grant names an owner and a role, or several roles, requires it (§17)
 - `resolveViewer(req)` — who a connecting socket belongs to, for the access
   policies (§17); the host pins it to the socket and passes it back in
 
@@ -685,13 +686,48 @@ same way on every adapter:
 A read grant that names an owner and a role, or several roles, fans out per socket,
 not per audience. One user can be in two audiences, such as an editor who owns the
 note, and an audience split would send that socket the op twice. So the core needs
-the host's `connections` (§15) for such a collection, and `init` refuses to start
-without them.
+the host's `connectionsOf` (§15) for such a collection, and `init` refuses to start
+without it. The core asks `connectionsOf` for one audience at a time, each role the
+grant names and each owner in the batch, so a write costs the sockets that can read
+it, not every socket in the room.
+
+A socket's tags are the only record of who it is, and a client picks its own
+connection id, which partyserver stores as a tag. So a connect whose id starts with
+`party-db:` is refused before the socket is accepted (`assertConnectionId`). A room's
+read rules name at most 7 roles, the number a socket can pin: the write's answer is judged by
+the POST's roles, and a role the socket could not pin would acknowledge a seq that
+never streams back.
 
 A socket's identity is fixed at connect. When it changes, the room closes the
-socket with `CLOSE_IDENTITY_CHANGED` (4001), and the client redials without
-`?since`. A delta never takes back rows the old identity could read, so the client
-loads a `reset` snapshot instead. Sliced collections do not do this yet (#68).
+socket with `CLOSE_IDENTITY_CHANGED` (4001). A delta never takes back rows the old
+identity could read, so the client does not try to repair what it holds. It starts
+over: `SyncClient.reset`, which the app can also call after it signs in someone else.
+
+A reset is two steps. The first drops everything held. The second loads fresh, and
+by then a role change, a user switch and a sign-in look the same:
+
+1. **Drop, on the event itself.** A 4001 restarts the client in its close handler,
+   not on the next open, so a redial the lobby refuses leaves nothing behind.
+   - The cursor is forgotten. The client owns it, beside the rows it vouches for,
+     and the transport only reads it at dial time.
+   - In-flight writes reject with `DroppedError`, and TanStack rolls their overlays
+     back.
+   - Until the next socket opens, frames from the old one are ignored and no
+     subscribe is sent.
+   - A collection with a `'public'` read is kept: everyone reads the same rows of
+     it, so the redial's `reset` snapshot replaces them in place (`readsPublic`).
+   - Every other old collection is emptied, then detached. A query nobody rebuilds shows
+     it empty, never the old rows. A sliced collection gets a delete per row, not a
+     truncate: on an on-demand collection TanStack holds a truncate's deletes back
+     until its subsets reload, and a retired collection never reloads.
+2. **Load, into new collections.** Each `db` property that was emptied gets a fresh TanStack
+   collection on the same `SyncClient`. It starts in `loading` and asks for its
+   snapshot through the re-register path (§8a), or through its live queries' slices
+   (§18). `onReset` tells the app to rebuild its queries on them.
+
+Replacing the collection, rather than emptying it in place, is what gives the app a
+real loading state: TanStack never moves a `ready` collection back to `loading`. It
+also keeps the old identity's optimistic writes on the old object.
 
 ### A row that changes hands
 
@@ -813,6 +849,8 @@ delta.
 A release waits one microtask before unsubscribing. TanStack reloads every subset
 after a truncate as an unload/load pair, and that pair must not cost a round trip.
 When the socket reopens, every live subscription goes up again from the same seq.
+A reset (§17) is the exception: it retires the collection with its subscriptions,
+and the fresh collection's live queries subscribe with no cursor.
 
 **Two client-side rules make over-delivery harmless:**
 

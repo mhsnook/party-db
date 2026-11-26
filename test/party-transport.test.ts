@@ -29,6 +29,7 @@ const hoisted = vi.hoisted(() => {
       this.listeners[type] = (this.listeners[type] ?? []).filter((x) => x !== h)
     }
     send = vi.fn()
+    reconnect = vi.fn()
     // the real PartySocket.close() stops the re-dial and dispatches the close
     // event synchronously, with code 1000 unless told otherwise.
     close = vi.fn((code = 1000, reason = '') => {
@@ -73,8 +74,8 @@ beforeEach(() => {
   Fake.fetch.mockClear()
 })
 
-describe('partyTransport reconnect query (?since tracking)', () => {
-  it('asks for a full snapshot (no ?since) before any batch is seen, marked as party-db traffic', () => {
+describe('partyTransport reconnect query (?since)', () => {
+  it('asks for a full snapshot (no ?since) until a subscriber hands it a cursor, marked as party-db traffic', () => {
     partyTransport({ host: 'example.com', room: 'r1' })
     const query = lastSocket().opts.query
     // the literal marker value is the wire contract a composed host routes on —
@@ -82,40 +83,40 @@ describe('partyTransport reconnect query (?since tracking)', () => {
     expect(query()).toEqual({ proto: 'party-db' })
   })
 
-  it('asks for the delta since the highest applied seq after batches arrive', () => {
+  it("reads the subscriber's cursor on every connect", () => {
     const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    transport.subscribe(() => {})
-
-    lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
+    let cursor: number | string | undefined = 7
+    transport.subscribe(() => {}, { since: () => cursor })
     expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7' })
-  })
-
-  it('tracks the max seq, not the last — an out-of-order straggler cannot lower it', () => {
-    const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    transport.subscribe(() => {})
-
-    lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
-    lastSocket().emit('message', message({ channel: 'todos', seq: 3, ops: [] }))
-    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7' })
-  })
-
-  it('asks for a full snapshot after the room closes it for a changed identity, and keeps re-dialing', () => {
-    const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    transport.subscribe(() => {})
-
-    lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
-    lastSocket().emit('close', closeEvent(4001, 'identity changed'))
-    expect(lastSocket().opts.shouldReconnectOnClose(closeEvent(4001))).toBe(true)
+    cursor = '0/16B3A28'
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '0/16B3A28' })
+    cursor = undefined
     expect(lastSocket().opts.query()).toEqual({ proto: 'party-db' })
   })
 
-  it('keeps its cursor across an ordinary drop', () => {
+  it('forgets the cursor when its subscription is torn down', () => {
     const transport = partyTransport({ host: 'example.com', room: 'r1' })
-    transport.subscribe(() => {})
+    const off = transport.subscribe(() => {}, { since: () => 7 })
+    off()
+    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db' })
+  })
 
-    lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
+  it("redials through PartySocket's own reconnect, which reads the query again", () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    transport.reconnect!()
+    expect(lastSocket().reconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports every close code, and keeps re-dialing after a changed-identity close', () => {
+    const transport = partyTransport({ host: 'example.com', room: 'r1' })
+    const closed = vi.fn()
+    const off = transport.onClose!(closed)
+    lastSocket().emit('close', closeEvent(4001, 'identity changed'))
     lastSocket().emit('close', closeEvent(1006))
-    expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7' })
+    expect(lastSocket().opts.shouldReconnectOnClose(closeEvent(4001))).toBe(true)
+    off()
+    lastSocket().emit('close', closeEvent(1011))
+    expect(closed.mock.calls).toEqual([[4001], [1006]])
   })
 
   it('delivers the parsed batch to the subscriber', () => {
@@ -323,11 +324,9 @@ describe('partyTransport token attachment', () => {
     expect(writeInit().headers).not.toHaveProperty('authorization')
   })
 
-  it('composes the token with ?since once a batch has been applied', () => {
+  it('composes the token with ?since', () => {
     const transport = partyTransport({ host: 'example.com', room: 'r1', token: 'tok-1' })
-    transport.subscribe(() => {})
-
-    lastSocket().emit('message', message({ channel: 'todos', seq: 7, ops: [] }))
+    transport.subscribe(() => {}, { since: () => 7 })
     expect(lastSocket().opts.query()).toEqual({ proto: 'party-db', since: '7', token: 'tok-1' })
   })
 })
@@ -343,10 +342,9 @@ describe('partyTransport drops frames that are not ours', () => {
     const batch: SequencedBatch = { channel: 'todos', seq: 4, ops: [{ type: 'insert', value: { id: 'a' } }] }
     socket.emit('message', message(batch))
     expect(seen).toEqual([batch])
-    expect(socket.opts.query()).toEqual({ proto: 'party-db', since: '4' })
   })
 
-  it('drops JSON that is not a batch — no channel, or no ops — without moving the cursor (issue #48)', () => {
+  it('drops JSON that is not a batch — no channel, or no ops (issue #48)', () => {
     const { seen, socket } = subscribed()
 
     socket.emit('message', message({ type: 'cf_agent_stream', seq: 99 }))
@@ -356,7 +354,6 @@ describe('partyTransport drops frames that are not ours', () => {
     socket.emit('message', message(['todos']))
 
     expect(seen).toEqual([])
-    expect(socket.opts.query()).toEqual({ proto: 'party-db' })
   })
 })
 

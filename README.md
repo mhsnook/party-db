@@ -271,9 +271,12 @@ export class ArticleAgent extends AIChatAgent<Env> {
   // also needs each socket's user: pin
   // `viewerTags(await this.db.resolveViewer(ctx.request))` in getConnectionTags and
   // pass `viewerFromTags(conn.tags)` to connect/handleMessage. PartyDbServer does
-  // exactly this. A read grant that names an owner and a role, or several roles,
-  // also needs `connections` (below): one user can be in two of those audiences,
-  // so the core sends each socket its own frame.
+  // exactly this. Call `assertConnectionId(conn.id)` first in getConnectionTags:
+  // a client picks its own connection id, and partyserver stores it as a tag.
+  // A read grant that names an owner and a role, or several roles,
+  // also needs `connectionsOf: (audience) => <the wrappers below, for
+  // this.getConnections(audienceTag(audience))>`: one user can be in two of those
+  // audiences, so the core sends each socket its own frame.
 
   // Using `sliceBy`? This host works as written, but every client is sent every
   // slice. To route each write to that slice's watchers, wrap each party-db socket
@@ -400,14 +403,20 @@ writer holds one of the roles. A role holder may write a row for any owner.
 
 A socket's identity is fixed when it connects. When a user's roles change, or the
 user is deactivated, call `this.reconnectUser(uid)` from your `PartyDbServer`. It
-closes that user's sockets with `CLOSE_IDENTITY_CHANGED` (4001). The client redials
-without its `?since` cursor, so it loads a fresh snapshot under the new identity. A
+closes that user's sockets with `CLOSE_IDENTITY_CHANGED` (4001), and the client
+resets: every collection whose reads depend on the user is replaced by a fresh one
+that loads under the new identity (see [Resetting for a new identity](#resetting-for-a-new-identity)). A
 composed host does the same with
 `getConnections(audienceTag({ uid }))` and `conn.close(CLOSE_IDENTITY_CHANGED)`. In a room whose reads are all
 public, sockets are not tagged by user, and this closes nothing.
 
+Until a socket reconnects, a write its user makes under a new role commits, but the
+row does not stream back to that socket, so the client's write times out.
+
 Roles are pinned to the socket as partyserver tags. A socket holds 9 tags, so it pins
-at most 7 roles, and only the roles some collection names. A role grant is not
+at most 7 roles, and only the roles some collection's read names. A room whose read
+rules name more than 7 roles refuses to start. Roles that only gate writes are not
+pinned and do not count. A role grant is not
 `WriteIdentity.role`, which is the Postgres role a write runs as.
 
 ## onAuthError callback
@@ -430,6 +439,60 @@ onAuthError((err) => {
 
 The write (up) path already surfaces its own verdict: `transport.send` throws a
 `WriteError` carrying the `401` on a rejected POST.
+
+## Resetting for a new identity
+
+A delta can't take back rows the old identity could read, so when the identity
+changes, the client starts over. `reset()` replaces each collection in `db` whose
+reads depend on the user with a fresh one. Each fresh collection is `loading` until
+its snapshot arrives under the new identity, and the old ones are emptied.
+
+A collection with a `'public'` read is the same for everyone, so a reset keeps it.
+Its rows stay on screen, and the next snapshot replaces them in place. A kept
+`snapshot: false` collection keeps the rows it tailed, and misses any written while
+the socket redials.
+
+A reset happens two ways:
+
+- **The room asks for it.** `reconnectUser` closes the socket with a 4001, and the
+  client resets on that close, before it redials. A redial the room refuses, such as
+  for a deactivated user, leaves nothing behind.
+- **The app asks for it.** The room can't see the app sign in someone else, so call
+  `reset()`. It redials with the token the transport reads next, so pass `token` as
+  a function.
+
+Either way, `onReset` tells you to rebuild your queries on the collections now in
+`db`. Read them through `db` each time: `const { todos } = db` keeps the old one.
+
+```tsx
+const party = createPartyDb(partyTransport({ host, room, token: () => session.token }), [todos])
+
+async function switchUser(next: User) {
+  await signIn(next)
+  party.reset()
+}
+
+function Root() {
+  const [generation, setGeneration] = useState(0)
+  useEffect(() => party.onReset(() => setGeneration((g) => g + 1)), [])
+  return <App key={generation} db={party.db} /> // remounts every query on the fresh collections
+}
+```
+
+A query nobody rebuilt shows its old collection empty, and TanStack logs that its
+source was cleaned up. A write still waiting to settle across a reset rejects with
+`DroppedError`, and its optimistic change rolls back. The write may still have
+committed on the server, under the identity it was sent with. That holds for a write
+to a public collection too.
+
+Do not call `reset()` from an `onReset` listener: it throws. If a listener throws,
+the others still run and the client still redials, then `reset()` rethrows.
+
+To sign out of a room with public reads, clear the token and call `reset()`: the
+client loads again as anonymous. `example-react-polyglot` signs in and out this
+way, with no page reload. Otherwise, call `close()` and stop rendering `db`. A
+deactivated user's client keeps redialing with backoff; once your own auth state
+says the user is gone, call `close()`.
 
 ## Closing a client
 
@@ -503,7 +566,7 @@ EXAMPLE=example-react pnpm test:e2e
 | `src/client/seq-tracker.ts` | pure settlement: per-channel high-water mark, waiters, timeout |
 | `src/client/collection.ts` | `definePartyCollection` + collection wiring |
 | `src/client/party-db.ts` | `createPartyDb` / `partyTransport` — the headline API |
-| `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` / `ClosedError` — classified write, auth & lifecycle failures |
+| `src/client/errors.ts` | `WriteError` / `TransportError` / `AuthError` / `ClosedError` / `DroppedError` — classified write, auth & lifecycle failures |
 | `src/schema.ts` | the shared `{ name, key, schema }` collection interface (both sides) |
 | `src/server/party-db-server.ts` | `PartyDbServer` — WS + `/write` + `commit()`; the thin subclass over the core |
 | `src/server/core.ts` | `PartyDbCore` — the room's core functionality, for hosts that compose instead of subclass |

@@ -34,6 +34,8 @@ import {
   audiencesOf,
   checkAccess,
   gateWrite,
+  MAX_ROLE_TAGS,
+  readersOf,
   rolesNamed,
   storedKeysNeeded,
   viewerOf,
@@ -98,11 +100,13 @@ export interface PartyDbCoreOptions {
   // close. Without it, sliced writes go out through `broadcast` to the whole
   // audience, which is correct but sends every client every slice
   // (docs/architecture.md §18).
-  //
-  // A collection whose read grant names an owner and a role, or several roles,
-  // needs it too: one user can match two of those audiences, so the core sends
-  // each socket its own frame instead, and `init` refuses to start without it.
   connections?: () => Iterable<PartyDbConnection>
+  // the party-db connections of one audience: `getConnections(audienceTag(audience))`,
+  // wrapped as above. A collection whose read grant names an owner and a role, or
+  // several roles, needs it, and `init` refuses to start without it: one user can
+  // match two of those audiences, so the core looks up each role's and each owner's
+  // sockets and sends each socket its own frame.
+  connectionsOf?: (audience: Exclude<Audience, 'all'>) => Iterable<PartyDbConnection>
 }
 
 // What `connect` and `handleMessage` reply through: a bare send function, or a
@@ -121,7 +125,7 @@ export class PartyDbCore {
   private access: Map<string, CollectionAccess>
   // fixed by the declarations: does a connecting socket need a resolved identity?
   private readsNeedIdentity: boolean
-  // the roles some rule names; a viewer's other roles are never pinned
+  // the roles some read rule names; a viewer's other roles are never pinned
   private roles: Set<string>
   private auth?: () => AuthHook | undefined
   private anonRole?: string
@@ -131,6 +135,7 @@ export class PartyDbCore {
   // channel → its `sliceBy` column, for the collections that load by slice.
   private sliceBy: Map<string, string>
   private connections?: () => Iterable<PartyDbConnection>
+  private connectionsOf?: PartyDbCoreOptions['connectionsOf']
   // built on first use after construction — i.e. after every wake — from the
   // connections' own saved subscriptions.
   private routes?: SliceRoutes
@@ -153,6 +158,7 @@ export class PartyDbCore {
     this.channels = new Set(opts.collections.map((c) => c.name))
     this.sliceBy = new Map(opts.collections.filter((c) => c.sliceBy !== undefined).map((c) => [c.name, c.sliceBy as string]))
     this.connections = opts.connections
+    this.connectionsOf = opts.connectionsOf
   }
 
   // the slice index, or undefined when the host routes everything through
@@ -216,12 +222,18 @@ export class PartyDbCore {
         )
       }
     }
-    if (!this.connections) {
+    if (this.roles.size > MAX_ROLE_TAGS) {
+      throw new Error(
+        `the collections' read rules name ${this.roles.size} roles, and a socket can pin ${MAX_ROLE_TAGS}: a user holding more ` +
+          'would be acknowledged writes that never reach their socket',
+      )
+    }
+    if (!this.connectionsOf) {
       const perSocket = this.collections.filter((c) => this.access.get(c.name)!.perSocket)
       if (perSocket.length) {
         throw new Error(
           `collection(s) ${perSocket.map((c) => `"${c.name}"`).join(', ')} read by a grant that names an owner and a role, ` +
-            'or several roles, so the room needs the `connections` option to send each socket its own frame',
+            'or several roles, so the room needs the `connectionsOf` option to send each socket its own frame',
         )
       }
     }
@@ -583,7 +595,11 @@ export class PartyDbCore {
         return this.sendEach(routes.recipients(batch.channel, keys), batch, access, (conn) => routes.remove(conn.id))
       }
     }
-    if (access.perSocket) return this.sendEach(this.connections!(), batch, access)
+    if (access.perSocket) {
+      const conns = new Map<string, PartyDbConnection>()
+      for (const audience of readersOf(access, batch)) for (const conn of this.connectionsOf!(audience)) conns.set(conn.id, conn)
+      return this.sendEach(conns.values(), batch, access)
+    }
     for (const { audience, batch: frame } of audiencesOf(access, batch)) this.broadcast(JSON.stringify(frame), audience)
   }
 
