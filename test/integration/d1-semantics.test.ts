@@ -1,4 +1,4 @@
-// Step-1 spike (plan 014): prove D1's semantics inside the real (miniflare) D1
+// Spike: prove D1's semantics inside the real (miniflare) D1
 // binding BEFORE building the adapter on top of them. These are premises the
 // design depends on — if any fails it's a STOP condition, not something to code
 // around. Driven against the RAW `env.DB`, no adapter involved.
@@ -28,7 +28,7 @@ describe('D1 premise: batch() is one atomic transaction', () => {
       err = e
     }
     expect(err).toBeTruthy()
-    // plan 006's isConstraintError keys on this exact substring
+    // isConstraintError keys on this exact substring
     expect(String((err as Error).message)).toMatch(/constraint failed/i)
 
     const rows = await env.DB.prepare(`SELECT * FROM atom`).all()

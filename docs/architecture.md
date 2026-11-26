@@ -513,7 +513,7 @@ story (`postgres-todo.md`), not something `commit` can close.
 
 - the adapter, which the host builds over its own storage
 - `connect(send | conn, url, viewer?)` — the `?since` cursor parse, `replaySince` vs
-  `snapshot`, sent atomically through the write queue (§8, plan 004), filtered to
+  `snapshot`, sent atomically through the write queue (§8), filtered to
   what the socket's user may read (§17)
 - `broadcast(message, audience)` — the host's fan-out, handed the audience each
   frame is for: `'all'`, `'authed'`, `{ uid }`, or `{ role }` (§17)

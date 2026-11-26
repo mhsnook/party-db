@@ -29,7 +29,7 @@ Status tags: ✅ done · 🟡 partial · ❌ missing. Priorities: **P0** blocks 
 that outlive this doc go back to [`unspecified.md`](./unspecified.md).
 
 **Sequencing note — two rungs.** Postgres lands in two releasable rungs, and
-this doc's sections split across them. **Rung 1** (plans 015–016): the §1
+this doc's sections split across them. **Rung 1**: the §1
 write path with *v1 semantics* — CRUD + `RETURNING`, `_oplog` beside the data,
 `?since` deltas — same contract as embedded/D1, on the database your company
 already runs; out-of-band writers stay invisible, as in every v1 mode.
@@ -101,7 +101,7 @@ payload, not less:
 > Then the write path (§1), then the tail (§2), then settlement over the two
 > (§3). RPC (§4) and per-user rules (§5) build on that core loop.
 
-### 0. Tooling: a real Postgres in tests — **P0** ✅ (plan 015)
+### 0. Tooling: a real Postgres in tests — **P0** ✅
 
 - [x] **Integration harness against real Postgres** (docker in CI, plus a local
       one-liner). `postgres:17-alpine` runs with `wal_level=logical` from day one,
@@ -115,7 +115,7 @@ payload, not less:
       idiomatic pooler for production query traffic. The *replication* connection
       is still a different beast (long-lived, `START_REPLICATION`) — see §7.
 
-### 1. `PostgresAdapter` — the write path — **P0** 🟡 (v1 write path landed, plan 016)
+### 1. `PostgresAdapter` — the write path — **P0** 🟡 (v1 write path landed)
 
 Same contract as `SqliteAdapter`, new target — landed as `PgAdapter`
 (`src/server/pg-adapter.ts`). The DB-is-the-authority rules from v1 (architecture
@@ -135,7 +135,7 @@ for rung 2.
 - [x] **Constraint-error reporting** — the adapter's `classifyError` maps Postgres
       SQLSTATE class `23…` + the constraint name into the `WriteReject` (409) shape;
       the server consults it ahead of the SQLite-message regex, which embedded/D1
-      keep. Classification now lives with the dialect, per plan 006's follow-through.
+      keep. Classification now lives with the dialect.
 - [ ] **Cross-target atomicity guard.** A single TanStack transaction spanning
       collections on *different* persistence targets can't be atomic — reject (or
       at minimum warn) rather than half-commit. *Not rung 1 — one adapter per room
