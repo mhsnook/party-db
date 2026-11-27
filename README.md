@@ -84,6 +84,8 @@ collections — the API-first scaffold for [cookbook 05](./docs/cookbooks/05-pub
 - [React](./example-react/README.md) (`App.tsx` + `server.ts`,
 `useLiveQuery`, zero-config writes, Milestone 0)
  - [vanilla JS](./example/README.md)
+- [Effect UI](./example-effect-ui/README.md) (the same todos with an Effect Schema, a
+`Query.StreamService` and `Command.Service` writes)
 
 (Yes, it really is that simple; we're not messing around about "near-zero config".)
 

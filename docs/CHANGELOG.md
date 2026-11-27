@@ -1,5 +1,22 @@
 # Changes
 
+## Unreleased
+
+- **Effect Schema on `schema`.** The server reads an Effect v4 `Schema.Struct` for the
+  column allowlist and codec, as it reads a Zod object. Pass it through
+  `Schema.toStandardSchemaV1(Struct)`, which keeps the Struct's AST; a bare Struct is not
+  a StandardSchema. Before this, an Effect schema typechecked and validated on the
+  client, but the room quietly stored the collection as blobs. Effect v3 still falls
+  back to blobs. `effect` is an optional peerDependency at `^4.0.0`.
+- **`exactOptionalPropertyTypes`.** The sources now pass it, and all four tsconfigs set
+  it. An app that sets it, as `@effect/ui` requires, can compile party-db's `src/` in
+  its own build, which is how the examples import it. Optional option fields such as
+  `oplogRetention` and `anonRole` now accept an explicit `undefined`.
+- **`example-effect-ui`.** The todo list, rendered with Effect UI. The list is a
+  `Query.StreamService` over the collection's changes, and each write is a
+  `Command.Service`. `@effect/ui` is not on npm yet, so the example pins a pkg.pr.new
+  snapshot by commit.
+
 ## 2026-11-25 - v0.2.0
 
 Access policies can name roles. A verb's policy can be a grant, met by the row's
