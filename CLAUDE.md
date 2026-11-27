@@ -109,6 +109,7 @@ userspace, shipped without ceremony.
 | `README.md` | the user-facing pitch, both setup snippets, and a per-file table of `src/` |
 | `docs/architecture.md` | the decision record — 14 settled decisions, each with its why, plus the roadmap |
 | `docs/unspecified.md` | open questions and modes we describe but have not built |
+| `docs/commands.md` | the commands design under review (#34): one function run on the client and in the room |
 | `docs/postgres-todo.md` | the v2 plan: WAL tailing, RPCs, identity-aware reads |
 | `docs/collection-types.md` | TanStack DB's other collection types, and our read-side capabilities |
 | `docs/cookbooks/` | 9 worked recipes; ✅ = works today, 🚧 = the seam exists but the use is proposed |
