@@ -94,7 +94,7 @@ export class SyncClient {
   // `pending`, or dropped as unwanted. Not the tracker's mark, which counts only
   // applied frames: a reconnect from that would replay a buffered insert, and
   // applying it twice throws a duplicate-key error.
-  private received?: Cursor
+  private received?: Cursor | undefined
   private compare: CursorCompare
   // bumped by every reset: a write whose POST was in flight across one belongs
   // to a collection that is gone
@@ -107,13 +107,13 @@ export class SyncClient {
   private publicChannels = new Set<string>()
   private tailChannels = new Set<string>()
   private settleTimeoutMs: number
-  private unsubscribe?: () => void
-  private offOpen?: () => void
-  private offClose?: () => void
+  private unsubscribe?: (() => void) | undefined
+  private offOpen?: (() => void) | undefined
+  private offClose?: (() => void) | undefined
   // dropped on close: it is the closed flag, and letting it go releases the dead
   // socket. A collection outlives us holding the cleanup closure `register`
   // returns, so anything we still point at stays alive with it.
-  private transport?: Transport
+  private transport?: Transport | undefined
 
   constructor(transport: Transport, opts: SyncClientOptions = {}) {
     this.transport = transport

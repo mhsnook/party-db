@@ -59,7 +59,7 @@ export type PgConnect = () => Promise<PgClient>
 export type PgAdapterOptions = {
   // keep at most this many _oplog rows; older entries are compacted away after each
   // write (same meaning as the other adapters). Undefined / 0 → unbounded.
-  oplogRetention?: number
+  oplogRetention?: number | undefined
 }
 
 export class PgAdapter implements PersistenceAdapter {

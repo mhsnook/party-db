@@ -30,7 +30,7 @@ export type StructuredPlan = {
   cols: ColumnSpec[]
   kinds: Map<string, ColumnKind>
   snapshot: boolean
-  sliceBy?: string
+  sliceBy?: string | undefined
 }
 export type BlobPlan = { kind: 'blob'; name: string; key: string; snapshot: boolean; sliceBy?: undefined }
 export type Plan = StructuredPlan | BlobPlan
@@ -209,7 +209,8 @@ export function resolveStructured(
   if (op.type === 'update') {
     const resolved = rows[0]
     if (!resolved) throw new MissedUpdateError(plan.name, row[plan.key])
-    return { type: 'update', value: dec(resolved, plan.kinds), previousValue: op.previousValue }
+    const value = dec(resolved, plan.kinds)
+    return op.previousValue === undefined ? { type: 'update', value } : { type: 'update', value, previousValue: op.previousValue }
   }
   return { type: 'insert', value: dec(rows[0], plan.kinds) }
 }

@@ -71,7 +71,7 @@ const statusOf = (fn: () => unknown): number | 'ok' => {
 }
 
 describe('checkAccess — a grant that cannot mean what it says refuses to start', () => {
-  const declare = (access: unknown, extra: Partial<PartyCollection<any>> = {}) => () =>
+  const declare = (access: unknown, extra: Partial<Record<keyof PartyCollection<any>, unknown>> = {}) => () =>
     checkAccess({ name: 'r', key: 'id', schema: reviewSchema, ownerColumn: 'reviewed_by', access, ...extra } as PartyCollection<any>)
 
   it('accepts a grant per verb and a single grant for every verb', () => {

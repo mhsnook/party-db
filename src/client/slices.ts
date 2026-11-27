@@ -51,7 +51,7 @@ type Entry = {
   refs: number
   loaded: boolean
   // the cursor this subscribe asks from, until its reply arrives
-  since?: Cursor
+  since?: Cursor | undefined
   waiters: Waiter[]
 }
 
@@ -63,7 +63,7 @@ export class ChannelSlices implements SliceApply {
   private cursors = new Map<string, Cursor>()
   // set by a dispose that failed its waiters: the collection was replaced or the
   // client closed, so a query still on it must not subscribe on the next socket
-  private retired?: Error
+  private retired?: Error | undefined
 
   constructor(
     readonly channel: string,

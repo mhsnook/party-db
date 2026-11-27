@@ -46,7 +46,7 @@ export type Audience = 'all' | 'authed' | { uid: string } | { role: string }
 // connect and every write read them.
 export type CollectionAccess = {
   policies: Policies
-  ownerColumn?: string
+  ownerColumn?: string | undefined
   key: string
   // every verb is 'public': behaves exactly as a collection with no declaration
   open: boolean

@@ -24,7 +24,7 @@ const docs = definePartyCollection({
 // adapter's write path to complete: a resolved row for the app-table RETURNING,
 // a seq for the oplog insert, empty otherwise.
 function recorder() {
-  const calls: { text: string; values?: unknown[] }[] = []
+  const calls: { text: string; values?: unknown[] | undefined }[] = []
   const client: PgClient = {
     query: async (text: string, values?: unknown[]) => {
       calls.push({ text, values })
@@ -37,7 +37,7 @@ function recorder() {
 }
 
 const ins: WriteBatch = { channel: 'docs', ops: [{ type: 'insert', value: { id: 'a', body: 'x' } }] }
-const setConfigs = (calls: { text: string; values?: unknown[] }[]) => calls.filter((c) => /set_config/.test(c.text))
+const setConfigs = (calls: { text: string; values?: unknown[] | undefined }[]) => calls.filter((c) => /set_config/.test(c.text))
 
 describe('PgAdapter identity injection (recording client)', () => {
   it('injects claims via a parameterized set_config(..., is_local=true), after BEGIN, before the write', async () => {

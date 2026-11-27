@@ -87,7 +87,7 @@ export interface PartyDbCoreOptions {
   // the anonymous-write latch — see `PartyDbServer.anonRole`. Postgres only.
   // Fixed at construction on purpose, unlike `auth`: `init()` probes the role
   // once at boot (`verifyAnonRole`), and a later value would skip that probe.
-  anonRole?: string
+  anonRole?: string | undefined
   // reject a write body over this many bytes (413). 0 disables. Default 1 MiB.
   maxWriteBytes?: number
   // reject a write carrying more ops than this across all batches (413). 0
@@ -127,15 +127,15 @@ export class PartyDbCore {
   private readsNeedIdentity: boolean
   // the roles some read rule names; a viewer's other roles are never pinned
   private roles: Set<string>
-  private auth?: () => AuthHook | undefined
-  private anonRole?: string
+  private auth?: (() => AuthHook | undefined) | undefined
+  private anonRole?: string | undefined
   private maxWriteBytes: number
   private maxWriteOps: number
   private channels: Set<string>
   // channel → its `sliceBy` column, for the collections that load by slice.
   private sliceBy: Map<string, string>
-  private connections?: () => Iterable<PartyDbConnection>
-  private connectionsOf?: PartyDbCoreOptions['connectionsOf']
+  private connections?: (() => Iterable<PartyDbConnection>) | undefined
+  private connectionsOf?: PartyDbCoreOptions['connectionsOf'] | undefined
   // built on first use after construction — i.e. after every wake — from the
   // connections' own saved subscriptions.
   private routes?: SliceRoutes

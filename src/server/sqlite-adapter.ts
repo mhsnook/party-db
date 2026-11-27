@@ -47,7 +47,7 @@ export type SqliteAdapterOptions = {
   // each write. Undefined / 0 → unbounded (the _oplog grows forever, v0 behavior).
   // A reconnecting client whose cursor predates the oldest retained seq gets a
   // fresh snapshot instead of a gappy delta (see replaySince).
-  oplogRetention?: number
+  oplogRetention?: number | undefined
 }
 
 export class SqliteAdapter implements PersistenceAdapter {

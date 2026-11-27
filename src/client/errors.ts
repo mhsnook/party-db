@@ -29,9 +29,9 @@ import type { WriteReject, WriteRejectCode } from '../protocol.ts'
 // back. Non-retriable: a different payload or re-auth is needed, not a replay.
 export class WriteError extends NonRetriableError {
   readonly status: number
-  readonly channel?: string
-  readonly constraint?: string
-  readonly code?: WriteRejectCode
+  readonly channel?: string | undefined
+  readonly constraint?: string | undefined
+  readonly code?: WriteRejectCode | undefined
 
   constructor(status: number, reject: WriteReject) {
     super(reject.error)

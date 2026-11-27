@@ -32,7 +32,7 @@ type Waiter = {
 
 export class SeqTracker {
   private highest = new Map<string, Cursor>()
-  private room?: Cursor
+  private room?: Cursor | undefined
   private waiters = new Set<Waiter>()
 
   constructor(private compare: CursorCompare = compareCursor) {}

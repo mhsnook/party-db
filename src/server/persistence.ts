@@ -53,7 +53,7 @@ export class MissedUpdateError extends Error {
     const where = [channel && `channel "${channel}"`, key !== undefined && `key ${JSON.stringify(key)}`].filter(Boolean)
     super(`update matched no row${where.length ? ` (${where.join(', ')})` : ''}`)
     this.name = 'MissedUpdateError'
-    this.rejection = { error: this.message, channel, code: 'missing-row', status: 409 }
+    this.rejection = { error: this.message, ...(channel !== undefined && { channel }), code: 'missing-row', status: 409 }
   }
 }
 
