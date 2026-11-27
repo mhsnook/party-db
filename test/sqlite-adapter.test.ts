@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
+import { Schema as S } from 'effect'
 import { SqliteAdapter } from '../src/server/sqlite-adapter.ts'
 import { MissedUpdateError } from '../src/server/persistence.ts'
 import { definePartyCollection } from '../src/schema.ts'
@@ -341,5 +342,21 @@ describe('SqliteAdapter — a `snapshot: false` collection (architecture §8)', 
     const delta = await adapter.replaySince(1)
     expect(delta!.map((b) => b.seq)).toEqual([2])
     expect(delta![0].ops[0].value).toEqual({ id: 'e2', kind: 'leave' })
+  })
+})
+
+// The same table, typed with Effect Schema instead of Zod. A boolean column is the
+// case that shows the plan is structured: blob would store `done` inside a JSON
+// document and never touch the `done` INTEGER column.
+describe('SqliteAdapter — an Effect Schema collection', () => {
+  it('writes into typed columns and decodes the boolean back', async () => {
+    const { engine, db } = memoryEngine()
+    db.exec(`CREATE TABLE todos (id TEXT PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)`)
+    const schema = S.toStandardSchemaV1(S.Struct({ id: S.String, text: S.String, done: S.Boolean }))
+    const adapter = new SqliteAdapter(engine, [definePartyCollection({ name: 'todos', key: 'id', schema })])
+    adapter.init()
+    const [batch] = await adapter.write([ins('todos', { id: 'a', text: 'hi', done: true })])
+    expect(db.prepare(`SELECT id, text, done FROM todos`).all()).toEqual([{ id: 'a', text: 'hi', done: 1 }])
+    expect(batch.ops[0]).toMatchObject({ type: 'insert', value: { id: 'a', text: 'hi', done: true } })
   })
 })

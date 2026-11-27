@@ -1,7 +1,8 @@
-// Read the shared StandardSchema (Zod v4) into the two things the structured server
-// needs to do CRUD against tables you already built: an injection-safe column
-// ALLOWLIST and a value CODEC. We deliberately do NOT derive SQL types, defaults,
-// PKs, or any DDL — your app owns its database and its schema. This is only:
+// Read the shared StandardSchema (Zod v4 or Effect Schema v4) into the two things
+// the structured server needs to do CRUD against tables you already built: an
+// injection-safe column ALLOWLIST and a value CODEC. We deliberately do NOT derive
+// SQL types, defaults, PKs, or any DDL — your app owns its database and its
+// schema. This is only:
 //
 //   - which column names the server is allowed to name in a statement
 //     (taken from the schema, validated against an identifier regex — NEVER from
@@ -9,18 +10,19 @@
 //   - how to (de)serialize a value across SQLite's narrow type set, since SQLite
 //     can't bind a JS boolean or object: booleans ↔ 0/1, objects/arrays ↔ JSON.
 //
-// Returns null when the schema isn't a Zod v4 object we can introspect; the caller
-// then falls back to the schema-agnostic blob store (v0).
+// Returns null when the schema isn't a Zod v4 object or an Effect v4 Struct we can
+// introspect; the caller then falls back to the schema-agnostic blob store (v0).
 
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 
 // A column's logical type, only as far as the value codec cares.
 export type ColumnKind = 'boolean' | 'json' | 'scalar'
 // `tag` is the schema's own base type name ('string', 'number', 'enum'…), past the
-// Optional/Nullable/Default wrappers — undefined when the field is not a Zod node.
+// Optional/Nullable/Default wrappers — undefined when the field is not a node we
+// can read. Effect's tags are mapped onto Zod's spelling, so both share one table.
 // The codec only needs `kind`, which collapses everything that is not a boolean or
 // a document into 'scalar'; `canHoldUid` needs the distinction `kind` threw away.
-export type ColumnSpec = { name: string; kind: ColumnKind; tag?: string }
+export type ColumnSpec = { name: string; kind: ColumnKind; tag?: string | undefined }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/
 
@@ -37,12 +39,17 @@ export function assertIdent(name: string): string {
 const JSON_TAGS: ReadonlySet<unknown> = new Set(['object', 'array', 'record', 'tuple', 'map', 'set'])
 
 export function columnsOf(schema: StandardSchemaV1 | undefined): ColumnSpec[] | null {
+  return zodColumns(schema) ?? effectColumns(schema)
+}
+
+function column(name: string, tag: string | undefined): ColumnSpec {
+  return { name: assertIdent(name), kind: kindFromTag(tag), tag }
+}
+
+function zodColumns(schema: unknown): ColumnSpec[] | null {
   const shape = zodDef(schema)?.shape
   if (!shape || typeof shape !== 'object') return null
-  return Object.entries(shape).map(([name, field]) => {
-    const tag = baseTagOf(field)
-    return { name: assertIdent(name), kind: kindFromTag(tag), tag }
-  })
+  return Object.entries(shape).map(([name, field]) => column(name, baseTagOf(field)))
 }
 
 // Every Zod v4 node carries its definition at `_zod.def` — an own property on the
@@ -77,6 +84,56 @@ function baseTagOf(field: unknown): string | undefined {
     } else break
   }
   return typeTag(cur)
+}
+
+// Effect v4 Schema. A bare `Schema.Struct` is not a StandardSchema; the app passes
+// `Schema.toStandardSchemaV1(Struct)`, which keeps the Struct's `ast`. Every v4 AST
+// node carries the `~effect/Schema` key, which is how we tell it from any other
+// object with an `ast`. An Effect v3 AST has no such key, so v3 falls back to blob.
+//
+// A v4 node describes the Type side, and a transformation hangs off it as
+// `encoding`. `Schema.NumberFromString` is a `Number` node, which matches the
+// decoded value a TanStack row holds and the client sends. So we read the node's
+// own `_tag` and never follow `encoding`.
+function effectAst(schema: unknown): Record<string, any> | null {
+  const ast = (schema as any)?.ast
+  return ast && typeof ast === 'object' && '~effect/Schema' in ast ? ast : null
+}
+
+// A top-level `Schema.Record` is an `Objects` node with no property signatures.
+// Zod's `z.record` has no `.shape` either, so both go to blob.
+function effectColumns(schema: unknown): ColumnSpec[] | null {
+  const ast = effectAst(schema)
+  if (ast?._tag !== 'Objects' || !Array.isArray(ast.propertySignatures) || ast.propertySignatures.length === 0) return null
+  return ast.propertySignatures.map((p: { name: PropertyKey; type: unknown }) => {
+    if (typeof p.name !== 'string') throw new Error(`unsafe SQL identifier: ${String(p.name)}`)
+    return column(p.name, effectTagOf(p.type))
+  })
+}
+
+const EFFECT_TAGS: Record<string, string> = {
+  String: 'string',
+  Number: 'number',
+  BigInt: 'bigint',
+  Boolean: 'boolean',
+  Arrays: 'array',
+  Objects: 'object',
+}
+
+// `Schema.optional(X)` is `Union[X, Undefined]` and `Schema.NullOr(X)` is
+// `Union[X, Null]`, the counterparts of Zod's Optional/Nullable wrappers. Peeling
+// them leaves the base type. A union with two real members stays 'union', as Zod's
+// does. Any tag missing from the table is lowercased: 'literal', 'declaration'.
+function effectTagOf(node: any): string | undefined {
+  let cur = node
+  while (cur?._tag === 'Union' && Array.isArray(cur.types)) {
+    const members = cur.types.filter((t: any) => t?._tag !== 'Null' && t?._tag !== 'Undefined')
+    if (members.length !== 1) return 'union'
+    cur = members[0]
+  }
+  const tag = cur?._tag
+  if (typeof tag !== 'string') return undefined
+  return EFFECT_TAGS[tag] ?? tag.toLowerCase()
 }
 
 // The value codec's view of a base tag. Anything we don't recognise binds as-is.

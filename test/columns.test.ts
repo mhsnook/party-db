@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import * as zm from 'zod/mini'
+import { Schema as S } from 'effect'
 import { assertIdent, columnsOf, decode, decodeRow, encode } from '../src/server/columns.ts'
 
 describe('columnsOf (schema → injection-safe allowlist + codec)', () => {
@@ -66,6 +67,65 @@ describe('columnsOf (schema → injection-safe allowlist + codec)', () => {
 
   it('rejects a schema whose key is not a safe SQL identifier', () => {
     const evil = z.object({ 'id; DROP TABLE x': z.string() })
+    expect(() => columnsOf(evil)).toThrow(/unsafe SQL identifier/)
+  })
+})
+
+describe('columnsOf — Effect Schema v4', () => {
+  it('reads a Struct passed through toStandardSchemaV1, with the same tags as Zod', () => {
+    const schema = S.toStandardSchemaV1(
+      S.Struct({
+        id: S.String,
+        n: S.Number,
+        big: S.BigInt,
+        done: S.Boolean,
+        tags: S.Array(S.String),
+        pair: S.Tuple([S.String, S.Number]),
+        meta: S.optional(S.Struct({ a: S.Number })),
+        dict: S.NullOr(S.Record(S.String, S.Number)),
+        at: S.optionalKey(S.Number),
+        status: S.Literals(['open', 'closed']),
+        either: S.Union([S.String, S.Number]),
+        lit: S.Literal('x'),
+        when: S.Date,
+      }),
+    )
+    expect(columnsOf(schema)).toEqual([
+      { name: 'id', kind: 'scalar', tag: 'string' },
+      { name: 'n', kind: 'scalar', tag: 'number' },
+      { name: 'big', kind: 'scalar', tag: 'bigint' },
+      { name: 'done', kind: 'boolean', tag: 'boolean' },
+      { name: 'tags', kind: 'json', tag: 'array' },
+      { name: 'pair', kind: 'json', tag: 'array' },
+      { name: 'meta', kind: 'json', tag: 'object' },
+      { name: 'dict', kind: 'json', tag: 'object' },
+      { name: 'at', kind: 'scalar', tag: 'number' },
+      { name: 'status', kind: 'scalar', tag: 'union' },
+      { name: 'either', kind: 'scalar', tag: 'union' },
+      { name: 'lit', kind: 'scalar', tag: 'literal' },
+      { name: 'when', kind: 'scalar', tag: 'declaration' },
+    ])
+  })
+
+  // A TanStack row holds the decoded value, so a column takes the Type side of a
+  // transformation: `n` is a number column, though its encoded form is a string.
+  it('reads the Type side of a transformation, and sees through a brand', () => {
+    const schema = S.toStandardSchemaV1(
+      S.Struct({ n: S.NumberFromString, done: S.Boolean.pipe(S.brand('Done')) }),
+    )
+    expect(columnsOf(schema)).toEqual([
+      { name: 'n', kind: 'scalar', tag: 'number' },
+      { name: 'done', kind: 'boolean', tag: 'boolean' },
+    ])
+  })
+
+  it('returns null for an Effect schema that is not a Struct (→ blob fallback)', () => {
+    expect(columnsOf(S.toStandardSchemaV1(S.Record(S.String, S.Number)))).toBeNull()
+    expect(columnsOf(S.toStandardSchemaV1(S.String) as any)).toBeNull()
+  })
+
+  it('rejects a Struct whose key is not a safe SQL identifier', () => {
+    const evil = S.toStandardSchemaV1(S.Struct({ 'id; DROP TABLE x': S.String }))
     expect(() => columnsOf(evil)).toThrow(/unsafe SQL identifier/)
   })
 })

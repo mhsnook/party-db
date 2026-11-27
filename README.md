@@ -349,7 +349,7 @@ Per collection, on `definePartyCollection`:
 | --- | --- | --- |
 | `name` | — | the channel, which is also your table name |
 | `key` | — | the primary key column |
-| `schema` | none | a Zod or StandardSchema; omitted, the room stores the collection as opaque blobs (embedded only) |
+| `schema` | none | a Zod object, or an Effect `Schema.Struct` through `Schema.toStandardSchemaV1`; any other StandardSchema, or none, and the room stores the collection as opaque blobs (embedded only) |
 | `ownerColumn` | none | the column that must equal the writer's uid for an `'owner'` policy; set alone, it makes the collection fully private |
 | `access` | `'public'` | who may read, insert, update and delete: one policy or grant, or one per verb (`docs/architecture.md` §17 and [Roles](#roles)) |
 | `snapshot` | `true` | `false` sends a connecting client no rows for this collection; it tails from there, and reconnects still fill the gap |

@@ -29,6 +29,9 @@ importers:
       '@types/pg':
         specifier: ^8.20.0
         version: 8.20.0
+      effect:
+        specifier: ^4.1.7
+        version: 4.1.7
       partyserver:
         specifier: ^0.5.8
         version: 0.5.8(@cloudflare/workers-types@4.20260624.1)
@@ -793,6 +796,9 @@ packages:
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
+
+  effect@4.1.7:
+    resolution: {integrity: sha512-8QUe2XO3auHF5r7+bfIDWxyXlLA0sso4Sia1QYP+vrYA7qb3sq1u2eJmhyXGmKc8yZ+TY2SNxPozeMdyKmWing==}
 
   error-stack-parser-es@1.0.5:
     resolution: {integrity: sha512-5qucVt2XcuGMcEGgWI7i+yZpmpByQ8J1lHhcL7PwqCwu9FPP3VUXzT4ltHe5i2z9dePwEHcDVOAfSnHsOlCXRA==}
@@ -1624,6 +1630,8 @@ snapshots:
   cookie@1.1.1: {}
 
   detect-libc@2.1.2: {}
+
+  effect@4.1.7: {}
 
   error-stack-parser-es@1.0.5: {}
 
