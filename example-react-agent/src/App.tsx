@@ -1,7 +1,5 @@
 import { useState } from 'react'
-import type { Collection } from '@tanstack/db'
-import { eq } from '@tanstack/db'
-import { useLiveQuery } from '@tanstack/react-db'
+import { eq, useLiveQuery } from '@tanstack/react-db'
 import { useAgent } from 'agents/react'
 import { collections, type BoardState, type Note, type Task } from './schema.ts'
 import { createPartyDb, partyTransport } from '../../src/client/index.ts'
@@ -12,9 +10,8 @@ const transport = partyTransport({ host: location.host, room: 'demo', party: 'bo
 // ✅ 2. The collections, from the same list the agent persists into.
 export const { db } = createPartyDb(transport, collections)
 
-// re-asserted only because this repo imports @tanstack/db twice (see example-react)
-const tasks = db.tasks as unknown as Collection<Task, string>
-const notes = db.notes as unknown as Collection<Note, string>
+const tasks = db.tasks
+const notes = db.notes
 
 export function App() {
   const [text, setText] = useState('')
@@ -73,7 +70,10 @@ export function App() {
 }
 
 function TaskRow({ task }: { task: Task }) {
-  const { data } = useLiveQuery((q) => q.from({ note: notes }).where(({ note }) => eq(note.task_id, task.id)).orderBy(({ note }) => note.id, 'asc'))
+  const { data } = useLiveQuery(
+    (q) => q.from({ note: notes }).where(({ note }) => eq(note.task_id, task.id)).orderBy(({ note }) => note.id, 'asc'),
+    [task.id],
+  )
   return (
     <li className={task.status}>
       <div className="row">

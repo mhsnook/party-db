@@ -116,7 +116,8 @@ export class Board extends Agent<Env, BoardState> {
         await this.update(taskId, 'done')
         this.setState({ working: null, triaged: this.state.triaged + 1 })
       } catch (e) {
-        // the task was deleted under us: a zero-row update is a rejection (§16)
+        // the task was deleted under us: the next note hits its FOREIGN KEY, or the
+        // status update matches no row (§16). Either throws out of commit.
         this.setState({ ...this.state, working: null })
         console.warn(`triage ${taskId} stopped:`, e)
       }

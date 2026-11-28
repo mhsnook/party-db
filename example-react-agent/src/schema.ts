@@ -19,8 +19,8 @@ export type Task = z.infer<typeof taskSchema>
 export type Note = z.infer<typeof noteSchema>
 
 export const collections = [
-  definePartyCollection<Task>({ name: 'tasks', key: 'id', schema: taskSchema }),
-  definePartyCollection<Note>({ name: 'notes', key: 'id', schema: noteSchema }),
+  definePartyCollection({ name: 'tasks', key: 'id', schema: taskSchema }),
+  definePartyCollection({ name: 'notes', key: 'id', schema: noteSchema }),
 ]
 
 // What the agent reports about itself, outside the collections: the Agents SDK

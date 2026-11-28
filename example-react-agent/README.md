@@ -68,5 +68,6 @@ Two things to know before you lean on it:
 | `src/server.ts` | the `Board` agent: builds the core, forwards the three seams, runs the triage fiber |
 | `src/App.tsx` | party-db collections via `useLiveQuery`, agent state via `useAgent` |
 | `src/main.tsx` | React entry point |
+| `e2e/agent.spec.ts` | two tabs watch the agent work a task; no SDK frame reaches a party-db socket (`EXAMPLE=example-react-agent pnpm test:e2e`) |
 | `vite.config.ts` | proxies `/parties` and `/agents` to the worker |
 | `wrangler.jsonc` | one `Board` Durable Object with SQLite, on a current compatibility date |
